@@ -1260,7 +1260,7 @@ def show_daily_orders():
             st.session_state.daily_date = selected_date
             
             # Format date for URL
-            date_str = selected_date.strftime("%d/%m/%Y")
+            date_str = selected_date.strftime("%Y/%m/%d")
             st.info(f"🔍 Requesting daily orders for **{date_str}**")
             
             url = "https://iml.npa-enterprise.com/NewNPA/home/CreateDailyOrderReport"
