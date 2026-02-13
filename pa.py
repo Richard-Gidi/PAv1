@@ -638,7 +638,8 @@ def show_bdc_balance():
             st.markdown("#### 📈 Key Metrics")
             st.metric("Total BDCs", f"{df['BDC'].nunique()}")
             st.metric("Total Depots", f"{df['DEPOT'].nunique()}")
-            st.metric("Grand Total", f"{df['ACTUAL BALANCE (LT\\KG)'].sum():,.0f} LT/KG")
+            col_name = 'ACTUAL BALANCE (LT\\KG)'
+            st.metric("Grand Total", f"{df[col_name].sum():,.0f} LT/KG")
         
         st.markdown("---")
         
@@ -698,6 +699,7 @@ def show_bdc_balance():
         st.markdown("---")
         st.markdown("<h3>📋 QUICK STATS</h3>", unsafe_allow_html=True)
         cols = st.columns(4)
+        col_actual = 'ACTUAL BALANCE (LT\\KG)'
         with cols[0]:
             st.metric("RECORDS", f"{len(filtered):,}")
         with cols[1]:
@@ -705,7 +707,7 @@ def show_bdc_balance():
         with cols[2]:
             st.metric("DEPOTS", f"{filtered['DEPOT'].nunique()}")
         with cols[3]:
-            st.metric("TOTAL BALANCE", f"{filtered['ACTUAL BALANCE (LT\\KG)'].sum():,.0f}")
+            st.metric("TOTAL BALANCE", f"{filtered[col_actual].sum():,.0f}")
         
         st.markdown("---")
         st.markdown("<h3>💾 EXPORT DATA</h3>", unsafe_allow_html=True)
@@ -750,8 +752,8 @@ def show_omc_loadings():
             st.session_state.omc_end_date = end_date
             
             # Format dates for URL (DD/MM/YYYY)
-            start_str = start_date.strftime("%d/%m/%Y")
-            end_str = end_date.strftime("%d/%m/%Y")
+            start_str = start_date.strftime("%Y/%m/%d")
+            end_str = end_date.strftime("%Y/%m/%d")
             
             # Show what dates we're requesting
             st.info(f"🔍 Requesting orders from **{start_str}** to **{end_str}**")
