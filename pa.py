@@ -989,8 +989,8 @@ def show_omc_loadings():
             st.session_state.omc_end_date = end_date
             
             # Format dates for URL (DD/MM/YYYY)
-            start_str = start_date.strftime("%Y/%m/%d")
-            end_str = end_date.strftime("%Y/%m/%d")
+            start_str = start_date.strftime("%d/%m/%Y")
+            end_str = end_date.strftime("%d/%m/%Y")
             
             # Show what dates we're requesting
             st.info(f"🔍 Requesting orders from **{start_str}** to **{end_str}**")
@@ -1242,40 +1242,53 @@ def show_omc_loadings():
 
 def show_daily_orders():
     st.markdown("<h2>📅 DAILY ORDERS ANALYZER</h2>", unsafe_allow_html=True)
-    st.info("📊 Select a specific date to fetch daily orders")
+    st.info("📊 Select a date range to fetch daily orders")
     st.markdown("---")
     
     # Initialize session state
     if 'daily_df' not in st.session_state:
         st.session_state.daily_df = pd.DataFrame()
-    if 'daily_date' not in st.session_state:
-        st.session_state.daily_date = datetime.now()
+    if 'daily_start_date' not in st.session_state:
+        from datetime import timedelta
+        st.session_state.daily_start_date = datetime.now() - timedelta(days=1)
+    if 'daily_end_date' not in st.session_state:
+        st.session_state.daily_end_date = datetime.now()
     
-    # Date input
-    st.markdown("<h3>📅 SELECT DATE</h3>", unsafe_allow_html=True)
-    selected_date = st.date_input("Order Date", value=st.session_state.daily_date, key='daily_date_input')
+    # Date inputs
+    st.markdown("<h3>📅 SELECT DATE RANGE</h3>", unsafe_allow_html=True)
+    st.info("💡 Select a date range for daily orders. Try yesterday or last few days for better results.")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        start_date = st.date_input("Start Date", value=st.session_state.daily_start_date, key='daily_start')
+    with col2:
+        end_date = st.date_input("End Date", value=st.session_state.daily_end_date, key='daily_end')
     
     if st.button("🔄 FETCH DAILY ORDERS", use_container_width=True):
         with st.spinner("🔄 FETCHING DAILY ORDERS FROM NPA PORTAL..."):
-            st.session_state.daily_date = selected_date
+            st.session_state.daily_start_date = start_date
+            st.session_state.daily_end_date = end_date
             
-            # Format date for URL
-            date_str = selected_date.strftime("%Y/%m/%d")
-            st.info(f"🔍 Requesting daily orders for **{date_str}**")
+            # Format dates for URL (MM/DD/YYYY based on your example)
+            start_str = start_date.strftime("%m/%d/%Y")
+            end_str = end_date.strftime("%m/%d/%Y")
+            
+            st.info(f"🔍 Requesting daily orders from **{start_str}** to **{end_str}**")
             
             url = "https://iml.npa-enterprise.com/NewNPA/home/CreateDailyOrderReport"
             params = {
                 'lngCompanyId': '1',
                 'szITSfromPersol': 'persol',
-                'strGroupBy': 'BDC',
-                'strGroupBy1': 'ALL',
+                'strGroupBy': 'DEPOT',
+                'strGroupBy1': '',
                 'strQuery1': '',
-                'strQuery2': date_str,
-                'strQuery3': '',
+                'strQuery2': start_str,
+                'strQuery3': end_str,
                 'strQuery4': '',
-                'strPicHeight': '',
-                'strPicWeight': '',
-                'intPeriodID': '1',
+                'strPicHeight': '1',
+                'strPicWeight': '1',
+                'intPeriodID': '-1',
                 'iUserId': '123292',
                 'iAppId': '3'
             }
@@ -1323,7 +1336,7 @@ def show_daily_orders():
         st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
         st.markdown("---")
         
-        st.info(f"📊 Showing {len(df)} orders for {st.session_state.daily_date.strftime('%Y/%m/%d')}")
+        st.info(f"📊 Showing {len(df)} orders from {st.session_state.daily_start_date.strftime('%Y/%m/%d')} to {st.session_state.daily_end_date.strftime('%Y/%m/%d')}")
         st.markdown("---")
         
         # ANALYTICS DASHBOARD
@@ -1482,7 +1495,7 @@ def show_daily_orders():
             with open(path, 'rb') as f:
                 st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
         else:
-            st.info("👆 Select a date and click the button above to fetch daily orders")
+            st.info("👆 Select a date range and click the button above to fetch daily orders")
 
 if __name__ == "__main__":
     main()
