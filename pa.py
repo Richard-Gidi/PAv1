@@ -355,7 +355,7 @@ def _parse_loaded_line(line: str, current_product: str, current_depot: str, curr
         brv_number = tokens[-3]
         company_name = " ".join(tokens[rel_idx + 1:-3]).strip()
         try:
-            date_obj = datetime.strptime(date_token, "%d-%b-%Y")
+            date_obj = datetime.strptime(date_token, "%Y/%m/%d")
             date_str = date_obj.strftime("%Y/%m/%d")
         except:
             date_str = date_token
