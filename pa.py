@@ -495,6 +495,241 @@ def parse_text_to_dataframe(text_content: str) -> pd.DataFrame:
         df = df.reset_index(drop=True)
     return df
 
+# ==================== DAILY ORDERS FUNCTIONS ====================
+DAILY_PRODUCT_MAP = {
+    "PMS": "PREMIUM",
+    "AGO": "GASOIL",
+    "LPG": "LPG",
+    "RFO": "RFO",
+    "ATK": "ATK",
+    "AVIATION": "ATK",
+    "PREMIX": "PREMIX",
+    "MGO": "GASOIL",
+    "KEROSENE": "KEROSENE"
+}
+
+def clean_currency(value_str):
+    """Converts '54,000.00' -> 54000.0"""
+    if not value_str: return 0.0
+    try:
+        return float(value_str.replace(",", "").strip())
+    except:
+        return 0.0
+
+def get_product_category(text):
+    """Determines product category from line text."""
+    text_upper = text.upper()
+    if "AVIATION" in text_upper or "TURBINE" in text_upper: return "ATK"
+    if "RFO" in text_upper: return "RFO"
+    if "PREMIX" in text_upper: return "PREMIX"
+    if "LPG" in text_upper: return "LPG"
+    if "AGO" in text_upper or "MGO" in text_upper or "GASOIL" in text_upper: return "GASOIL"
+    if "PMS" in text_upper or "PREMIUM" in text_upper: return "PREMIUM"
+    return "PREMIUM"
+
+def parse_daily_line(line, last_known_date):
+    """Parses a single line of text to extract order details."""
+    line = line.strip()
+    
+    # Regex to find Price and Volume at the end
+    pv_match = re.search(r"(\d{1,4}\.\d{2,4})\s+(\d{1,3}(?:,\d{3})*\.\d{2})$", line)
+    
+    if not pv_match:
+        return None
+
+    price_str = pv_match.group(1)
+    vol_str = pv_match.group(2)
+    
+    price = clean_currency(price_str)
+    volume = clean_currency(vol_str)
+
+    remainder = line[:pv_match.start()].strip()
+    
+    # Extract BRV (Truck Number)
+    tokens = remainder.split()
+    if not tokens: return None
+    
+    brv = tokens[-1]
+    tokens = tokens[:-1]
+    remainder = " ".join(tokens)
+
+    # Extract Date
+    date_val = last_known_date
+    date_match = re.search(r"(\d{2}/\d{2}/\d{4})", remainder)
+    
+    if date_match:
+        date_val = date_match.group(1)
+        # Convert to YYYY/MM/DD format
+        try:
+            date_obj = datetime.strptime(date_val, "%d/%m/%Y")
+            date_val = date_obj.strftime("%Y/%m/%d")
+        except:
+            pass
+        remainder = remainder.replace(date_match.group(1), "").strip()
+    
+    # Extract Product and Order Number
+    product_cat = get_product_category(line)
+    
+    noise_words = [
+        "PMS", "AGO", "LPG", "RFO", "ATK", "PREMIX", "FOREIGN", 
+        "(Retail Outlets)", "Retail", "Outlets", "MGO", "Local", 
+        "Additivated", "Differentiated", "MINES", "Cell Sites", "Turbine", "Kerosene"
+    ]
+    
+    order_num_tokens = []
+    for t in remainder.split():
+        is_noise = False
+        for nw in noise_words:
+            if nw.upper() in t.upper() or t in ["(", ")", "-"]:
+                is_noise = True
+                break
+        if not is_noise:
+            order_num_tokens.append(t)
+            
+    order_number = " ".join(order_num_tokens).strip()
+    
+    if not order_number and len(tokens) > 0:
+        order_number = remainder
+
+    return {
+        "Date": date_val,
+        "Order Number": order_number,
+        "Product": product_cat,
+        "Truck": brv,
+        "Price": price,
+        "Quantity": volume
+    }
+
+def simplify_bdc_names(df):
+    """Take the first 2 words of every BDC name."""
+    if "BDC" not in df.columns or df.empty:
+        return df
+
+    unique_bdcs = df["BDC"].unique()
+    mapping = {}
+    
+    for name in unique_bdcs:
+        if not name: 
+            mapping[name] = name
+            continue
+            
+        parts = name.split()
+        short_name = " ".join(parts[:2])
+        mapping[name] = short_name.upper()
+
+    df["BDC"] = df["BDC"].map(mapping)
+    return df
+
+def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
+    """Extract Daily Orders from PDF file."""
+    all_rows = []
+    
+    ctx = {
+        "Depot": "Unknown Depot",
+        "BDC": "Unknown BDC",
+        "Status": "Unknown Status",
+        "Date": None
+    }
+    
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text(x_tolerance=2, y_tolerance=2)
+                if not text: continue
+                
+                lines = text.split('\n')
+                
+                for line in lines:
+                    clean = line.strip()
+                    if not clean: continue
+                    
+                    # Update Context Headers
+                    if clean.startswith("DEPOT:"):
+                        raw_depot = clean.replace("DEPOT:", "").strip()
+                        
+                        if raw_depot.startswith("BOST") or "TAKORADI BLUE OCEAN" in raw_depot:
+                            ctx["Depot"] = "BOST Global"
+                        else:
+                            ctx["Depot"] = raw_depot
+                        continue
+
+                    if clean.startswith("BDC:"):
+                        ctx["BDC"] = clean.replace("BDC:", "").strip()
+                        continue
+
+                    if "Order Status" in clean:
+                        parts = clean.split(":")
+                        if len(parts) > 1:
+                            ctx["Status"] = parts[-1].strip()
+                        continue
+                        
+                    # Parse Data Row
+                    if not re.search(r"\d{2}$", clean):
+                        continue
+                        
+                    row_data = parse_daily_line(clean, ctx["Date"])
+                    
+                    if row_data:
+                        if row_data["Date"]:
+                            ctx["Date"] = row_data["Date"]
+                        
+                        final_row = {
+                            "Date": row_data["Date"],
+                            "OMC": ctx["BDC"],
+                            "Truck": row_data["Truck"],
+                            "Product": row_data["Product"],
+                            "Quantity": row_data["Quantity"],
+                            "Price": row_data["Price"],
+                            "Depot": ctx["Depot"],
+                            "Order Number": row_data["Order Number"],
+                            "BDC": ctx["BDC"],
+                            "Status": ctx["Status"]
+                        }
+                        all_rows.append(final_row)
+
+    except Exception as e:
+        st.error(f"Error parsing PDF: {e}")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(all_rows)
+    
+    if not df.empty:
+        df = simplify_bdc_names(df)
+        df["OMC"] = df["BDC"]
+        
+    return df
+
+def save_daily_orders_excel(df: pd.DataFrame, filename: str = None) -> str:
+    """Save daily orders to Excel with summary."""
+    out_dir = os.path.join(os.getcwd(), "daily_orders")
+    os.makedirs(out_dir, exist_ok=True)
+    if filename is None:
+        filename = f"daily_orders_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    out_path = os.path.join(out_dir, filename)
+    
+    # Create Summary Pivot
+    if not df.empty:
+        pivot = df.pivot_table(
+            index="BDC", 
+            columns="Product", 
+            values="Quantity", 
+            aggfunc="sum", 
+            fill_value=0
+        ).reset_index()
+        
+        # Calculate Grand Total
+        product_cols = [c for c in pivot.columns if c != "BDC"]
+        pivot["Grand Total"] = pivot[product_cols].sum(axis=1)
+    else:
+        pivot = pd.DataFrame()
+    
+    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="All Orders", index=False)
+        if not pivot.empty:
+            pivot.to_excel(writer, sheet_name="Summary by BDC", index=False)
+    
+    return out_path
+
 # ==================== MAIN APP ====================
 def main():
     st.markdown("""
@@ -508,7 +743,7 @@ def main():
     
     with st.sidebar:
         st.markdown("<h2 style='text-align: center;'>🎯 MISSION CONTROL</h2>", unsafe_allow_html=True)
-        choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS"], index=0)
+        choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS", "📅 DAILY ORDERS"], index=0)
         st.markdown("---")
         st.markdown("""
         <div style='text-align: center; padding: 20px; background: rgba(255, 0, 255, 0.1); border-radius: 10px; border: 2px solid #ff00ff;'>
@@ -519,8 +754,10 @@ def main():
     
     if choice == "🏦 BDC BALANCE":
         show_bdc_balance()
-    else:
+    elif choice == "🚚 OMC LOADINGS":
         show_omc_loadings()
+    else:
+        show_daily_orders()
 
 def show_bdc_balance():
     st.markdown("<h2>🏦 BDC STOCK BALANCE ANALYZER</h2>", unsafe_allow_html=True)
@@ -752,8 +989,8 @@ def show_omc_loadings():
             st.session_state.omc_end_date = end_date
             
             # Format dates for URL (DD/MM/YYYY)
-            start_str = start_date.strftime("%Y/%m/%d")
-            end_str = end_date.strftime("%Y/%m/%d")
+            start_str = start_date.strftime("%d/%m/%Y")
+            end_str = end_date.strftime("%d/%m/%Y")
             
             # Show what dates we're requesting
             st.info(f"🔍 Requesting orders from **{start_str}** to **{end_str}**")
@@ -1000,8 +1237,252 @@ def show_omc_loadings():
         if path and os.path.exists(path):
             with open(path, 'rb') as f:
                 st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    else:
+        st.info("👆 Select dates and click the button above to fetch OMC loadings data")
+
+def show_daily_orders():
+    st.markdown("<h2>📅 DAILY ORDERS ANALYZER</h2>", unsafe_allow_html=True)
+    st.info("📊 Select a specific date to fetch daily orders")
+    st.markdown("---")
+    
+    # Initialize session state
+    if 'daily_df' not in st.session_state:
+        st.session_state.daily_df = pd.DataFrame()
+    if 'daily_date' not in st.session_state:
+        st.session_state.daily_date = datetime.now()
+    
+    # Date input
+    st.markdown("<h3>📅 SELECT DATE</h3>", unsafe_allow_html=True)
+    selected_date = st.date_input("Order Date", value=st.session_state.daily_date, key='daily_date_input')
+    
+    if st.button("🔄 FETCH DAILY ORDERS", use_container_width=True):
+        with st.spinner("🔄 FETCHING DAILY ORDERS FROM NPA PORTAL..."):
+            st.session_state.daily_date = selected_date
+            
+            # Format date for URL
+            date_str = selected_date.strftime("%d/%m/%Y")
+            st.info(f"🔍 Requesting daily orders for **{date_str}**")
+            
+            url = "https://iml.npa-enterprise.com/NewNPA/home/CreateDailyOrderReport"
+            params = {
+                'lngCompanyId': '1',
+                'szITSfromPersol': 'persol',
+                'strGroupBy': 'BDC',
+                'strGroupBy1': 'ALL',
+                'strQuery1': '',
+                'strQuery2': date_str,
+                'strQuery3': '',
+                'strQuery4': '',
+                'strPicHeight': '',
+                'strPicWeight': '',
+                'intPeriodID': '1',
+                'iUserId': '123292',
+                'iAppId': '3'
+            }
+            
+            try:
+                import requests
+                import io
+                
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Connection': 'keep-alive',
+                }
+                
+                response = requests.get(url, params=params, headers=headers, timeout=30)
+                response.raise_for_status()
+                
+                if response.content[:4] == b'%PDF':
+                    st.success("✅ PDF received from server")
+                    pdf_file = io.BytesIO(response.content)
+                    st.session_state.daily_df = extract_daily_orders_from_pdf(pdf_file)
+                    
+                    if st.session_state.daily_df.empty:
+                        st.warning("⚠️ No daily orders found for this date.")
+                        st.info("💡 Try selecting a different date with known order activity.")
+                else:
+                    st.error("❌ Response is not a PDF. Received content type: " + response.headers.get('Content-Type', 'unknown'))
+                    st.session_state.daily_df = pd.DataFrame()
+                
+            except requests.exceptions.RequestException as e:
+                st.error(f"❌ Network Error: {e}")
+                st.info("The NPA website might be down or blocking requests. Please try again later.")
+                st.session_state.daily_df = pd.DataFrame()
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+                st.session_state.daily_df = pd.DataFrame()
+    
+    # Display data
+    df = st.session_state.daily_df
+    
+    if not df.empty:
+        st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
+        st.markdown("---")
+        
+        st.info(f"📊 Showing {len(df)} orders for {st.session_state.daily_date.strftime('%Y/%m/%d')}")
+        st.markdown("---")
+        
+        # ANALYTICS DASHBOARD
+        st.markdown("<h3>📊 DAILY ANALYTICS</h3>", unsafe_allow_html=True)
+        
+        # Overall Summary
+        cols = st.columns(4)
+        with cols[0]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>ORDERS</h2>
+                <h1>{len(df):,}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[1]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>VOLUME</h2>
+                <h1>{df['Quantity'].sum():,.0f}</h1>
+                <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[2]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>BDCs</h2>
+                <h1>{df['BDC'].nunique()}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[3]:
+            total_value = (df['Quantity'] * df['Price']).sum()
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>VALUE</h2>
+                <h1>₵{total_value:,.0f}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # Product Summary
+        st.markdown("<h3>📦 PRODUCT SUMMARY</h3>", unsafe_allow_html=True)
+        product_summary = df.groupby('Product').agg({
+            'Quantity': 'sum',
+            'Order Number': 'count',
+            'BDC': 'nunique'
+        }).reset_index()
+        product_summary.columns = ['Product', 'Total Volume (LT/KG)', 'Orders', 'BDCs']
+        product_summary = product_summary.sort_values('Total Volume (LT/KG)', ascending=False)
+        
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.dataframe(product_summary, use_container_width=True, hide_index=True)
+        with col2:
+            for _, row in product_summary.iterrows():
+                pct = (row['Total Volume (LT/KG)'] / product_summary['Total Volume (LT/KG)'].sum()) * 100
+                st.metric(row['Product'], f"{pct:.1f}%")
+        
+        st.markdown("---")
+        
+        # BDC Summary
+        st.markdown("<h3>🏦 BDC SUMMARY</h3>", unsafe_allow_html=True)
+        bdc_summary = df.groupby('BDC').agg({
+            'Quantity': 'sum',
+            'Order Number': 'count',
+            'Product': lambda x: x.nunique(),
+            'Depot': lambda x: x.nunique()
+        }).reset_index()
+        bdc_summary.columns = ['BDC', 'Total Volume (LT/KG)', 'Orders', 'Products', 'Depots']
+        bdc_summary = bdc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
+        
+        st.dataframe(bdc_summary, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        
+        # Product Distribution by BDC
+        st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
+        pivot_data = df.pivot_table(
+            index='BDC',
+            columns='Product',
+            values='Quantity',
+            aggfunc='sum',
+            fill_value=0
+        ).reset_index()
+        
+        product_cols = [c for c in pivot_data.columns if c != 'BDC']
+        pivot_data['TOTAL'] = pivot_data[product_cols].sum(axis=1)
+        pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
+        
+        st.dataframe(pivot_data, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        
+        # Status Breakdown
+        st.markdown("<h3>📋 ORDER STATUS BREAKDOWN</h3>", unsafe_allow_html=True)
+        status_summary = df.groupby('Status').agg({
+            'Order Number': 'count',
+            'Quantity': 'sum'
+        }).reset_index()
+        status_summary.columns = ['Status', 'Orders', 'Total Volume (LT/KG)']
+        st.dataframe(status_summary, use_container_width=True, hide_index=True)
+        
+        st.markdown("---")
+        
+        # SEARCH AND FILTER
+        st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            search_type = st.selectbox("Search By:", ["Product", "BDC", "Depot", "Status"], key='daily_search_type')
+        
+        with col2:
+            if search_type == "Product":
+                search_value = st.selectbox("Select Product:", ['ALL'] + sorted(df['Product'].unique().tolist()), key='daily_product_search')
+            elif search_type == "BDC":
+                search_value = st.selectbox("Select BDC:", ['ALL'] + sorted(df['BDC'].unique().tolist()), key='daily_bdc_search')
+            elif search_type == "Depot":
+                search_value = st.selectbox("Select Depot:", ['ALL'] + sorted(df['Depot'].unique().tolist()), key='daily_depot_search')
+            else:
+                search_value = st.selectbox("Select Status:", ['ALL'] + sorted(df['Status'].unique().tolist()), key='daily_status_search')
+        
+        # Apply filter
+        if search_value == 'ALL':
+            filtered = df
         else:
-            st.info("👆 Select dates and click the button above to fetch OMC loadings data")
+            if search_type == "Product":
+                filtered = df[df['Product'] == search_value]
+            elif search_type == "BDC":
+                filtered = df[df['BDC'] == search_value]
+            elif search_type == "Depot":
+                filtered = df[df['Depot'] == search_value]
+            else:
+                filtered = df[df['Status'] == search_value]
+        
+        st.markdown(f"<h3>📋 FILTERED DATA: {search_value}</h3>", unsafe_allow_html=True)
+        
+        if not filtered.empty:
+            cols = st.columns(4)
+            with cols[0]:
+                st.metric("Filtered Orders", f"{len(filtered):,}")
+            with cols[1]:
+                st.metric("Filtered Volume", f"{filtered['Quantity'].sum():,.0f} LT")
+            with cols[2]:
+                st.metric("Unique BDCs", f"{filtered['BDC'].nunique()}")
+            with cols[3]:
+                st.metric("Filtered Value", f"₵{(filtered['Quantity'] * filtered['Price']).sum():,.0f}")
+        
+        display = filtered[['Date', 'OMC', 'Truck', 'Quantity', 'Order Number', 'BDC', 'Depot', 'Price', 'Product', 'Status']].sort_values(['Product', 'BDC', 'Date'])
+        st.dataframe(display, use_container_width=True, height=400, hide_index=True)
+        
+        st.markdown("---")
+        st.markdown("<h3>💾 EXPORT DATA</h3>", unsafe_allow_html=True)
+        path = save_daily_orders_excel(df)
+        if path and os.path.exists(path):
+            with open(path, 'rb') as f:
+                st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        else:
+            st.info("👆 Select a date and click the button above to fetch daily orders")
 
 if __name__ == "__main__":
     main()
