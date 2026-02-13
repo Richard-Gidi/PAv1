@@ -989,8 +989,8 @@ def show_omc_loadings():
             st.session_state.omc_end_date = end_date
             
             # Format dates for URL (DD/MM/YYYY)
-            start_str = start_date.strftime("%d/%m/%Y")
-            end_str = end_date.strftime("%d/%m/%Y")
+            start_str = start_date.strftime("%Y/%m/%d")
+            end_str = end_date.strftime("%Y/%m/%d")
             
             # Show what dates we're requesting
             st.info(f"🔍 Requesting orders from **{start_str}** to **{end_str}**")
