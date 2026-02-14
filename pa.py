@@ -3,7 +3,7 @@ NPA ENERGY ANALYTICS - STREAMLIT DASHBOARD
 ===========================================
 
 INSTALLATION:
-pip install streamlit pandas pdfplumber PyPDF2 openpyxl
+pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv
 
 USAGE:
 streamlit run npa_dashboard.py
@@ -16,6 +16,22 @@ from datetime import datetime
 import pandas as pd
 import pdfplumber
 import PyPDF2
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# NPA Configuration from environment
+NPA_CONFIG = {
+    'COMPANY_ID': os.getenv('NPA_COMPANY_ID', '1'),
+    'USER_ID': os.getenv('NPA_USER_ID', '123292'),
+    'APP_ID': os.getenv('NPA_APP_ID', '3'),
+    'ITS_FROM_PERSOL': os.getenv('NPA_ITS_FROM_PERSOL', 'Persol Systems Limited'),
+    'BDC_BALANCE_URL': os.getenv('NPA_BDC_BALANCE_URL', 'https://iml.npa-enterprise.com/NPAAPILIVE/Home/CreateProductBalance'),
+    'OMC_LOADINGS_URL': os.getenv('NPA_OMC_LOADINGS_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateOrdersReport'),
+    'DAILY_ORDERS_URL': os.getenv('NPA_DAILY_ORDERS_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateDailyOrderReport'),
+    'OMC_NAME': os.getenv('OMC_NAME', 'OILCORP ENERGIA LIMITED')
+}
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -355,7 +371,7 @@ def _parse_loaded_line(line: str, current_product: str, current_depot: str, curr
         brv_number = tokens[-3]
         company_name = " ".join(tokens[rel_idx + 1:-3]).strip()
         try:
-            date_obj = datetime.strptime(date_token, "%Y/%m/%d")
+            date_obj = datetime.strptime(date_token, "%d-%b-%Y")
             date_str = date_obj.strftime("%Y/%m/%d")
         except:
             date_str = date_token
@@ -772,11 +788,11 @@ def show_bdc_balance():
         with st.spinner("🔄 FETCHING DATA FROM NPA PORTAL..."):
             scraper = StockBalanceScraper()
             
-            # Fetch data from URL
-            url = "https://iml.npa-enterprise.com/NPAAPILIVE/Home/CreateProductBalance"
+            # Fetch data from URL (using environment variables)
+            url = NPA_CONFIG['BDC_BALANCE_URL']
             params = {
-                'lngCompanyId': '1',
-                'strITSfromPersol': 'Persol Systems Limited',
+                'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
+                'strITSfromPersol': NPA_CONFIG['ITS_FROM_PERSOL'],
                 'strGroupBy': 'BDC',
                 'strGroupBy1': 'DEPOT',
                 'strQuery1': '',
@@ -785,8 +801,8 @@ def show_bdc_balance():
                 'strQuery4': '',
                 'strPicHeight': '1',
                 'szPicWeight': '1',
-                'lngUserId': '123292',
-                'intAppId': '3'
+                'lngUserId': NPA_CONFIG['USER_ID'],
+                'intAppId': NPA_CONFIG['APP_ID']
             }
             
             try:
@@ -989,18 +1005,18 @@ def show_omc_loadings():
             st.session_state.omc_end_date = end_date
             
             # Format dates for URL (DD/MM/YYYY)
-            start_str = start_date.strftime("%Y/%m/%d")
-            end_str = end_date.strftime("%Y/%m/%d")
+            start_str = start_date.strftime("%d/%m/%Y")
+            end_str = end_date.strftime("%d/%m/%Y")
             
             # Show what dates we're requesting
             st.info(f"🔍 Requesting orders from **{start_str}** to **{end_str}**")
             
-            url = "https://iml.npa-enterprise.com/NewNPA/home/CreateOrdersReport"
+            url = NPA_CONFIG['OMC_LOADINGS_URL']
             params = {
-                'lngCompanyId': '1',
+                'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
                 'szITSfromPersol': 'persol',
                 'strGroupBy': 'BDC',
-                'strGroupBy1': 'OILCORP ENERGIA LIMITED',
+                'strGroupBy1': NPA_CONFIG['OMC_NAME'],
                 'strQuery1': ' and iorderstatus=4',
                 'strQuery2': start_str,
                 'strQuery3': end_str,
@@ -1008,8 +1024,8 @@ def show_omc_loadings():
                 'strPicHeight': '',
                 'strPicWeight': '',
                 'intPeriodID': '4',
-                'iUserId': '123292',
-                'iAppId': '3'
+                'iUserId': NPA_CONFIG['USER_ID'],
+                'iAppId': NPA_CONFIG['APP_ID']
             }
             
             try:
@@ -1276,9 +1292,9 @@ def show_daily_orders():
             
             st.info(f"🔍 Requesting daily orders from **{start_str}** to **{end_str}**")
             
-            url = "https://iml.npa-enterprise.com/NewNPA/home/CreateDailyOrderReport"
+            url = NPA_CONFIG['DAILY_ORDERS_URL']
             params = {
-                'lngCompanyId': '1',
+                'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
                 'szITSfromPersol': 'persol',
                 'strGroupBy': 'DEPOT',
                 'strGroupBy1': '',
@@ -1289,8 +1305,8 @@ def show_daily_orders():
                 'strPicHeight': '1',
                 'strPicWeight': '1',
                 'intPeriodID': '-1',
-                'iUserId': '123292',
-                'iAppId': '3'
+                'iUserId': NPA_CONFIG['USER_ID'],
+                'iAppId': NPA_CONFIG['APP_ID']
             }
             
             try:
