@@ -1004,9 +1004,9 @@ def show_omc_loadings():
             st.session_state.omc_start_date = start_date
             st.session_state.omc_end_date = end_date
             
-            # Format dates for URL (DD/MM/YYYY - this is the correct format for the API!)
-            start_str = start_date.strftime("%d/%m/%Y")
-            end_str = end_date.strftime("%d/%m/%Y")
+            # Format dates for URL (MM/DD/YYYY - this is the correct format for the API!)
+            start_str = start_date.strftime("%m/%d/%Y")
+            end_str = end_date.strftime("%m/%d/%Y")
             
             # Show what dates we're requesting
             st.info(f"🔍 Requesting orders from **{start_str}** to **{end_str}**")
