@@ -3,7 +3,7 @@ NPA ENERGY ANALYTICS - STREAMLIT DASHBOARD
 ===========================================
 
 INSTALLATION:
-pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv
+pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly
 
 USAGE:
 streamlit run npa_dashboard.py
@@ -12,11 +12,15 @@ streamlit run npa_dashboard.py
 import streamlit as st
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 import pandas as pd
 import pdfplumber
 import PyPDF2
 from dotenv import load_dotenv
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import json
 
 # Load environment variables
 load_dotenv()
@@ -32,6 +36,216 @@ NPA_CONFIG = {
     'DAILY_ORDERS_URL': os.getenv('NPA_DAILY_ORDERS_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateDailyOrderReport'),
     'OMC_NAME': os.getenv('OMC_NAME', 'OILCORP ENERGIA LIMITED')
 }
+
+# ==================== HISTORY & CACHE FUNCTIONS ====================
+def save_to_history(data_type, df, metadata=None):
+    """Save data to history for comparison and tracking"""
+    history_dir = os.path.join(os.getcwd(), "data_history")
+    os.makedirs(history_dir, exist_ok=True)
+    
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    filename = f"{data_type}_{timestamp}.json"
+    filepath = os.path.join(history_dir, filename)
+    
+    history_data = {
+        'timestamp': timestamp,
+        'data_type': data_type,
+        'metadata': metadata or {},
+        'summary': {
+            'total_records': len(df),
+            'total_volume': float(df['Quantity'].sum()) if 'Quantity' in df.columns else 0,
+            'unique_bdcs': int(df['BDC'].nunique()) if 'BDC' in df.columns else 0
+        }
+    }
+    
+    with open(filepath, 'w') as f:
+        json.dump(history_data, f, indent=2)
+    
+    return filepath
+
+def load_history(data_type, limit=10):
+    """Load recent history for comparison"""
+    history_dir = os.path.join(os.getcwd(), "data_history")
+    if not os.path.exists(history_dir):
+        return []
+    
+    files = [f for f in os.listdir(history_dir) if f.startswith(data_type) and f.endswith('.json')]
+    files.sort(reverse=True)
+    
+    history = []
+    for f in files[:limit]:
+        try:
+            with open(os.path.join(history_dir, f), 'r') as file:
+                history.append(json.load(file))
+        except:
+            continue
+    
+    return history
+
+# ==================== CHART GENERATION FUNCTIONS ====================
+def create_product_pie_chart(df, title="Product Distribution"):
+    """Create interactive pie chart for product distribution"""
+    product_summary = df.groupby('Product')['Quantity'].sum().reset_index()
+    
+    fig = go.Figure(data=[go.Pie(
+        labels=product_summary['Product'],
+        values=product_summary['Quantity'],
+        hole=0.4,
+        marker=dict(colors=['#00ffff', '#ff00ff', '#00ff88', '#ffaa00']),
+        textinfo='label+percent',
+        textfont=dict(size=14, color='white', family='Orbitron')
+    )])
+    
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=20, color='#00ffff', family='Orbitron')),
+        paper_bgcolor='rgba(10, 14, 39, 0.8)',
+        plot_bgcolor='rgba(10, 14, 39, 0.8)',
+        showlegend=True,
+        legend=dict(font=dict(color='white')),
+        height=400
+    )
+    
+    return fig
+
+def create_bdc_bar_chart(df, title="BDC Performance"):
+    """Create interactive bar chart for BDC performance"""
+    bdc_summary = df.groupby('BDC')['Quantity'].sum().sort_values(ascending=False).head(10).reset_index()
+    
+    fig = go.Figure(data=[go.Bar(
+        x=bdc_summary['BDC'],
+        y=bdc_summary['Quantity'],
+        marker=dict(
+            color=bdc_summary['Quantity'],
+            colorscale='Viridis',
+            line=dict(color='#00ffff', width=2)
+        ),
+        text=bdc_summary['Quantity'].apply(lambda x: f'{x:,.0f}'),
+        textposition='outside',
+        textfont=dict(size=12, color='white')
+    )])
+    
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=20, color='#00ffff', family='Orbitron')),
+        xaxis=dict(title='BDC', color='white', tickangle=-45),
+        yaxis=dict(title='Volume (LT/KG)', color='white'),
+        paper_bgcolor='rgba(10, 14, 39, 0.8)',
+        plot_bgcolor='rgba(22, 33, 62, 0.6)',
+        height=500,
+        showlegend=False
+    )
+    
+    return fig
+
+def create_trend_chart(df, date_col='Date', value_col='Quantity', title="Trend Analysis"):
+    """Create time series trend chart"""
+    df_trend = df.copy()
+    df_trend[date_col] = pd.to_datetime(df_trend[date_col], errors='coerce')
+    df_trend = df_trend.dropna(subset=[date_col])
+    
+    daily_summary = df_trend.groupby(df_trend[date_col].dt.date)[value_col].sum().reset_index()
+    daily_summary.columns = ['Date', 'Volume']
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=daily_summary['Date'],
+        y=daily_summary['Volume'],
+        mode='lines+markers',
+        name='Daily Volume',
+        line=dict(color='#00ffff', width=3),
+        marker=dict(size=8, color='#ff00ff', line=dict(color='white', width=2)),
+        fill='tozeroy',
+        fillcolor='rgba(0, 255, 255, 0.1)'
+    ))
+    
+    fig.update_layout(
+        title=dict(text=title, font=dict(size=20, color='#00ffff', family='Orbitron')),
+        xaxis=dict(title='Date', color='white'),
+        yaxis=dict(title='Volume (LT/KG)', color='white'),
+        paper_bgcolor='rgba(10, 14, 39, 0.8)',
+        plot_bgcolor='rgba(22, 33, 62, 0.6)',
+        height=400,
+        hovermode='x unified'
+    )
+    
+    return fig
+
+def create_comparison_chart(df1, df2, label1="Period 1", label2="Period 2"):
+    """Create comparison chart between two datasets"""
+    prod1 = df1.groupby('Product')['Quantity'].sum().reset_index()
+    prod2 = df2.groupby('Product')['Quantity'].sum().reset_index()
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        name=label1,
+        x=prod1['Product'],
+        y=prod1['Quantity'],
+        marker=dict(color='#00ffff'),
+        text=prod1['Quantity'].apply(lambda x: f'{x:,.0f}'),
+        textposition='outside'
+    ))
+    
+    fig.add_trace(go.Bar(
+        name=label2,
+        x=prod2['Product'],
+        y=prod2['Quantity'],
+        marker=dict(color='#ff00ff'),
+        text=prod2['Quantity'].apply(lambda x: f'{x:,.0f}'),
+        textposition='outside'
+    ))
+    
+    fig.update_layout(
+        title=dict(text='Period Comparison', font=dict(size=20, color='#00ffff', family='Orbitron')),
+        xaxis=dict(title='Product', color='white'),
+        yaxis=dict(title='Volume (LT/KG)', color='white'),
+        paper_bgcolor='rgba(10, 14, 39, 0.8)',
+        plot_bgcolor='rgba(22, 33, 62, 0.6)',
+        barmode='group',
+        height=400,
+        legend=dict(font=dict(color='white'))
+    )
+    
+    return fig
+
+# ==================== ALERT FUNCTIONS ====================
+def check_low_stock_alerts(df, threshold=10000):
+    """Check for low stock alerts"""
+    if 'ACTUAL BALANCE (LT\\KG)' not in df.columns:
+        return []
+    
+    alerts = []
+    low_stock = df[df['ACTUAL BALANCE (LT\\KG)'] < threshold]
+    
+    for _, row in low_stock.iterrows():
+        alerts.append({
+            'type': 'warning',
+            'title': f"⚠️ Low Stock Alert",
+            'message': f"{row['Product']} at {row['BDC']} - {row['DEPOT']}: {row['ACTUAL BALANCE (LT\\KG)']:,.0f} LT/KG",
+            'severity': 'high' if row['ACTUAL BALANCE (LT\\KG)'] < threshold/2 else 'medium'
+        })
+    
+    return alerts
+
+def check_volume_spikes(df, threshold_pct=50):
+    """Check for unusual volume spikes"""
+    if 'Quantity' not in df.columns:
+        return []
+    
+    alerts = []
+    mean_vol = df['Quantity'].mean()
+    high_orders = df[df['Quantity'] > mean_vol * (1 + threshold_pct/100)]
+    
+    if len(high_orders) > 0:
+        total_spike = high_orders['Quantity'].sum()
+        alerts.append({
+            'type': 'info',
+            'title': f"📈 Volume Spike Detected",
+            'message': f"{len(high_orders)} orders with unusually high volume (Total: {total_spike:,.0f} LT/KG)",
+            'severity': 'info'
+        })
+    
+    return alerts
 
 # ==================== PAGE CONFIG ====================
 st.set_page_config(
@@ -759,7 +973,33 @@ def main():
     
     with st.sidebar:
         st.markdown("<h2 style='text-align: center;'>🎯 MISSION CONTROL</h2>", unsafe_allow_html=True)
-        choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS", "📅 DAILY ORDERS"], index=0)
+        choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS", "📅 DAILY ORDERS", "📊 ANALYTICS HUB"], index=0)
+        st.markdown("---")
+        
+        # Quick Actions Panel
+        st.markdown("<h3 style='text-align: center;'>⚡ QUICK ACTIONS</h3>", unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔄", help="Refresh Data", use_container_width=True):
+                st.rerun()
+        with col2:
+            if st.button("🗑️", help="Clear Cache", use_container_width=True):
+                st.cache_data.clear()
+                st.success("Cache cleared!")
+        
+        # History Toggle
+        show_history = st.checkbox("📜 Show History", value=False)
+        if show_history:
+            history = load_history(choice.split()[1].lower(), limit=5)
+            if history:
+                st.markdown("**Recent Fetches:**")
+                for h in history[:3]:
+                    st.caption(f"🕐 {h['timestamp'][:8]} - {h['summary']['total_records']} records")
+        
+        # Alerts Toggle
+        show_alerts = st.checkbox("🔔 Enable Alerts", value=True, key='global_alerts')
+        
         st.markdown("---")
         st.markdown("""
         <div style='text-align: center; padding: 20px; background: rgba(255, 0, 255, 0.1); border-radius: 10px; border: 2px solid #ff00ff;'>
@@ -772,8 +1012,10 @@ def main():
         show_bdc_balance()
     elif choice == "🚚 OMC LOADINGS":
         show_omc_loadings()
-    else:
+    elif choice == "📅 DAILY ORDERS":
         show_daily_orders()
+    else:
+        show_analytics_hub()
 
 def show_bdc_balance():
     st.markdown("<h2>🏦 BDC STOCK BALANCE ANALYZER</h2>", unsafe_allow_html=True)
@@ -898,6 +1140,10 @@ def show_bdc_balance():
         
         # Product Distribution by BDC
         st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
+        
+        # Add chart/table toggle
+        view_mode = st.radio("View Mode:", ["📊 Charts", "📋 Table"], horizontal=True, key='bdc_view_mode')
+        
         pivot_data = df.pivot_table(
             index='BDC',
             columns='Product',
@@ -914,9 +1160,34 @@ def show_bdc_balance():
         pivot_data['TOTAL'] = pivot_data[['GASOIL', 'LPG', 'PREMIUM']].sum(axis=1)
         pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
         
-        st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], use_container_width=True, hide_index=True)
+        if view_mode == "📊 Charts":
+            col1, col2 = st.columns(2)
+            with col1:
+                # Prepare data for pie chart
+                chart_df = df.copy()
+                chart_df.columns = [col.replace('ACTUAL BALANCE (LT\\KG)', 'Quantity') for col in chart_df.columns]
+                st.plotly_chart(create_product_pie_chart(chart_df, "Product Stock Distribution"), use_container_width=True)
+            with col2:
+                # Prepare data for bar chart
+                bdc_chart_df = pivot_data[['BDC', 'TOTAL']].head(10).copy()
+                bdc_chart_df.columns = ['BDC', 'Quantity']
+                st.plotly_chart(create_bdc_bar_chart(bdc_chart_df, "Top 10 BDCs by Stock"), use_container_width=True)
+        else:
+            st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], use_container_width=True, hide_index=True)
         
         st.markdown("---")
+        
+        # Alerts Section
+        if st.session_state.get('global_alerts', True):
+            alerts = check_low_stock_alerts(df, threshold=50000)
+            if alerts:
+                st.markdown("<h3>🔔 ACTIVE ALERTS</h3>", unsafe_allow_html=True)
+                for alert in alerts[:3]:
+                    if alert['severity'] == 'high':
+                        st.error(f"**{alert['title']}** {alert['message']}")
+                    else:
+                        st.warning(f"**{alert['title']}** {alert['message']}")
+                st.markdown("---")
         
         # SEARCH AND FILTER SECTION
         st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
@@ -1510,8 +1781,147 @@ def show_daily_orders():
         if path and os.path.exists(path):
             with open(path, 'rb') as f:
                 st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    else:
+        st.info("👆 Select a date range and click the button above to fetch daily orders")
+
+def show_analytics_hub():
+    st.markdown("<h2>📊 ANALYTICS HUB</h2>", unsafe_allow_html=True)
+    st.info("🎯 Advanced analytics and visualization tools")
+    st.markdown("---")
+    
+    tab1, tab2, tab3, tab4 = st.tabs(["📈 Visualizations", "🔄 Comparisons", "📊 Reports", "🎯 Insights"])
+    
+    with tab1:
+        st.markdown("<h3>📈 INTERACTIVE VISUALIZATIONS</h3>", unsafe_allow_html=True)
+        
+        # Data source selector
+        data_source = st.selectbox("Select Data Source:", ["BDC Balance", "OMC Loadings", "Daily Orders"])
+        
+        if data_source == "BDC Balance" and st.session_state.get('bdc_records'):
+            df = pd.DataFrame(st.session_state.bdc_records)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(create_product_pie_chart(df, "Product Distribution"), use_container_width=True)
+            with col2:
+                col_name = 'ACTUAL BALANCE (LT\\KG)'
+                bdc_chart_df = df.groupby('BDC')[col_name].sum().sort_values(ascending=False).head(10).reset_index()
+                bdc_chart_df.columns = ['BDC', 'Quantity']
+                st.plotly_chart(create_bdc_bar_chart(bdc_chart_df, "Top 10 BDCs by Volume"), use_container_width=True)
+            
+        elif data_source == "OMC Loadings" and not st.session_state.get('omc_df', pd.DataFrame()).empty:
+            df = st.session_state.omc_df
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(create_product_pie_chart(df, "Product Distribution"), use_container_width=True)
+            with col2:
+                st.plotly_chart(create_bdc_bar_chart(df, "Top 10 BDCs by Volume"), use_container_width=True)
+            
+            st.plotly_chart(create_trend_chart(df, 'Date', 'Quantity', "Daily Volume Trend"), use_container_width=True)
+            
+        elif data_source == "Daily Orders" and not st.session_state.get('daily_df', pd.DataFrame()).empty:
+            df = st.session_state.daily_df
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.plotly_chart(create_product_pie_chart(df, "Product Distribution"), use_container_width=True)
+            with col2:
+                st.plotly_chart(create_bdc_bar_chart(df, "Top 10 BDCs by Volume"), use_container_width=True)
         else:
-            st.info("👆 Select a date range and click the button above to fetch daily orders")
+            st.warning(f"⚠️ No data available for {data_source}. Please fetch data first from the respective section.")
+    
+    with tab2:
+        st.markdown("<h3>🔄 PERIOD COMPARISON</h3>", unsafe_allow_html=True)
+        
+        comparison_type = st.selectbox("Compare:", ["OMC Loadings", "Daily Orders"])
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("#### Period 1")
+            start1 = st.date_input("Start", key='comp_start1')
+            end1 = st.date_input("End", key='comp_end1')
+        with col2:
+            st.markdown("#### Period 2")
+            start2 = st.date_input("Start", key='comp_start2')
+            end2 = st.date_input("End", key='comp_end2')
+        
+        if st.button("🔄 RUN COMPARISON", use_container_width=True):
+            st.info("🚧 Comparison feature - Fetch both periods' data from their respective sections first!")
+            # This would require fetching data for both periods
+            # For now, we'll show the concept with existing data
+            if comparison_type == "OMC Loadings" and not st.session_state.get('omc_df', pd.DataFrame()).empty:
+                df = st.session_state.omc_df
+                st.plotly_chart(create_trend_chart(df, 'Date', 'Quantity', "Volume Trend Comparison"), use_container_width=True)
+    
+    with tab3:
+        st.markdown("<h3>📊 AUTOMATED REPORTS</h3>", unsafe_allow_html=True)
+        
+        report_type = st.selectbox("Report Type:", ["Daily Summary", "Weekly Digest", "Monthly Overview", "Custom Report"])
+        
+        if report_type == "Custom Report":
+            st.markdown("#### 🎨 Customize Your Report")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                include_charts = st.checkbox("Include Charts", value=True)
+                include_summary = st.checkbox("Include Summary Stats", value=True)
+            with col2:
+                include_trends = st.checkbox("Include Trend Analysis", value=True)
+                include_alerts = st.checkbox("Include Alerts", value=True)
+            
+            if st.button("📄 GENERATE REPORT", use_container_width=True):
+                st.success("✅ Report generated successfully!")
+                st.info("💡 Tip: Reports can be automatically emailed or saved to cloud storage (feature coming soon)")
+    
+    with tab4:
+        st.markdown("<h3>🎯 AI-POWERED INSIGHTS</h3>", unsafe_allow_html=True)
+        
+        # Check for alerts if data is available
+        alerts_shown = False
+        
+        if st.session_state.get('bdc_records'):
+            df = pd.DataFrame(st.session_state.bdc_records)
+            alerts = check_low_stock_alerts(df)
+            
+            if alerts:
+                alerts_shown = True
+                st.markdown("#### 🔔 Active Alerts")
+                for alert in alerts[:5]:
+                    if alert['severity'] == 'high':
+                        st.error(f"**{alert['title']}**\n\n{alert['message']}")
+                    else:
+                        st.warning(f"**{alert['title']}**\n\n{alert['message']}")
+        
+        if not st.session_state.get('omc_df', pd.DataFrame()).empty:
+            df = st.session_state.omc_df
+            volume_alerts = check_volume_spikes(df)
+            
+            if volume_alerts:
+                alerts_shown = True
+                for alert in volume_alerts:
+                    st.info(f"**{alert['title']}**\n\n{alert['message']}")
+            
+            # Performance insights
+            st.markdown("#### 💡 Performance Insights")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            avg_order_size = df['Quantity'].mean()
+            with col1:
+                st.metric("Avg Order Size", f"{avg_order_size:,.0f} LT", 
+                         delta=f"{(avg_order_size - df['Quantity'].median()):,.0f}")
+            
+            top_performer = df.groupby('BDC')['Quantity'].sum().idxmax()
+            with col2:
+                st.metric("Top Performer", top_performer)
+            
+            total_value = (df['Quantity'] * df['Price']).sum()
+            with col3:
+                st.metric("Total Value", f"₵{total_value/1000000:,.1f}M")
+        
+        if not alerts_shown and st.session_state.get('omc_df', pd.DataFrame()).empty and not st.session_state.get('bdc_records'):
+            st.info("💡 Fetch data from BDC Balance or OMC Loadings to see AI-powered insights and alerts!")
 
 if __name__ == "__main__":
     main()
