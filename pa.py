@@ -1010,7 +1010,7 @@ def main():
     
     with st.sidebar:
         st.markdown("<h2 style='text-align: center;'>🎯 MISSION CONTROL</h2>", unsafe_allow_html=True)
-        choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS", "📅 DAILY ORDERS", "📊 ANALYTICS HUB", "🧠 BDC INTELLIGENCE"], index=0)
+        choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS", "📅 DAILY ORDERS", "🧠 BDC INTELLIGENCE"], index=0)
         st.markdown("---")
         
         # Quick Actions Panel
@@ -1051,8 +1051,6 @@ def main():
         show_omc_loadings()
     elif choice == "📅 DAILY ORDERS":
         show_daily_orders()
-    elif choice == "📊 ANALYTICS HUB":
-        show_analytics_hub()
     else:
         show_bdc_intelligence()
 
@@ -1818,142 +1816,6 @@ def show_daily_orders():
                 st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
     else:
         st.info("👆 Select a date range and click the button above to fetch daily orders")
-
-def show_analytics_hub():
-    st.markdown("<h2>📊 ANALYTICS HUB</h2>", unsafe_allow_html=True)
-    st.info("🎯 Advanced analytics and visualization tools")
-    st.markdown("---")
-    
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Visualizations", "🔄 Comparisons", "📊 Reports", "🎯 Insights"])
-    
-    with tab1:
-        st.markdown("<h3>📈 INTERACTIVE VISUALIZATIONS</h3>", unsafe_allow_html=True)
-        
-        # Data source selector
-        data_source = st.selectbox("Select Data Source:", ["BDC Balance", "OMC Loadings", "Daily Orders"])
-        
-        if data_source == "BDC Balance" and st.session_state.get('bdc_records'):
-            df = pd.DataFrame(st.session_state.bdc_records)
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(create_product_pie_chart(df, "Product Distribution"), use_container_width=True)
-            with col2:
-                st.plotly_chart(create_bdc_bar_chart(df, "Top 10 BDCs by Volume"), use_container_width=True)
-            
-        elif data_source == "OMC Loadings" and not st.session_state.get('omc_df', pd.DataFrame()).empty:
-            df = st.session_state.omc_df
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(create_product_pie_chart(df, "Product Distribution"), use_container_width=True)
-            with col2:
-                st.plotly_chart(create_bdc_bar_chart(df, "Top 10 BDCs by Volume"), use_container_width=True)
-            
-            st.plotly_chart(create_trend_chart(df, 'Date', 'Quantity', "Daily Volume Trend"), use_container_width=True)
-            
-        elif data_source == "Daily Orders" and not st.session_state.get('daily_df', pd.DataFrame()).empty:
-            df = st.session_state.daily_df
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                st.plotly_chart(create_product_pie_chart(df, "Product Distribution"), use_container_width=True)
-            with col2:
-                st.plotly_chart(create_bdc_bar_chart(df, "Top 10 BDCs by Volume"), use_container_width=True)
-        else:
-            st.warning(f"⚠️ No data available for {data_source}. Please fetch data first from the respective section.")
-    
-    with tab2:
-        st.markdown("<h3>🔄 PERIOD COMPARISON</h3>", unsafe_allow_html=True)
-        
-        comparison_type = st.selectbox("Compare:", ["OMC Loadings", "Daily Orders"])
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("#### Period 1")
-            start1 = st.date_input("Start", key='comp_start1')
-            end1 = st.date_input("End", key='comp_end1')
-        with col2:
-            st.markdown("#### Period 2")
-            start2 = st.date_input("Start", key='comp_start2')
-            end2 = st.date_input("End", key='comp_end2')
-        
-        if st.button("🔄 RUN COMPARISON", use_container_width=True):
-            st.info("🚧 Comparison feature - Fetch both periods' data from their respective sections first!")
-            # This would require fetching data for both periods
-            # For now, we'll show the concept with existing data
-            if comparison_type == "OMC Loadings" and not st.session_state.get('omc_df', pd.DataFrame()).empty:
-                df = st.session_state.omc_df
-                st.plotly_chart(create_trend_chart(df, 'Date', 'Quantity', "Volume Trend Comparison"), use_container_width=True)
-    
-    with tab3:
-        st.markdown("<h3>📊 AUTOMATED REPORTS</h3>", unsafe_allow_html=True)
-        
-        report_type = st.selectbox("Report Type:", ["Daily Summary", "Weekly Digest", "Monthly Overview", "Custom Report"])
-        
-        if report_type == "Custom Report":
-            st.markdown("#### 🎨 Customize Your Report")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                include_charts = st.checkbox("Include Charts", value=True)
-                include_summary = st.checkbox("Include Summary Stats", value=True)
-            with col2:
-                include_trends = st.checkbox("Include Trend Analysis", value=True)
-                include_alerts = st.checkbox("Include Alerts", value=True)
-            
-            if st.button("📄 GENERATE REPORT", use_container_width=True):
-                st.success("✅ Report generated successfully!")
-                st.info("💡 Tip: Reports can be automatically emailed or saved to cloud storage (feature coming soon)")
-    
-    with tab4:
-        st.markdown("<h3>🎯 AI-POWERED INSIGHTS</h3>", unsafe_allow_html=True)
-        
-        # Check for alerts if data is available
-        alerts_shown = False
-        
-        if st.session_state.get('bdc_records'):
-            df = pd.DataFrame(st.session_state.bdc_records)
-            alerts = check_low_stock_alerts(df)
-            
-            if alerts:
-                alerts_shown = True
-                st.markdown("#### 🔔 Active Alerts")
-                for alert in alerts[:5]:
-                    if alert['severity'] == 'high':
-                        st.error(f"**{alert['title']}**\n\n{alert['message']}")
-                    else:
-                        st.warning(f"**{alert['title']}**\n\n{alert['message']}")
-        
-        if not st.session_state.get('omc_df', pd.DataFrame()).empty:
-            df = st.session_state.omc_df
-            volume_alerts = check_volume_spikes(df)
-            
-            if volume_alerts:
-                alerts_shown = True
-                for alert in volume_alerts:
-                    st.info(f"**{alert['title']}**\n\n{alert['message']}")
-            
-            # Performance insights
-            st.markdown("#### 💡 Performance Insights")
-            
-            col1, col2, col3 = st.columns(3)
-            
-            avg_order_size = df['Quantity'].mean()
-            with col1:
-                st.metric("Avg Order Size", f"{avg_order_size:,.0f} LT", 
-                         delta=f"{(avg_order_size - df['Quantity'].median()):,.0f}")
-            
-            top_performer = df.groupby('BDC')['Quantity'].sum().idxmax()
-            with col2:
-                st.metric("Top Performer", top_performer)
-            
-            total_value = (df['Quantity'] * df['Price']).sum()
-            with col3:
-                st.metric("Total Value", f"₵{total_value/1000000:,.1f}M")
-        
-        if not alerts_shown and st.session_state.get('omc_df', pd.DataFrame()).empty and not st.session_state.get('bdc_records'):
-            st.info("💡 Fetch data from BDC Balance or OMC Loadings to see AI-powered insights and alerts!")
 
 def show_bdc_intelligence():
     st.markdown("<h2>🧠 BDC INTELLIGENCE CENTER</h2>", unsafe_allow_html=True)
