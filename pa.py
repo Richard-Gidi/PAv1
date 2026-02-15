@@ -85,11 +85,26 @@ def load_history(data_type, limit=10):
 # ==================== CHART GENERATION FUNCTIONS ====================
 def create_product_pie_chart(df, title="Product Distribution"):
     """Create interactive pie chart for product distribution"""
-    product_summary = df.groupby('Product')['Quantity'].sum().reset_index()
+    # Determine which column to use for values
+    if 'Quantity' in df.columns:
+        value_col = 'Quantity'
+    elif 'ACTUAL BALANCE (LT\\KG)' in df.columns:
+        value_col = 'ACTUAL BALANCE (LT\\KG)'
+    else:
+        # Fallback - return empty figure
+        fig = go.Figure()
+        fig.update_layout(
+            title=dict(text="No data available", font=dict(size=20, color='#00ffff', family='Orbitron')),
+            paper_bgcolor='rgba(10, 14, 39, 0.8)',
+            height=400
+        )
+        return fig
+    
+    product_summary = df.groupby('Product')[value_col].sum().reset_index()
     
     fig = go.Figure(data=[go.Pie(
         labels=product_summary['Product'],
-        values=product_summary['Quantity'],
+        values=product_summary[value_col],
         hole=0.4,
         marker=dict(colors=['#00ffff', '#ff00ff', '#00ff88', '#ffaa00']),
         textinfo='label+percent',
@@ -109,7 +124,27 @@ def create_product_pie_chart(df, title="Product Distribution"):
 
 def create_bdc_bar_chart(df, title="BDC Performance"):
     """Create interactive bar chart for BDC performance"""
-    bdc_summary = df.groupby('BDC')['Quantity'].sum().sort_values(ascending=False).head(10).reset_index()
+    # Check if df already has 'Quantity' column (preprocessed data)
+    if 'Quantity' in df.columns and 'BDC' in df.columns:
+        bdc_summary = df.copy()
+    else:
+        # Determine which column to use for values
+        if 'Quantity' in df.columns:
+            value_col = 'Quantity'
+        elif 'ACTUAL BALANCE (LT\\KG)' in df.columns:
+            value_col = 'ACTUAL BALANCE (LT\\KG)'
+        else:
+            # Return empty figure
+            fig = go.Figure()
+            fig.update_layout(
+                title=dict(text="No data available", font=dict(size=20, color='#00ffff', family='Orbitron')),
+                paper_bgcolor='rgba(10, 14, 39, 0.8)',
+                height=500
+            )
+            return fig
+        
+        bdc_summary = df.groupby('BDC')[value_col].sum().sort_values(ascending=False).head(10).reset_index()
+        bdc_summary.columns = ['BDC', 'Quantity']
     
     fig = go.Figure(data=[go.Bar(
         x=bdc_summary['BDC'],
@@ -1165,15 +1200,11 @@ def show_bdc_balance():
         if view_mode == "📊 Charts":
             col1, col2 = st.columns(2)
             with col1:
-                # Prepare data for pie chart
-                chart_df = df.copy()
-                chart_df.columns = [col.replace('ACTUAL BALANCE (LT\\KG)', 'Quantity') for col in chart_df.columns]
-                st.plotly_chart(create_product_pie_chart(chart_df, "Product Stock Distribution"), use_container_width=True)
+                # Use df directly - chart function will auto-detect the correct column
+                st.plotly_chart(create_product_pie_chart(df, "Product Stock Distribution"), use_container_width=True)
             with col2:
                 # Prepare data for bar chart
-                bdc_chart_df = pivot_data[['BDC', 'TOTAL']].head(10).copy()
-                bdc_chart_df.columns = ['BDC', 'Quantity']
-                st.plotly_chart(create_bdc_bar_chart(bdc_chart_df, "Top 10 BDCs by Stock"), use_container_width=True)
+                st.plotly_chart(create_bdc_bar_chart(df, "Top 10 BDCs by Stock"), use_container_width=True)
         else:
             st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], use_container_width=True, hide_index=True)
         
@@ -1806,10 +1837,7 @@ def show_analytics_hub():
             with col1:
                 st.plotly_chart(create_product_pie_chart(df, "Product Distribution"), use_container_width=True)
             with col2:
-                col_name = 'ACTUAL BALANCE (LT\\KG)'
-                bdc_chart_df = df.groupby('BDC')[col_name].sum().sort_values(ascending=False).head(10).reset_index()
-                bdc_chart_df.columns = ['BDC', 'Quantity']
-                st.plotly_chart(create_bdc_bar_chart(bdc_chart_df, "Top 10 BDCs by Volume"), use_container_width=True)
+                st.plotly_chart(create_bdc_bar_chart(df, "Top 10 BDCs by Volume"), use_container_width=True)
             
         elif data_source == "OMC Loadings" and not st.session_state.get('omc_df', pd.DataFrame()).empty:
             df = st.session_state.omc_df
