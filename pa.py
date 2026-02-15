@@ -1012,32 +1012,6 @@ def main():
         st.markdown("<h2 style='text-align: center;'>🎯 MISSION CONTROL</h2>", unsafe_allow_html=True)
         choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS", "📅 DAILY ORDERS", "🧠 BDC INTELLIGENCE"], index=0)
         st.markdown("---")
-        
-        # Quick Actions Panel
-        st.markdown("<h3 style='text-align: center;'>⚡ QUICK ACTIONS</h3>", unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("🔄", help="Refresh Data", use_container_width=True):
-                st.rerun()
-        with col2:
-            if st.button("🗑️", help="Clear Cache", use_container_width=True):
-                st.cache_data.clear()
-                st.success("Cache cleared!")
-        
-        # History Toggle
-        show_history = st.checkbox("📜 Show History", value=False)
-        if show_history:
-            history = load_history(choice.split()[1].lower(), limit=5)
-            if history:
-                st.markdown("**Recent Fetches:**")
-                for h in history[:3]:
-                    st.caption(f"🕐 {h['timestamp'][:8]} - {h['summary']['total_records']} records")
-        
-        # Alerts Toggle
-        show_alerts = st.checkbox("🔔 Enable Alerts", value=True, key='global_alerts')
-        
-        st.markdown("---")
         st.markdown("""
         <div style='text-align: center; padding: 20px; background: rgba(255, 0, 255, 0.1); border-radius: 10px; border: 2px solid #ff00ff;'>
             <h3>⚙️ SYSTEM STATUS</h3>
@@ -1178,9 +1152,6 @@ def show_bdc_balance():
         # Product Distribution by BDC
         st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
         
-        # Add chart/table toggle
-        view_mode = st.radio("View Mode:", ["📊 Charts", "📋 Table"], horizontal=True, key='bdc_view_mode')
-        
         pivot_data = df.pivot_table(
             index='BDC',
             columns='Product',
@@ -1197,30 +1168,9 @@ def show_bdc_balance():
         pivot_data['TOTAL'] = pivot_data[['GASOIL', 'LPG', 'PREMIUM']].sum(axis=1)
         pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
         
-        if view_mode == "📊 Charts":
-            col1, col2 = st.columns(2)
-            with col1:
-                # Use df directly - chart function will auto-detect the correct column
-                st.plotly_chart(create_product_pie_chart(df, "Product Stock Distribution"), use_container_width=True)
-            with col2:
-                # Prepare data for bar chart
-                st.plotly_chart(create_bdc_bar_chart(df, "Top 10 BDCs by Stock"), use_container_width=True)
-        else:
-            st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], use_container_width=True, hide_index=True)
+        st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], use_container_width=True, hide_index=True)
         
         st.markdown("---")
-        
-        # Alerts Section
-        if st.session_state.get('global_alerts', True):
-            alerts = check_low_stock_alerts(df, threshold=50000)
-            if alerts:
-                st.markdown("<h3>🔔 ACTIVE ALERTS</h3>", unsafe_allow_html=True)
-                for alert in alerts[:3]:
-                    if alert['severity'] == 'high':
-                        st.error(f"**{alert['title']}** {alert['message']}")
-                    else:
-                        st.warning(f"**{alert['title']}** {alert['message']}")
-                st.markdown("---")
         
         # SEARCH AND FILTER SECTION
         st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
