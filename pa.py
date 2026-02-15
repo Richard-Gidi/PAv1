@@ -211,18 +211,20 @@ def create_comparison_chart(df1, df2, label1="Period 1", label2="Period 2"):
 # ==================== ALERT FUNCTIONS ====================
 def check_low_stock_alerts(df, threshold=10000):
     """Check for low stock alerts"""
-    if 'ACTUAL BALANCE (LT\\KG)' not in df.columns:
+    col_name = 'ACTUAL BALANCE (LT\\KG)'
+    if col_name not in df.columns:
         return []
     
     alerts = []
-    low_stock = df[df['ACTUAL BALANCE (LT\\KG)'] < threshold]
+    low_stock = df[df[col_name] < threshold]
     
     for _, row in low_stock.iterrows():
+        balance_value = row[col_name]
         alerts.append({
             'type': 'warning',
             'title': f"⚠️ Low Stock Alert",
-            'message': f"{row['Product']} at {row['BDC']} - {row['DEPOT']}: {row['ACTUAL BALANCE (LT\\KG)']:,.0f} LT/KG",
-            'severity': 'high' if row['ACTUAL BALANCE (LT\\KG)'] < threshold/2 else 'medium'
+            'message': f"{row['Product']} at {row['BDC']} - {row['DEPOT']}: {balance_value:,.0f} LT/KG",
+            'severity': 'high' if balance_value < threshold/2 else 'medium'
         })
     
     return alerts
