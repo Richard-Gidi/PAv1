@@ -1607,7 +1607,53 @@ def show_daily_orders():
     df = st.session_state.daily_df
     
     if not df.empty:
-        st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
+        # ========== OMC MATCHING LOGIC ==========
+        # Match order numbers with OMC Loadings to populate OMC names
+        if not st.session_state.get('omc_df', pd.DataFrame()).empty:
+            loadings_df = st.session_state.omc_df
+            
+            # Create order number to OMC mapping from OMC Loadings
+            order_to_omc = loadings_df[['Order Number', 'OMC']].drop_duplicates()
+            order_to_omc_dict = dict(zip(order_to_omc['Order Number'], order_to_omc['OMC']))
+            
+            # Match and populate OMC names
+            df['Matched OMC'] = df['Order Number'].map(order_to_omc_dict)
+            
+            # Count matches
+            matched_count = df['Matched OMC'].notna().sum()
+            match_rate = (matched_count / len(df) * 100) if len(df) > 0 else 0
+            
+            # Update the OMC column with matched data
+            if 'OMC' in df.columns:
+                df['OMC'] = df['Matched OMC'].fillna(df['OMC'])
+            else:
+                df['OMC'] = df['Matched OMC']
+            
+            # Remove temporary column
+            df = df.drop(columns=['Matched OMC'])
+            
+            # Update session state with matched data
+            st.session_state.daily_df = df
+            
+            # Show matching status
+            st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
+            
+            if matched_count > 0:
+                st.info(f"🔗 **OMC MATCHING:** Successfully matched {matched_count} orders ({match_rate:.1f}%) with OMC names from loadings data!")
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total Orders", len(df))
+                with col2:
+                    st.metric("Matched with OMC", matched_count)
+                with col3:
+                    st.metric("Match Rate", f"{match_rate:.1f}%")
+            else:
+                st.warning("⚠️ No order numbers matched with OMC Loadings data. OMC names may be incomplete.")
+        else:
+            st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
+            st.warning("💡 **Tip:** Fetch OMC Loadings data to automatically match order numbers with OMC names!")
+        
         st.markdown("---")
         
         st.info(f"📊 Showing {len(df)} orders from {st.session_state.daily_start_date.strftime('%Y/%m/%d')} to {st.session_state.daily_end_date.strftime('%Y/%m/%d')}")
@@ -1617,7 +1663,7 @@ def show_daily_orders():
         st.markdown("<h3>📊 DAILY ANALYTICS</h3>", unsafe_allow_html=True)
         
         # Overall Summary
-        cols = st.columns(4)
+        cols = st.columns(5)
         with cols[0]:
             st.markdown(f"""
             <div class='metric-card'>
@@ -1641,6 +1687,15 @@ def show_daily_orders():
             </div>
             """, unsafe_allow_html=True)
         with cols[3]:
+            # Show OMCs if available
+            omc_count = df['OMC'].nunique() if 'OMC' in df.columns and df['OMC'].notna().any() else 0
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>OMCs</h2>
+                <h1>{omc_count}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[4]:
             total_value = (df['Quantity'] * df['Price']).sum()
             st.markdown(f"""
             <div class='metric-card'>
@@ -1684,6 +1739,24 @@ def show_daily_orders():
         
         st.dataframe(bdc_summary, width="stretch", hide_index=True)
         
+        
+        # OMC Summary (if matched)
+        if 'OMC' in df.columns and df['OMC'].notna().any():
+            st.markdown("<h3>🏢 OMC SUMMARY (MATCHED)</h3>", unsafe_allow_html=True)
+            st.info("📌 OMC names matched from OMC Loadings data using order numbers")
+            
+            omc_summary = df[df['OMC'].notna()].groupby('OMC').agg({
+                'Quantity': 'sum',
+                'Order Number': 'count',
+                'Product': lambda x: x.nunique(),
+                'BDC': lambda x: x.nunique()
+            }).reset_index()
+            omc_summary.columns = ['OMC', 'Total Volume (LT/KG)', 'Orders', 'Products', 'BDCs']
+            omc_summary = omc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
+            
+            st.dataframe(omc_summary, width="stretch", hide_index=True)
+            
+            st.markdown("---")
         st.markdown("---")
         
         # Product Distribution by BDC
