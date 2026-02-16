@@ -942,7 +942,6 @@ def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
                         
                         final_row = {
                             "Date": row_data["Date"],
-                            "OMC": ctx["BDC"],
                             "Truck": row_data["Truck"],
                             "Product": row_data["Product"],
                             "Quantity": row_data["Quantity"],
@@ -962,7 +961,7 @@ def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
     
     if not df.empty:
         df = simplify_bdc_names(df)
-        df["OMC"] = df["BDC"]
+        # Don't set OMC here - let the matching logic in show_daily_orders handle it
         
     return df
 
@@ -1616,21 +1615,12 @@ def show_daily_orders():
             order_to_omc = loadings_df[['Order Number', 'OMC']].drop_duplicates()
             order_to_omc_dict = dict(zip(order_to_omc['Order Number'], order_to_omc['OMC']))
             
-            # Match and populate OMC names
-            df['Matched OMC'] = df['Order Number'].map(order_to_omc_dict)
+            # Create OMC column by mapping order numbers
+            df['OMC'] = df['Order Number'].map(order_to_omc_dict)
             
             # Count matches
-            matched_count = df['Matched OMC'].notna().sum()
+            matched_count = df['OMC'].notna().sum()
             match_rate = (matched_count / len(df) * 100) if len(df) > 0 else 0
-            
-            # Update the OMC column with matched data
-            if 'OMC' in df.columns:
-                df['OMC'] = df['Matched OMC'].fillna(df['OMC'])
-            else:
-                df['OMC'] = df['Matched OMC']
-            
-            # Remove temporary column
-            df = df.drop(columns=['Matched OMC'])
             
             # Update session state with matched data
             st.session_state.daily_df = df
@@ -1649,10 +1639,14 @@ def show_daily_orders():
                 with col3:
                     st.metric("Match Rate", f"{match_rate:.1f}%")
             else:
-                st.warning("⚠️ No order numbers matched with OMC Loadings data. OMC names may be incomplete.")
+                st.warning("⚠️ No order numbers matched with OMC Loadings data. OMC names will be blank.")
         else:
+            # No OMC Loadings data - create empty OMC column
+            df['OMC'] = None
+            st.session_state.daily_df = df
+            
             st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
-            st.warning("💡 **Tip:** Fetch OMC Loadings data to automatically match order numbers with OMC names!")
+            st.warning("💡 **Tip:** Fetch OMC Loadings data first to automatically match order numbers with OMC names!")
         
         st.markdown("---")
         
