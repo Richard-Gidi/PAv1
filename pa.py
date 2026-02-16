@@ -25,6 +25,82 @@ import json
 # Load environment variables
 load_dotenv()
 
+# ==================== LOAD ID MAPPINGS FROM ENV ====================
+def load_bdc_mappings():
+    """Load BDC name to ID mappings from environment variables"""
+    mappings = {}
+    for key, value in os.environ.items():
+        if key.startswith('BDC_'):
+            # Convert BDC_OILCORP_ENERGIA_LIMITED to "OILCORP ENERGIA LIMITED"
+            name = key[4:].replace('_', ' ')
+            # Handle special cases
+            if name == "TEMA OIL REFINERY TOR":
+                name = "TEMA OIL REFINERY (TOR)"
+            elif name == "SOCIETE NATIONAL BURKINABE SONABHY":
+                name = "SOCIETE NATIONAL BURKINABE (SONABHY)"
+            elif name == "LIB GHANA LIMITED":
+                name = "L.I.B. GHANA LIMITED"
+            elif name == "C CLEANED OIL LTD":
+                name = "C. CLEANED OIL LTD"
+            elif name == "PK JEGS ENERGY LTD":
+                name = "P. K JEGS ENERGY LTD"
+            mappings[name] = int(value)
+    return mappings
+
+def load_depot_mappings():
+    """Load Depot name to ID mappings from environment variables"""
+    mappings = {}
+    for key, value in os.environ.items():
+        if key.startswith('DEPOT_'):
+            # Convert DEPOT_SENTUO_OIL_REFINERY_TEMA to name
+            name = key[6:].replace('_', ' ')
+            # Handle special formatting cases
+            if "BOST " in name and name != "BOST GLOBAL DEPOT":
+                # BOST ACCRA PLAINS -> BOST - ACCRA PLAINS
+                parts = name.split(' ', 1)
+                if len(parts) == 2:
+                    name = f"{parts[0]} - {parts[1]}"
+            elif name.endswith(" TEMA") and "SENTUO" in name:
+                # SENTUO OIL REFINERY TEMA -> SENTUO OIL REFINERY- TEMA
+                name = name.replace(" TEMA", "- TEMA")
+            elif name == "GHANA OIL COLTD TAKORADI":
+                name = "GHANA OIL CO.LTD, TAKORADI"
+            elif name == "GOIL LPG BOTTLING PLANT TEMA":
+                name = "GOIL LPG BOTTLING PLANT -TEMA"
+            elif name == "GOIL LPG BOTTLING PLANT KUMASI":
+                name = "GOIL LPG BOTTLING PLANT- KUMASI"
+            elif name == "NEWGAS CYLINDER BOTTLING LIMITED TEMA":
+                name = "NEWGAS CYLINDER BOTTLING LIMITED-TEMA"
+            elif name == "CHASE PETROLEUM TEMA":
+                name = "CHASE PETROLEUM - TEMA"
+            elif name == "BLUE_OCEAN_INVESTMENT_LTD_KOTOKA_AIRPORT_ATK" in key:
+                name = "BLUE OCEAN INVESTMENT LTD-KOTOKA AIRPORT (ATK)"
+            elif name == "TEMA FUEL COMPANY TFC":
+                name = "TEMA FUEL COMPANY (TFC)"
+            elif name == "TEMA MULTI PRODUCTS TMPT":
+                name = "TEMA MULTI PRODUCTS (TMPT)"
+            elif name == "TEMA OIL REFINERY TOR":
+                name = "TEMA OIL REFINERY (TOR)"
+            elif name == "GHANA OIL COMPANY LTD SEKONDI NAVAL BASE":
+                name = "GHANA OIL COMPANY LTD (SEKONDI NAVAL BASE)"
+            elif name == "GHANSTOCK LIMITED TAKORADI":
+                name = "GHANSTOCK LIMITED (TAKORADI)"
+            mappings[name] = int(value)
+    return mappings
+
+def load_product_mappings():
+    """Load Product name to ID mappings from environment variables"""
+    return {
+        "PREMIUM (PMS)": int(os.getenv('PRODUCT_PREMIUM_ID', '12')),
+        "GASOIL (AGO)": int(os.getenv('PRODUCT_GASOIL_ID', '14')),
+        "LPG": int(os.getenv('PRODUCT_LPG_ID', '28'))
+    }
+
+# Load all mappings at startup
+BDC_MAP = load_bdc_mappings()
+DEPOT_MAP = load_depot_mappings()
+PRODUCT_MAP = load_product_mappings()
+
 # NPA Configuration from environment
 NPA_CONFIG = {
     'COMPANY_ID': os.getenv('NPA_COMPANY_ID', '1'),
@@ -34,6 +110,7 @@ NPA_CONFIG = {
     'BDC_BALANCE_URL': os.getenv('NPA_BDC_BALANCE_URL', 'https://iml.npa-enterprise.com/NPAAPILIVE/Home/CreateProductBalance'),
     'OMC_LOADINGS_URL': os.getenv('NPA_OMC_LOADINGS_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateOrdersReport'),
     'DAILY_ORDERS_URL': os.getenv('NPA_DAILY_ORDERS_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateDailyOrderReport'),
+    'STOCK_TRANSACTION_URL': os.getenv('NPA_STOCK_TRANSACTION_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateStockTransactionReport'),
     'OMC_NAME': os.getenv('OMC_NAME', 'OILCORP ENERGIA LIMITED')
 }
 
@@ -1009,7 +1086,7 @@ def main():
     
     with st.sidebar:
         st.markdown("<h2 style='text-align: center;'>🎯 MISSION CONTROL</h2>", unsafe_allow_html=True)
-        choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS", "📅 DAILY ORDERS", "📊 MARKET SHARE", "🎯 COMPETITIVE INTEL", "🧠 BDC INTELLIGENCE"], index=0)
+        choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS", "📅 DAILY ORDERS", "📊 MARKET SHARE", "🎯 COMPETITIVE INTEL", "📈 STOCK TRANSACTION", "🧠 BDC INTELLIGENCE"], index=0)
         st.markdown("---")
         st.markdown("""
         <div style='text-align: center; padding: 20px; background: rgba(255, 0, 255, 0.1); border-radius: 10px; border: 2px solid #ff00ff;'>
@@ -1028,6 +1105,8 @@ def main():
         show_market_share()
     elif choice == "🎯 COMPETITIVE INTEL":
         show_competitive_intel()
+    elif choice == "📈 STOCK TRANSACTION":
+        show_stock_transaction()
     else:
         show_bdc_intelligence()
 
@@ -2264,10 +2343,402 @@ def show_market_share():
                         width="stretch"
                     )
 
-#def show_competitive_intel():
-# COMPETITIVE INTELLIGENCE FUNCTION - INSERT BEFORE show_bdc_intelligence
-
 def show_competitive_intel():
+def show_competitive_intel():
+def show_stock_transaction():
+    st.markdown("<h2>📈 STOCK TRANSACTION ANALYZER</h2>", unsafe_allow_html=True)
+    st.info("🔥 Track BDC transactions: Inflows, Outflows, Sales & Intelligent Stockout Forecasting")
+    st.markdown("---")
+    
+    # Initialize session state
+    if 'stock_txn_df' not in st.session_state:
+        st.session_state.stock_txn_df = pd.DataFrame()
+    
+    # NOTE: BDC_MAP, DEPOT_MAP, and PRODUCT_MAP are loaded from .env at startup
+    # No hardcoded IDs in the code! All mappings are in the .env file.
+
+    
+    # Tab selection
+    tab1, tab2 = st.tabs(["🔍 BDC Transaction Report", "📊 Stockout Analysis"])
+    
+    # TAB 1: BDC TRANSACTION REPORT
+    with tab1:
+        st.markdown("### 🔍 BDC TRANSACTION REPORT")
+        st.info("Get detailed transaction history for any BDC at a specific depot")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            selected_bdc = st.selectbox("Select BDC:", sorted(BDC_MAP.keys()))
+            selected_product = st.selectbox("Select Product:", list(PRODUCT_MAP.keys()))
+        
+        with col2:
+            selected_depot = st.selectbox("Select Depot:", sorted(DEPOT_MAP.keys()))
+            
+        col3, col4 = st.columns(2)
+        with col3:
+            start_date = st.date_input("Start Date:", value=datetime.now() - timedelta(days=30))
+        with col4:
+            end_date = st.date_input("End Date:", value=datetime.now())
+        
+        if st.button("📊 FETCH TRANSACTION REPORT", width="stretch"):
+            with st.spinner("🔄 Fetching stock transaction data..."):
+                bdc_id = BDC_MAP[selected_bdc]
+                depot_id = DEPOT_MAP[selected_depot]
+                product_id = PRODUCT_MAP[selected_product]
+                
+                url = NPA_CONFIG['STOCK_TRANSACTION_URL']
+                params = {
+                    'lngProductId': product_id,
+                    'lngBDCId': bdc_id,
+                    'lngDepotId': depot_id,
+                    'dtpStartDate': start_date.strftime('%Y-%m-%d'),
+                    'dtpEndDate': end_date.strftime('%Y-%m-%d'),
+                    'lngUserId': NPA_CONFIG['USER_ID']
+                }
+                
+                try:
+                    import requests
+                    import io
+                    
+                    headers = {
+                        'User-Agent': 'Mozilla/5.0',
+                        'Accept': 'application/pdf',
+                    }
+                    
+                    response = requests.get(url, params=params, headers=headers, timeout=30)
+                    response.raise_for_status()
+                    
+                    if response.content[:4] == b'%PDF':
+                        pdf_file = io.BytesIO(response.content)
+                        
+                        # Extract transactions from PDF
+                        transactions = []
+                        with pdfplumber.open(pdf_file) as pdf:
+                            for page in pdf.pages:
+                                tables = page.extract_tables()
+                                
+                                if tables:
+                                    for table in tables:
+                                        for row in table:
+                                            if not row or not any(row):
+                                                continue
+                                            if row[0] and 'Date' in str(row[0]):
+                                                continue
+                                            
+                                            if row[0] and re.match(r'\d{2}/\d{2}/\d{4}', str(row[0])):
+                                                try:
+                                                    vol_str = str(row[4]).replace(',', '') if len(row) > 4 and row[4] else '0'
+                                                    bal_str = str(row[5]).replace(',', '') if len(row) > 5 and row[5] else '0'
+                                                    
+                                                    transactions.append({
+                                                        'Date': str(row[0]).strip(),
+                                                        'Trans #': str(row[1]).strip() if len(row) > 1 and row[1] else '',
+                                                        'Description': str(row[2]).strip() if len(row) > 2 and row[2] else '',
+                                                        'Account': str(row[3]).strip() if len(row) > 3 and row[3] else '',
+                                                        'Volume': float(vol_str) if vol_str.replace('.','').replace('-','').isdigit() else 0,
+                                                        'Balance': float(bal_str) if bal_str.replace('.','').replace('-','').isdigit() else 0
+                                                    })
+                                                except Exception as e:
+                                                    pass
+                        
+                        if transactions:
+                            df = pd.DataFrame(transactions)
+                            # Exclude Balance b/fwd
+                            df = df[df['Description'] != 'Balance b/fwd'].reset_index(drop=True)
+                            
+                            # Store with metadata
+                            st.session_state.stock_txn_df = df
+                            st.session_state.stock_txn_bdc = selected_bdc
+                            st.session_state.stock_txn_depot = selected_depot
+                            st.session_state.stock_txn_product = selected_product
+                            
+                            st.success(f"✅ Extracted {len(df)} transactions!")
+                        else:
+                            st.warning("⚠️ No transactions found")
+                            st.session_state.stock_txn_df = pd.DataFrame()
+                    else:
+                        st.error("❌ Invalid PDF response")
+                        st.session_state.stock_txn_df = pd.DataFrame()
+                
+                except Exception as e:
+                    st.error(f"❌ Error: {e}")
+                    import traceback
+                    st.code(traceback.format_exc())
+        
+        # Display transaction data
+        df = st.session_state.stock_txn_df
+        
+        if not df.empty:
+            st.markdown("---")
+            st.markdown(f"### 📊 TRANSACTION ANALYSIS: {st.session_state.get('stock_txn_bdc', '')}")
+            st.caption(f"Depot: {st.session_state.get('stock_txn_depot', '')} | Product: {st.session_state.get('stock_txn_product', '')}")
+            
+            # Summary metrics
+            cols = st.columns(5)
+            
+            # Inflows (Custody Transfer In, Product Outturn)
+            inflows = df[df['Description'].isin(['Custody Transfer In', 'Product Outturn'])]['Volume'].sum()
+            with cols[0]:
+                st.metric("📥 Inflows", f"{inflows:,.0f} LT")
+            
+            # Outflows (Sale, Custody Transfer Out)
+            outflows = df[df['Description'].isin(['Sale', 'Custody Transfer Out'])]['Volume'].sum()
+            with cols[1]:
+                st.metric("📤 Outflows", f"{outflows:,.0f} LT")
+            
+            # Sales (to OMCs)
+            sales = df[df['Description'] == 'Sale']['Volume'].sum()
+            with cols[2]:
+                st.metric("💰 Sales to OMCs", f"{sales:,.0f} LT")
+            
+            # BDC to BDC transfers
+            bdc_transfers = df[df['Description'] == 'Custody Transfer Out']['Volume'].sum()
+            with cols[3]:
+                st.metric("🔄 BDC Transfers", f"{bdc_transfers:,.0f} LT")
+            
+            # Final balance
+            final_balance = df['Balance'].iloc[-1] if len(df) > 0 else 0
+            with cols[4]:
+                st.metric("📊 Final Balance", f"{final_balance:,.0f} LT")
+            
+            st.markdown("---")
+            
+            # Transaction breakdown
+            st.markdown("### 📋 Transaction Breakdown")
+            
+            txn_summary = df.groupby('Description').agg({
+                'Volume': 'sum',
+                'Trans #': 'count'
+            }).reset_index()
+            txn_summary.columns = ['Transaction Type', 'Total Volume (LT)', 'Count']
+            txn_summary = txn_summary.sort_values('Total Volume (LT)', ascending=False)
+            
+            st.dataframe(txn_summary, width="stretch", hide_index=True)
+            
+            st.markdown("---")
+            
+            # Top customers (for Sales)
+            if sales > 0:
+                st.markdown("### 🏢 Top Customers (OMC Sales)")
+                
+                sales_df = df[df['Description'] == 'Sale']
+                if not sales_df.empty:
+                    customer_summary = sales_df.groupby('Account')['Volume'].sum().sort_values(ascending=False).head(10)
+                    
+                    customer_df = pd.DataFrame({
+                        'Customer': customer_summary.index,
+                        'Volume Sold (LT)': customer_summary.values
+                    })
+                    
+                    st.dataframe(customer_df, width="stretch", hide_index=True)
+                    
+                    st.markdown("---")
+            
+            # Full transaction table
+            st.markdown("### 📄 Full Transaction History")
+            st.dataframe(df, width="stretch", hide_index=True, height=400)
+            
+            # Export
+            st.markdown("---")
+            if st.button("💾 EXPORT TO EXCEL", width="stretch"):
+                output_dir = os.path.join(os.getcwd(), "stock_transactions")
+                os.makedirs(output_dir, exist_ok=True)
+                
+                filename = f"stock_txn_{st.session_state.get('stock_txn_bdc', 'export')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                filepath = os.path.join(output_dir, filename)
+                
+                with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                    df.to_excel(writer, sheet_name='Transactions', index=False)
+                    txn_summary.to_excel(writer, sheet_name='Summary', index=False)
+                
+                with open(filepath, 'rb') as f:
+                    st.download_button("⬇️ DOWNLOAD", f, filename, 
+                                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                     width="stretch")
+    
+    # TAB 2: STOCKOUT ANALYSIS
+    with tab2:
+        st.markdown("### 📊 INTELLIGENT STOCKOUT FORECASTING")
+        st.info("Predict when stock will run out based on current balance and sales velocity")
+        
+        # Check for required data
+        has_balance = bool(st.session_state.get('bdc_records'))
+        has_transactions = not st.session_state.stock_txn_df.empty
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            if has_balance:
+                st.success("✅ BDC Balance Data Available")
+            else:
+                st.warning("⚠️ BDC Balance Data Required")
+        with col2:
+            if has_transactions:
+                st.success("✅ Transaction Data Available")
+            else:
+                st.warning("⚠️ Transaction Data Required")
+        
+        if not has_balance:
+            st.info("💡 **Step 1:** Fetch BDC Balance data from the BDC Balance section first")
+        
+        if not has_transactions:
+            st.info("💡 **Step 2:** Fetch transaction data from 'BDC Transaction Report' tab first")
+        
+        if has_balance and has_transactions:
+            st.markdown("---")
+            
+            # Get data
+            balance_df = pd.DataFrame(st.session_state.bdc_records)
+            txn_df = st.session_state.stock_txn_df
+            
+            # Get BDC, depot, product from transaction query
+            bdc_name = st.session_state.get('stock_txn_bdc', '')
+            depot_name = st.session_state.get('stock_txn_depot', '')
+            product_name = st.session_state.get('stock_txn_product', '').split('(')[0].strip()
+            
+            # Filter balance for this BDC and product
+            bdc_balance = balance_df[
+                (balance_df['BDC'].str.contains(bdc_name, case=False, na=False)) &
+                (balance_df['Product'].str.contains(product_name, case=False, na=False))
+            ]
+            
+            if not bdc_balance.empty:
+                current_stock = bdc_balance['ACTUAL BALANCE (LT\\KG)'].sum()
+                
+                # Calculate daily sales rate
+                total_sales = txn_df[txn_df['Description'].isin(['Sale', 'Custody Transfer Out'])]['Volume'].sum()
+                
+                # Calculate date range
+                txn_df_copy = txn_df.copy()
+                txn_df_copy['Date'] = pd.to_datetime(txn_df_copy['Date'], format='%d/%m/%Y', errors='coerce')
+                date_range_days = (txn_df_copy['Date'].max() - txn_df_copy['Date'].min()).days
+                
+                if date_range_days > 0:
+                    daily_sales_rate = total_sales / date_range_days
+                else:
+                    daily_sales_rate = 0
+                
+                # Calculate days until stockout
+                if daily_sales_rate > 0:
+                    days_remaining = current_stock / daily_sales_rate
+                else:
+                    days_remaining = float('inf')
+                
+                # Determine status
+                if days_remaining < 7:
+                    status = "🔴 CRITICAL"
+                    status_color = "red"
+                elif days_remaining < 14:
+                    status = "🟡 WARNING"
+                    status_color = "orange"
+                else:
+                    status = "🟢 HEALTHY"
+                    status_color = "green"
+                
+                # Display results
+                st.markdown(f"### {status} - Stockout Forecast")
+                
+                cols = st.columns(4)
+                with cols[0]:
+                    st.markdown(f"""
+                    <div class='metric-card'>
+                        <h2>CURRENT STOCK</h2>
+                        <h1>{current_stock:,.0f}</h1>
+                        <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with cols[1]:
+                    st.markdown(f"""
+                    <div class='metric-card'>
+                        <h2>DAILY SALES RATE</h2>
+                        <h1>{daily_sales_rate:,.0f}</h1>
+                        <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG per day</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with cols[2]:
+                    days_text = f"{days_remaining:.1f}" if days_remaining != float('inf') else "∞"
+                    st.markdown(f"""
+                    <div class='metric-card' style='border-color: {status_color};'>
+                        <h2>DAYS REMAINING</h2>
+                        <h1>{days_text}</h1>
+                        <p style='color: #888; font-size: 14px; margin: 0;'>days</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with cols[3]:
+                    st.markdown(f"""
+                    <div class='metric-card'>
+                        <h2>ANALYSIS PERIOD</h2>
+                        <h1>{date_range_days}</h1>
+                        <p style='color: #888; font-size: 14px; margin: 0;'>days</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                st.markdown("---")
+                
+                # Detailed breakdown
+                st.markdown("### 📊 Detailed Analysis")
+                
+                analysis_data = {
+                    'Metric': [
+                        'BDC',
+                        'Depot',
+                        'Product',
+                        'Current Stock (LT)',
+                        'Total Sales (Period)',
+                        'Analysis Period (days)',
+                        'Daily Sales Rate',
+                        'Days Until Stockout',
+                        'Projected Stockout Date',
+                        'Status'
+                    ],
+                    'Value': [
+                        bdc_name,
+                        depot_name,
+                        product_name,
+                        f"{current_stock:,.0f}",
+                        f"{total_sales:,.0f}",
+                        f"{date_range_days}",
+                        f"{daily_sales_rate:,.0f} LT/day",
+                        f"{days_remaining:.1f} days" if days_remaining != float('inf') else "No depletion expected",
+                        (datetime.now() + timedelta(days=days_remaining)).strftime('%Y-%m-%d') if days_remaining != float('inf') else "N/A",
+                        status
+                    ]
+                }
+                
+                st.dataframe(pd.DataFrame(analysis_data), width="stretch", hide_index=True)
+                
+                # Recommendations
+                st.markdown("---")
+                st.markdown("### 💡 RECOMMENDATIONS")
+                
+                if days_remaining < 7:
+                    st.error("""
+                    **🚨 IMMEDIATE ACTION REQUIRED:**
+                    - Critical stock level - replenishment urgent
+                    - Expected stockout in less than 7 days
+                    - Consider emergency procurement or transfers
+                    """)
+                elif days_remaining < 14:
+                    st.warning("""
+                    **⚠️ ACTION RECOMMENDED:**
+                    - Stock level below safety threshold
+                    - Expected stockout in 7-14 days
+                    - Plan replenishment within next week
+                    """)
+                else:
+                    st.success("""
+                    **✅ STOCK LEVELS HEALTHY:**
+                    - Current stock sufficient for 14+ days
+                    - Continue normal operations
+                    - Monitor sales trends
+                    """)
+            else:
+                st.warning(f"⚠️ No balance data found for {bdc_name} - {product_name}")
+                st.info("Make sure the BDC name and product match between Balance and Transaction data")
+
     st.markdown("<h2>🎯 COMPETITIVE INTELLIGENCE CENTER</h2>", unsafe_allow_html=True)
     st.info("🔥 Advanced analytics: Anomaly Detection, Price Intelligence, Performance Scoring & Trend Forecasting")
     st.markdown("---")
