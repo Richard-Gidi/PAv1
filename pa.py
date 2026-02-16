@@ -2344,7 +2344,202 @@ def show_market_share():
                     )
 
 def show_competitive_intel():
-def show_competitive_intel():
+    st.markdown("<h2>🎯 COMPETITIVE INTELLIGENCE CENTER</h2>", unsafe_allow_html=True)
+    st.info("🔥 Advanced analytics: Anomaly Detection, Price Intelligence, Performance Scoring & Trend Forecasting")
+    st.markdown("---")
+    
+    # Check data availability
+    has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
+    
+    if not has_loadings:
+        st.warning("⚠️ OMC Loadings data required for competitive intelligence")
+        st.info("Please fetch OMC Loadings data first to unlock these features!")
+        return
+    
+    loadings_df = st.session_state.omc_df
+    
+    # Tabs for different intelligence features
+    tab1, tab2, tab3 = st.tabs([
+        "🚨 Anomaly Detection", 
+        "💰 Price Intelligence", 
+        "⭐ Performance Score & Rankings"
+    ])
+    
+    # TAB 1: ANOMALY DETECTION
+    with tab1:
+        st.markdown("### 🚨 ANOMALY DETECTION ENGINE")
+        st.caption("Automatically detect unusual patterns in orders and pricing")
+        
+        # Volume anomalies
+        mean_vol = loadings_df['Quantity'].mean()
+        std_vol = loadings_df['Quantity'].std()
+        anomaly_threshold = mean_vol + (2 * std_vol)
+        volume_anomalies = loadings_df[loadings_df['Quantity'] > anomaly_threshold]
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Volume Anomalies", len(volume_anomalies))
+        with col2:
+            st.metric("Anomalous Volume", f"{volume_anomalies['Quantity'].sum():,.0f} LT")
+        with col3:
+            st.metric("Threshold", f"{anomaly_threshold:,.0f} LT")
+        
+        if not volume_anomalies.empty:
+            st.warning(f"🚨 {len(volume_anomalies)} abnormally large orders detected!")
+            top_anomalies = volume_anomalies.nlargest(10, 'Quantity')[
+                ['Date', 'BDC', 'OMC', 'Product', 'Quantity', 'Order Number']
+            ]
+            st.dataframe(top_anomalies, width="stretch", hide_index=True)
+        
+        st.markdown("---")
+        
+        # Price anomalies
+        st.markdown("#### 💰 Price Anomalies by Product")
+        price_data = []
+        for product in ['PREMIUM', 'GASOIL', 'LPG']:
+            pdf = loadings_df[loadings_df['Product'] == product]
+            if len(pdf) > 0:
+                pmean = pdf['Price'].mean()
+                pstd = pdf['Price'].std()
+                high_anom = len(pdf[pdf['Price'] > pmean + (2 * pstd)])
+                low_anom = len(pdf[pdf['Price'] < pmean - (2 * pstd)])
+                
+                price_data.append({
+                    'Product': product,
+                    'Avg Price': f"₵{pmean:.2f}",
+                    'High Price Anomalies': high_anom,
+                    'Low Price Anomalies': low_anom,
+                    'Total Anomalies': high_anom + low_anom
+                })
+        
+        st.dataframe(pd.DataFrame(price_data), width="stretch", hide_index=True)
+    
+    # TAB 2: PRICE INTELLIGENCE
+    with tab2:
+        st.markdown("### 💰 PRICE INTELLIGENCE DASHBOARD")
+        
+        # Price by BDC
+        price_stats = loadings_df.groupby(['BDC', 'Product'])['Price'].agg(['mean', 'min', 'max']).reset_index()
+        price_stats.columns = ['BDC', 'Product', 'Avg Price', 'Min Price', 'Max Price']
+        
+        overall_mean = loadings_df['Price'].mean()
+        price_stats['Tier'] = price_stats['Avg Price'].apply(
+            lambda x: '🔴 Premium' if x > overall_mean * 1.1 else '🟢 Competitive'
+        )
+        
+        st.dataframe(price_stats.sort_values('Avg Price', ascending=False), width="stretch", hide_index=True)
+        
+        st.markdown("---")
+        
+        # Best deals
+        st.markdown("#### 💡 Best Pricing Opportunities")
+        opportunities = []
+        for product in ['PREMIUM', 'GASOIL', 'LPG']:
+            pdf = loadings_df[loadings_df['Product'] == product]
+            if len(pdf) > 0:
+                bdc_prices = pdf.groupby('BDC')['Price'].mean()
+                min_bdc = bdc_prices.idxmin()
+                max_bdc = bdc_prices.idxmax()
+                
+                opportunities.append({
+                    'Product': product,
+                    'Lowest': f"{min_bdc} (₵{bdc_prices.min():.2f})",
+                    'Highest': f"{max_bdc} (₵{bdc_prices.max():.2f})",
+                    'Gap': f"₵{(bdc_prices.max() - bdc_prices.min()):.2f}"
+                })
+        
+        st.dataframe(pd.DataFrame(opportunities), width="stretch", hide_index=True)
+    
+    # TAB 3: PERFORMANCE SCORING
+    with tab3:
+        st.markdown("### ⭐ BDC PERFORMANCE LEADERBOARD")
+        
+        # Calculate scores
+        scores = []
+        for bdc in loadings_df['BDC'].unique():
+            bdc_df = loadings_df[loadings_df['BDC'] == bdc]
+            
+            # Volume score
+            vol = bdc_df['Quantity'].sum()
+            max_vol = loadings_df.groupby('BDC')['Quantity'].sum().max()
+            vol_score = (vol / max_vol) * 40
+            
+            # Order count score
+            orders = len(bdc_df)
+            max_orders = loadings_df.groupby('BDC').size().max()
+            order_score = (orders / max_orders) * 30
+            
+            # Product diversity
+            products = bdc_df['Product'].nunique()
+            diversity_score = (products / 3) * 30
+            
+            total = vol_score + order_score + diversity_score
+            grade = 'A+' if total >= 90 else 'A' if total >= 80 else 'B' if total >= 70 else 'C' if total >= 60 else 'D'
+            
+            scores.append({
+                'BDC': bdc,
+                'Volume Score': round(vol_score, 1),
+                'Orders Score': round(order_score, 1),
+                'Diversity Score': round(diversity_score, 1),
+                'Total Score': round(total, 1),
+                'Grade': grade
+            })
+        
+        scores_df = pd.DataFrame(scores).sort_values('Total Score', ascending=False)
+        scores_df.insert(0, 'Rank', range(1, len(scores_df) + 1))
+        scores_df['Medal'] = scores_df['Rank'].apply(lambda x: '🥇' if x==1 else '🥈' if x==2 else '🥉' if x==3 else '')
+        
+        st.dataframe(scores_df, width="stretch", hide_index=True)
+        
+        st.markdown("---")
+        
+        # Podium
+        st.markdown("#### 🏆 TOP 3 CHAMPIONS")
+        cols = st.columns(3)
+        for idx, (_, row) in enumerate(scores_df.head(3).iterrows()):
+            with cols[idx]:
+                border_color = "#FFD700" if idx==0 else "#C0C0C0" if idx==1 else "#CD7F32"
+                st.markdown(f"""
+                <div style='background: rgba(22,33,62,0.6); padding: 20px; border-radius: 15px; 
+                            border: 3px solid {border_color}; text-align: center;'>
+                    <p style='font-size: 48px; margin: 0;'>{row['Medal']}</p>
+                    <h3 style='color: #00ffff; margin: 10px 0;'>{row['BDC']}</h3>
+                    <p style='color: #00ff88; font-size: 32px; margin: 10px 0;'>{row['Total Score']:.1f}</p>
+                    <p style='color: #ffffff; font-size: 24px; margin: 5px 0;'>Grade: {row['Grade']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # Search specific BDC
+        st.markdown("#### 🔍 Check Any BDC")
+        selected = st.selectbox("Select BDC:", scores_df['BDC'].unique())
+        
+        if selected:
+            bdc_score = scores_df[scores_df['BDC'] == selected].iloc[0]
+            
+            st.markdown(f"""
+            <div style='background: rgba(22,33,62,0.6); padding: 30px; border-radius: 15px; 
+                        border: 2px solid #00ffff; text-align: center; margin: 20px 0;'>
+                <h2 style='color: #ff00ff; margin: 0;'>{selected}</h2>
+                <p style='color: #ffffff; font-size: 64px; margin: 20px 0;'>{bdc_score['Total Score']:.1f}/100</p>
+                <p style='color: #00ff88; font-size: 36px; margin: 10px 0;'>Grade: {bdc_score['Grade']}</p>
+                <p style='color: #888; margin: 10px 0;'>Rank #{int(bdc_score['Rank'])} of {len(scores_df)}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            cols = st.columns(3)
+            with cols[0]:
+                st.metric("Volume Score", f"{bdc_score['Volume Score']:.1f}/40")
+            with cols[1]:
+                st.metric("Orders Score", f"{bdc_score['Orders Score']:.1f}/30")
+            with cols[2]:
+                st.metric("Diversity Score", f"{bdc_score['Diversity Score']:.1f}/30")
+
+    st.markdown("<h2>🎯 COMPETITIVE INTELLIGENCE CENTER</h2>", unsafe_allow_html=True)
+    st.info("🔥 Advanced analytics: Anomaly Detection, Price Intelligence, Performance Scoring & Trend Forecasting")
+    st.markdown("---")
+
 def show_stock_transaction():
     st.markdown("<h2>📈 STOCK TRANSACTION ANALYZER</h2>", unsafe_allow_html=True)
     st.info("🔥 Track BDC transactions: Inflows, Outflows, Sales & Intelligent Stockout Forecasting")
