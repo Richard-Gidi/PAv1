@@ -2388,7 +2388,7 @@ def show_stock_transaction():
                 bdc_id = BDC_MAP[selected_bdc]
                 depot_id = DEPOT_MAP[selected_depot]
                 # FIXED: Get ID from simple name (PMS -> 12, etc.)
-                product_id = PRODUCT_MAP[selected_product]
+                product_id = STOCK_PRODUCT_MAP[selected_product]
                
                 url = NPA_CONFIG['STOCK_TRANSACTION_URL']
                 params = {
