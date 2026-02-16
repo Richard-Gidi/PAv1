@@ -1010,7 +1010,7 @@ def main():
     
     with st.sidebar:
         st.markdown("<h2 style='text-align: center;'>🎯 MISSION CONTROL</h2>", unsafe_allow_html=True)
-        choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS", "📅 DAILY ORDERS", "🧠 BDC INTELLIGENCE"], index=0)
+        choice = st.radio("SELECT YOUR DATA MISSION:", ["🏦 BDC BALANCE", "🚚 OMC LOADINGS", "📅 DAILY ORDERS", "📊 MARKET SHARE", "🧠 BDC INTELLIGENCE"], index=0)
         st.markdown("---")
         st.markdown("""
         <div style='text-align: center; padding: 20px; background: rgba(255, 0, 255, 0.1); border-radius: 10px; border: 2px solid #ff00ff;'>
@@ -1025,6 +1025,8 @@ def main():
         show_omc_loadings()
     elif choice == "📅 DAILY ORDERS":
         show_daily_orders()
+    elif choice == "📊 MARKET SHARE":
+        show_market_share()
     else:
         show_bdc_intelligence()
 
@@ -1766,6 +1768,254 @@ def show_daily_orders():
                 st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width="stretch")
     else:
         st.info("👆 Select a date range and click the button above to fetch daily orders")
+
+def show_market_share():
+    st.markdown("<h2>📊 BDC MARKET SHARE ANALYSIS</h2>", unsafe_allow_html=True)
+    st.info("🎯 Analyze BDC market share based on stock balance and loading volumes")
+    st.markdown("---")
+    
+    # Check for available data
+    has_balance = bool(st.session_state.get('bdc_records'))
+    has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
+    
+    # Data source selector
+    st.markdown("### 📊 SELECT DATA SOURCE")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if has_balance:
+            st.success("✅ BDC Balance Data Available")
+        else:
+            st.warning("⚠️ BDC Balance Data Not Loaded")
+    with col2:
+        if has_loadings:
+            st.success("✅ OMC Loadings Data Available")
+        else:
+            st.warning("⚠️ OMC Loadings Data Not Loaded")
+    
+    if not has_balance and not has_loadings:
+        st.error("❌ No data available for market share analysis")
+        st.info("Please fetch data from **BDC Balance** or **OMC Loadings** sections first.")
+        return
+    
+    # Let user choose data source
+    data_sources = []
+    if has_balance:
+        data_sources.append("BDC Balance (Stock)")
+    if has_loadings:
+        data_sources.append("OMC Loadings (Volume)")
+    
+    selected_source = st.selectbox("Analyze market share based on:", data_sources)
+    
+    st.markdown("---")
+    
+    # Prepare data based on selection
+    if selected_source == "BDC Balance (Stock)" and has_balance:
+        df = pd.DataFrame(st.session_state.bdc_records)
+        value_col = 'ACTUAL BALANCE (LT\\KG)'
+        analysis_type = "Stock Balance"
+    else:
+        df = st.session_state.omc_df
+        value_col = 'Quantity'
+        analysis_type = "Loading Volume"
+    
+    # Calculate overall market share by BDC
+    st.markdown(f"### 🎯 OVERALL MARKET SHARE ({analysis_type})")
+    
+    bdc_totals = df.groupby('BDC')[value_col].sum().sort_values(ascending=False)
+    total_market = bdc_totals.sum()
+    
+    # Create market share dataframe
+    market_share_df = pd.DataFrame({
+        'BDC': bdc_totals.index,
+        f'Total {analysis_type} (LT/KG)': bdc_totals.values,
+        'Market Share (%)': (bdc_totals.values / total_market * 100)
+    })
+    
+    # Display overall market share
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        st.dataframe(market_share_df, width="stretch", hide_index=True)
+    
+    with col2:
+        st.markdown("#### 📈 Top 5 BDCs")
+        for idx, row in market_share_df.head(5).iterrows():
+            st.metric(
+                row['BDC'],
+                f"{row['Market Share (%)']:.1f}%",
+                f"{row[f'Total {analysis_type} (LT/KG)']:,.0f} LT"
+            )
+    
+    st.markdown("---")
+    
+    # BDC Search and Detailed Analysis
+    st.markdown("### 🔍 SEARCH SPECIFIC BDC")
+    
+    all_bdcs = sorted(df['BDC'].unique().tolist())
+    selected_bdc = st.selectbox("Select BDC for detailed analysis:", all_bdcs, key='market_share_bdc')
+    
+    if selected_bdc:
+        st.markdown("---")
+        st.markdown(f"## 📊 MARKET SHARE REPORT: {selected_bdc}")
+        st.markdown("---")
+        
+        # Filter data for selected BDC
+        bdc_data = df[df['BDC'] == selected_bdc]
+        
+        # Overall market share for this BDC
+        bdc_total = bdc_data[value_col].sum()
+        bdc_market_share = (bdc_total / total_market) * 100
+        
+        # Display BDC overview
+        cols = st.columns(3)
+        with cols[0]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>TOTAL {analysis_type.upper()}</h2>
+                <h1>{bdc_total:,.0f}</h1>
+                <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[1]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>MARKET SHARE</h2>
+                <h1>{bdc_market_share:.2f}%</h1>
+                <p style='color: #888; font-size: 14px; margin: 0;'>of Total Market</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[2]:
+            rank = list(bdc_totals.index).index(selected_bdc) + 1
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>MARKET RANK</h2>
+                <h1>#{rank}</h1>
+                <p style='color: #888; font-size: 14px; margin: 0;'>out of {len(bdc_totals)}</p>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        st.markdown("---")
+        
+        # Product-wise breakdown
+        st.markdown(f"### 📦 PRODUCT-WISE MARKET SHARE: {selected_bdc}")
+        
+        # Calculate product totals for entire market
+        product_market_totals = df.groupby('Product')[value_col].sum()
+        
+        # Calculate product totals for selected BDC
+        bdc_product_totals = bdc_data.groupby('Product')[value_col].sum()
+        
+        # Create product market share dataframe
+        product_share_data = []
+        for product in ['PREMIUM', 'GASOIL', 'LPG']:
+            if product in bdc_product_totals.index and product in product_market_totals.index:
+                bdc_prod_value = bdc_product_totals[product]
+                market_prod_value = product_market_totals[product]
+                share_pct = (bdc_prod_value / market_prod_value) * 100
+                
+                product_share_data.append({
+                    'Product': product,
+                    f'BDC {analysis_type} (LT/KG)': bdc_prod_value,
+                    f'Total Market {analysis_type} (LT/KG)': market_prod_value,
+                    'Market Share (%)': share_pct
+                })
+        
+        if product_share_data:
+            product_df = pd.DataFrame(product_share_data)
+            
+            # Display as table
+            st.dataframe(product_df, width="stretch", hide_index=True)
+            
+            st.markdown("---")
+            
+            # Visual breakdown by product
+            st.markdown("#### 📊 Product Market Share Breakdown")
+            
+            cols = st.columns(3)
+            for idx, row in product_df.iterrows():
+                with cols[idx % 3]:
+                    st.markdown(f"""
+                    <div style='background: rgba(22,33,62,0.6); padding: 15px; border-radius: 10px; 
+                                border: 2px solid #00ffff; margin: 5px 0;'>
+                        <h3 style='color: #ff00ff; margin: 0;'>{row['Product']}</h3>
+                        <div style='margin-top: 10px;'>
+                            <p style='color: #888; margin: 5px 0; font-size: 14px;'>BDC Volume</p>
+                            <p style='color: #00ffff; margin: 0; font-size: 20px; font-weight: bold;'>
+                                {row[f'BDC {analysis_type} (LT/KG)']:,.0f} LT
+                            </p>
+                        </div>
+                        <div style='margin-top: 10px;'>
+                            <p style='color: #888; margin: 5px 0; font-size: 14px;'>Market Share</p>
+                            <p style='color: #00ff88; margin: 0; font-size: 24px; font-weight: bold;'>
+                                {row['Market Share (%)']:.2f}%
+                            </p>
+                        </div>
+                        <div style='margin-top: 10px;'>
+                            <p style='color: #888; margin: 5px 0; font-size: 14px;'>Total Market</p>
+                            <p style='color: #ffffff; margin: 0; font-size: 16px;'>
+                                {row[f'Total Market {analysis_type} (LT/KG)']:,.0f} LT
+                            </p>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+        else:
+            st.warning("⚠️ No product data available for this BDC")
+        
+        st.markdown("---")
+        
+        # Comparison with market leaders
+        st.markdown("### 📊 COMPARISON WITH TOP 5 BDCs")
+        
+        top5_bdcs = bdc_totals.head(5)
+        comparison_data = []
+        
+        for bdc_name, bdc_value in top5_bdcs.items():
+            share = (bdc_value / total_market) * 100
+            comparison_data.append({
+                'BDC': bdc_name,
+                f'{analysis_type} (LT/KG)': bdc_value,
+                'Market Share (%)': share,
+                'Status': '🎯 YOU' if bdc_name == selected_bdc else ''
+            })
+        
+        comparison_df = pd.DataFrame(comparison_data)
+        st.dataframe(comparison_df, width="stretch", hide_index=True)
+        
+        st.markdown("---")
+        
+        # Export option
+        st.markdown("### 💾 EXPORT MARKET SHARE REPORT")
+        
+        if st.button("📄 GENERATE EXCEL REPORT", width="stretch"):
+            # Create Excel report
+            output_dir = os.path.join(os.getcwd(), "market_share_reports")
+            os.makedirs(output_dir, exist_ok=True)
+            
+            filename = f"market_share_{selected_bdc}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+            filepath = os.path.join(output_dir, filename)
+            
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                # Overall market share
+                market_share_df.to_excel(writer, sheet_name='Overall Market Share', index=False)
+                
+                # Product-wise for selected BDC
+                if product_share_data:
+                    pd.DataFrame(product_share_data).to_excel(writer, sheet_name=f'{selected_bdc} Products', index=False)
+                
+                # Top 5 comparison
+                comparison_df.to_excel(writer, sheet_name='Top 5 Comparison', index=False)
+            
+            st.success(f"✅ Report generated: {filename}")
+            
+            with open(filepath, 'rb') as f:
+                st.download_button(
+                    "⬇️ DOWNLOAD REPORT",
+                    f,
+                    filename,
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    width="stretch"
+                )
 
 def show_bdc_intelligence():
     st.markdown("<h2>🧠 BDC INTELLIGENCE CENTER</h2>", unsafe_allow_html=True)
