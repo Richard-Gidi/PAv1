@@ -89,8 +89,9 @@ def load_depot_mappings():
 
 def load_product_mappings():
     """Load Product name to ID mappings from environment variables"""
-    # USER-FRIENDLY KEYS FOR SELECTION (PMS, GASOIL, LPG)
-    # These match exactly what the user selects in the dropdown
+    # CLEAN USER-FRIENDLY KEYS FOR SELECTION IN STOCK TRANSACTION
+    # User sees: "PMS", "Gasoil", "LPG"
+    # Link uses: IDs from .env
     return {
         "PMS": int(os.getenv('PRODUCT_PREMIUM_ID', '12')),
         "Gasoil": int(os.getenv('PRODUCT_GASOIL_ID', '14')),
@@ -101,6 +102,16 @@ def load_product_mappings():
 BDC_MAP = load_bdc_mappings()
 DEPOT_MAP = load_depot_mappings()
 PRODUCT_MAP = load_product_mappings()
+
+# Product options for user selection (clean names)
+PRODUCT_OPTIONS = ["PMS", "Gasoil", "LPG"]
+
+# Mapping from display name to balance product name (for stockout analysis)
+PRODUCT_BALANCE_MAP = {
+    "PMS": "PREMIUM",
+    "Gasoil": "GASOIL",
+    "LPG": "LPG"
+}
 
 # NPA Configuration from environment
 NPA_CONFIG = {
@@ -113,16 +124,6 @@ NPA_CONFIG = {
     'DAILY_ORDERS_URL': os.getenv('NPA_DAILY_ORDERS_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateDailyOrderReport'),
     'STOCK_TRANSACTION_URL': os.getenv('NPA_STOCK_TRANSACTION_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateStockTransactionReport'),
     'OMC_NAME': os.getenv('OMC_NAME', 'OILCORP ENERGIA LIMITED')
-}
-
-# Product display names for selection (clean & user-friendly)
-PRODUCT_OPTIONS = ["PMS", "Gasoil", "LPG"]
-
-# Mapping from display name to balance product name (for stockout analysis)
-PRODUCT_BALANCE_MAP = {
-    "PMS": "PREMIUM",
-    "Gasoil": "GASOIL",
-    "LPG": "LPG"
 }
 
 # ==================== HISTORY & CACHE FUNCTIONS ====================
@@ -2550,7 +2551,7 @@ def show_stock_transaction():
        
         with col1:
             selected_bdc = st.selectbox("Select BDC:", sorted(BDC_MAP.keys()))
-            # CLEAN USER-FRIENDLY PRODUCT SELECTION (PMS, Gasoil, LPG)
+            # USER SELECTS SIMPLE NAME (PMS, Gasoil, LPG) 
             selected_product = st.selectbox("Select Product:", PRODUCT_OPTIONS)
        
         with col2:
