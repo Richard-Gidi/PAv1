@@ -89,9 +89,11 @@ def load_depot_mappings():
 
 def load_product_mappings():
     """Load Product name to ID mappings from environment variables"""
+    # USER-FRIENDLY KEYS FOR SELECTION (PMS, GASOIL, LPG)
+    # These match exactly what the user selects in the dropdown
     return {
-        "PREMIUM (PMS)": int(os.getenv('PRODUCT_PREMIUM_ID', '12')),
-        "GASOIL (AGO)": int(os.getenv('PRODUCT_GASOIL_ID', '14')),
+        "PMS": int(os.getenv('PRODUCT_PREMIUM_ID', '12')),
+        "Gasoil": int(os.getenv('PRODUCT_GASOIL_ID', '14')),
         "LPG": int(os.getenv('PRODUCT_LPG_ID', '28'))
     }
 
@@ -111,6 +113,16 @@ NPA_CONFIG = {
     'DAILY_ORDERS_URL': os.getenv('NPA_DAILY_ORDERS_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateDailyOrderReport'),
     'STOCK_TRANSACTION_URL': os.getenv('NPA_STOCK_TRANSACTION_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateStockTransactionReport'),
     'OMC_NAME': os.getenv('OMC_NAME', 'OILCORP ENERGIA LIMITED')
+}
+
+# Product display names for selection (clean & user-friendly)
+PRODUCT_OPTIONS = ["PMS", "Gasoil", "LPG"]
+
+# Mapping from display name to balance product name (for stockout analysis)
+PRODUCT_BALANCE_MAP = {
+    "PMS": "PREMIUM",
+    "Gasoil": "GASOIL",
+    "LPG": "LPG"
 }
 
 # ==================== HISTORY & CACHE FUNCTIONS ====================
@@ -2526,9 +2538,6 @@ def show_stock_transaction():
     if 'stock_txn_df' not in st.session_state:
         st.session_state.stock_txn_df = pd.DataFrame()
    
-    # NOTE: BDC_MAP, DEPOT_MAP, and PRODUCT_MAP are loaded from .env at startup
-    # No hardcoded IDs in the code! All mappings are in the .env file.
-   
     # Tab selection
     tab1, tab2 = st.tabs(["🔍 BDC Transaction Report", "📊 Stockout Analysis"])
    
@@ -2541,7 +2550,8 @@ def show_stock_transaction():
        
         with col1:
             selected_bdc = st.selectbox("Select BDC:", sorted(BDC_MAP.keys()))
-            selected_product = st.selectbox("Select Product:", list(PRODUCT_MAP.keys()))
+            # CLEAN USER-FRIENDLY PRODUCT SELECTION (PMS, Gasoil, LPG)
+            selected_product = st.selectbox("Select Product:", PRODUCT_OPTIONS)
        
         with col2:
             selected_depot = st.selectbox("Select Depot:", sorted(DEPOT_MAP.keys()))
@@ -2556,11 +2566,12 @@ def show_stock_transaction():
             with st.spinner("🔄 Fetching stock transaction data..."):
                 bdc_id = BDC_MAP[selected_bdc]
                 depot_id = DEPOT_MAP[selected_depot]
+                # GET ID FROM THE CLEAN DISPLAY NAME (PMS -> 12, Gasoil -> 14, etc.)
                 product_id = PRODUCT_MAP[selected_product]
                
                 url = NPA_CONFIG['STOCK_TRANSACTION_URL']
                 params = {
-                    'lngProductId': product_id,
+                    'lngProductId': product_id,  # <-- ALWAYS THE ID (12/14/28)
                     'lngBDCId': bdc_id,
                     'lngDepotId': depot_id,
                     'dtpStartDate': start_date.strftime('%Y-%m-%d'),
@@ -2622,7 +2633,7 @@ def show_stock_transaction():
                             st.session_state.stock_txn_df = df
                             st.session_state.stock_txn_bdc = selected_bdc
                             st.session_state.stock_txn_depot = selected_depot
-                            st.session_state.stock_txn_product = selected_product
+                            st.session_state.stock_txn_product = selected_product  # Display name (PMS, Gasoil, LPG)
                            
                             st.success(f"✅ Extracted {len(df)} transactions!")
                         else:
@@ -2765,7 +2776,10 @@ def show_stock_transaction():
             # Get BDC, depot, product from transaction query
             bdc_name = st.session_state.get('stock_txn_bdc', '')
             depot_name = st.session_state.get('stock_txn_depot', '')
-            product_name = st.session_state.get('stock_txn_product', '').split('(')[0].strip()
+            selected_product_display = st.session_state.get('stock_txn_product', '')  # e.g. "PMS"
+            
+            # MAP DISPLAY NAME TO BALANCE PRODUCT NAME
+            product_name = PRODUCT_BALANCE_MAP.get(selected_product_display, selected_product_display)
            
             # Filter balance for this BDC and product
             bdc_balance = balance_df[
