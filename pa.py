@@ -2399,6 +2399,10 @@ def show_stock_transaction():
                     'lngUserId': NPA_CONFIG['USER_ID']
                 }
                 
+                # Show what we're requesting
+                st.info(f"🔍 Requesting: {selected_bdc} → {selected_depot} → {selected_product} ({product_id})")
+                st.caption(f"Date range: {start_date} to {end_date}")
+                
                 try:
                     import requests
                     import io
@@ -2411,19 +2415,46 @@ def show_stock_transaction():
                     response = requests.get(url, params=params, headers=headers, timeout=30)
                     response.raise_for_status()
                     
+                    st.success(f"✅ Response received: {len(response.content)} bytes")
+                    
                     if response.content[:4] == b'%PDF':
                         pdf_file = io.BytesIO(response.content)
+                        
+                        # DEBUG: Save PDF to disk for inspection
+                        debug_path = f"debug_stock_txn_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                        with open(debug_path, 'wb') as f:
+                            f.write(response.content)
+                        st.info(f"📄 Debug PDF saved: {debug_path}")
                         
                         all_transactions = []
                         
                         with pdfplumber.open(pdf_file) as pdf:
+                            st.info(f"📑 PDF has {len(pdf.pages)} page(s)")
+                            
                             for page_num, page in enumerate(pdf.pages, 1):
-                                # Try table extraction first (PRIMARY METHOD)
+                                st.caption(f"Processing page {page_num}...")
+                                
+                                # DEBUG: Show page text
+                                page_text = page.extract_text()
+                                if page_text:
+                                    st.text_area(f"Page {page_num} Text (first 500 chars)", page_text[:500], height=150)
+                                
+                                # Try table extraction
                                 tables = page.extract_tables()
                                 
                                 if tables:
-                                    for table in tables:
-                                        for row in table:
+                                    st.success(f"✅ Found {len(tables)} table(s) on page {page_num}")
+                                    
+                                    for table_idx, table in enumerate(tables):
+                                        st.caption(f"Table {table_idx + 1}: {len(table)} rows")
+                                        
+                                        # Show first few rows for debugging
+                                        if len(table) > 0:
+                                            st.write("**First 3 rows of table:**")
+                                            for i, row in enumerate(table[:3]):
+                                                st.write(f"Row {i}: {row}")
+                                        
+                                        for row_idx, row in enumerate(table):
                                             # Skip empty rows and header rows
                                             if not row or not any(row):
                                                 continue
@@ -2433,13 +2464,20 @@ def show_stock_transaction():
                                             # Check if row starts with a date pattern
                                             if row[0] and re.match(r'\d{2}/\d{2}/\d{4}', str(row[0])):
                                                 try:
-                                                    # Extract data from table columns
+                                                    # Show what we're parsing
+                                                    if row_idx < 5:  # Show first 5 transactions
+                                                        st.caption(f"Parsing row {row_idx}: {row}")
+                                                    
                                                     date_val = str(row[0]).strip() if row[0] else ''
                                                     trans_num = str(row[1]).strip() if len(row) > 1 and row[1] else ''
                                                     description = str(row[2]).strip() if len(row) > 2 and row[2] else ''
                                                     account = str(row[3]).strip() if len(row) > 3 and row[3] else ''
                                                     volume_raw = str(row[4]).strip().replace(',', '') if len(row) > 4 and row[4] else '0'
                                                     balance_raw = str(row[5]).strip().replace(',', '') if len(row) > 5 and row[5] else '0'
+                                                    
+                                                    # Debug output
+                                                    if row_idx < 5:
+                                                        st.caption(f"  → Volume: '{volume_raw}', Balance: '{balance_raw}'")
                                                     
                                                     # Convert to float
                                                     volume = float(volume_raw) if volume_raw.replace('.', '').replace('-', '').isdigit() else 0
@@ -2455,102 +2493,120 @@ def show_stock_transaction():
                                                     })
                                                     
                                                 except Exception as e:
-                                                    # Skip problematic rows
+                                                    st.error(f"Error parsing row {row_idx}: {e}")
                                                     continue
-                                
-                                # FALLBACK: Text extraction if table extraction fails
                                 else:
-                                    text = page.extract_text()
-                                    if not text:
-                                        continue
+                                    st.warning(f"⚠️ No tables found on page {page_num}, trying text extraction...")
                                     
-                                    lines = text.split('\n')
-                                    
-                                    for line in lines:
-                                        # Skip non-data lines
-                                        if not line.strip():
-                                            continue
-                                        if any(x in line for x in ['Stock Transaction Report', 'NATIONAL PETROLEUM', 
-                                                                'BDC :', 'Depot :', 'Product :', 'Printed by',
-                                                                'Actual Stock Balance', 'Stock Commitments',
-                                                                'Available Stock Balance', 'Last Stock Update']):
-                                            continue
-                                        if line.strip().startswith('Date') and 'Trans #' in line:
-                                            continue
+                                    # FALLBACK: Text extraction
+                                    if page_text:
+                                        lines = page_text.split('\n')
+                                        st.caption(f"Found {len(lines)} lines of text")
                                         
-                                        # Match transaction lines starting with date
-                                        if re.match(r'^\d{2}/\d{2}/\d{4}', line.strip()):
-                                            parts = line.split()
+                                        for line_idx, line in enumerate(lines):
+                                            # Skip non-data lines
+                                            if not line.strip():
+                                                continue
+                                            if any(x in line for x in ['Stock Transaction Report', 'NATIONAL PETROLEUM', 
+                                                                    'BDC :', 'Depot :', 'Product :', 'Printed by',
+                                                                    'Actual Stock Balance', 'Stock Commitments',
+                                                                    'Available Stock Balance', 'Last Stock Update']):
+                                                continue
+                                            if line.strip().startswith('Date') and 'Trans #' in line:
+                                                continue
                                             
-                                            if len(parts) >= 3:
-                                                date = parts[0]
-                                                trans_num = parts[1] if parts[1] not in ['Balance', 'Stock', 'Sale', 'Custody'] else ''
+                                            # Match transaction lines starting with date
+                                            if re.match(r'^\d{2}/\d{2}/\d{4}', line.strip()):
+                                                if line_idx < 5:
+                                                    st.caption(f"Text line {line_idx}: {line}")
                                                 
-                                                # Extract description
-                                                description = ''
-                                                if 'Balance' in line and 'b/fwd' in line:
-                                                    description = 'Balance b/fwd'
-                                                elif 'Stock Take' in line:
-                                                    description = 'Stock Take'
-                                                elif 'Sale' in line:
-                                                    description = 'Sale'
-                                                elif 'Custody Transfer In' in line:
-                                                    description = 'Custody Transfer In'
-                                                elif 'Custody Transfer Out' in line:
-                                                    description = 'Custody Transfer Out'
-                                                elif 'Product Outturn' in line:
-                                                    description = 'Product Outturn'
+                                                parts = line.split()
                                                 
-                                                # Extract account name (between description and numbers)
-                                                account = ''
-                                                if description == 'Sale':
-                                                    sale_idx = line.find('Sale')
-                                                    after_sale = line[sale_idx + 4:].strip()
-                                                    account_parts = []
-                                                    for part in after_sale.split():
-                                                        if part.replace(',', '').isdigit():
-                                                            break
-                                                        account_parts.append(part)
-                                                    account = ' '.join(account_parts)
-                                                
-                                                # Extract volume and balance (last two numbers)
-                                                numbers = [p.replace(',', '') for p in parts if p.replace(',', '').replace('-', '').isdigit()]
-                                                volume_str = numbers[-2] if len(numbers) >= 2 else '0'
-                                                balance_str = numbers[-1] if len(numbers) >= 1 else '0'
-                                                
-                                                volume = float(volume_str) if volume_str.replace('.', '').replace('-', '').isdigit() else 0
-                                                balance = float(balance_str) if balance_str.replace('.', '').replace('-', '').isdigit() else 0
-                                                
-                                                if date and balance:
-                                                    all_transactions.append({
-                                                        'Date': date,
-                                                        'Trans #': trans_num,
-                                                        'Description': description,
-                                                        'Account': account.strip(),
-                                                        'Volume': volume,
-                                                        'Balance': balance
-                                                    })
+                                                if len(parts) >= 3:
+                                                    date = parts[0]
+                                                    trans_num = parts[1] if parts[1] not in ['Balance', 'Stock', 'Sale', 'Custody'] else ''
+                                                    
+                                                    # Extract description
+                                                    description = ''
+                                                    if 'Balance' in line and 'b/fwd' in line:
+                                                        description = 'Balance b/fwd'
+                                                    elif 'Stock Take' in line:
+                                                        description = 'Stock Take'
+                                                    elif 'Sale' in line:
+                                                        description = 'Sale'
+                                                    elif 'Custody Transfer In' in line:
+                                                        description = 'Custody Transfer In'
+                                                    elif 'Custody Transfer Out' in line:
+                                                        description = 'Custody Transfer Out'
+                                                    elif 'Product Outturn' in line:
+                                                        description = 'Product Outturn'
+                                                    
+                                                    # Extract account name
+                                                    account = ''
+                                                    if description == 'Sale':
+                                                        sale_idx = line.find('Sale')
+                                                        after_sale = line[sale_idx + 4:].strip()
+                                                        account_parts = []
+                                                        for part in after_sale.split():
+                                                            if part.replace(',', '').isdigit():
+                                                                break
+                                                            account_parts.append(part)
+                                                        account = ' '.join(account_parts)
+                                                    
+                                                    # Extract volume and balance (last two numbers)
+                                                    numbers = [p.replace(',', '') for p in parts if p.replace(',', '').replace('-', '').isdigit()]
+                                                    volume_str = numbers[-2] if len(numbers) >= 2 else '0'
+                                                    balance_str = numbers[-1] if len(numbers) >= 1 else '0'
+                                                    
+                                                    volume = float(volume_str) if volume_str.replace('.', '').replace('-', '').isdigit() else 0
+                                                    balance = float(balance_str) if balance_str.replace('.', '').replace('-', '').isdigit() else 0
+                                                    
+                                                    if date and balance:
+                                                        all_transactions.append({
+                                                            'Date': date,
+                                                            'Trans #': trans_num,
+                                                            'Description': description,
+                                                            'Account': account.strip(),
+                                                            'Volume': volume,
+                                                            'Balance': balance
+                                                        })
+                        
+                        st.info(f"📊 Total raw transactions extracted: {len(all_transactions)}")
                         
                         # Create DataFrame and filter
                         if all_transactions:
                             df = pd.DataFrame(all_transactions)
                             
+                            st.info(f"Before filtering: {len(df)} rows")
+                            st.write("**Descriptions found:**", df['Description'].value_counts().to_dict())
+                            
                             # Exclude Balance b/fwd transactions
-                            df = df[df['Description'] != 'Balance b/fwd'].reset_index(drop=True)
+                            df_filtered = df[df['Description'] != 'Balance b/fwd'].reset_index(drop=True)
                             
-                            # Store in session state
-                            st.session_state.stock_txn_df = df
-                            st.session_state.stock_txn_bdc = selected_bdc
-                            st.session_state.stock_txn_depot = selected_depot
-                            st.session_state.stock_txn_product = selected_product
+                            st.info(f"After filtering out 'Balance b/fwd': {len(df_filtered)} rows")
                             
-                            st.success(f"✅ Extracted {len(df)} transactions!")
+                            if len(df_filtered) > 0:
+                                # Store in session state
+                                st.session_state.stock_txn_df = df_filtered
+                                st.session_state.stock_txn_bdc = selected_bdc
+                                st.session_state.stock_txn_depot = selected_depot
+                                st.session_state.stock_txn_product = selected_product
+                                
+                                st.success(f"✅ Extracted {len(df_filtered)} transactions!")
+                                
+                                # Show sample
+                                st.write("**First 5 transactions:**")
+                                st.dataframe(df_filtered.head())
+                            else:
+                                st.warning("⚠️ All transactions were 'Balance b/fwd' - no actual transactions in this period")
+                                st.session_state.stock_txn_df = pd.DataFrame()
                         else:
-                            st.warning("⚠️ No transactions found")
-                            st.info("The PDF might be empty for this date range. Try selecting a wider date range.")
+                            st.warning("⚠️ No transactions found in PDF")
+                            st.info("The PDF might be empty for this date range. Try selecting a wider date range or different BDC/Depot.")
                             st.session_state.stock_txn_df = pd.DataFrame()
                     else:
                         st.error("❌ Response is not a PDF")
+                        st.code(response.text[:500])
                         st.session_state.stock_txn_df = pd.DataFrame()
                         
                 except Exception as e:
