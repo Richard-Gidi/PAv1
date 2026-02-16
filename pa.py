@@ -1606,21 +1606,64 @@ def show_daily_orders():
     df = st.session_state.daily_df
     
     if not df.empty:
-        # ========== OMC MATCHING LOGIC ==========
-        # Match order numbers with OMC Loadings to populate OMC names
+        # ========== INTELLIGENT OMC MATCHING LOGIC ==========
+        # Match order numbers with OMC Loadings using prefix patterns
         if not st.session_state.get('omc_df', pd.DataFrame()).empty:
             loadings_df = st.session_state.omc_df
             
-            # Create order number to OMC mapping from OMC Loadings
-            order_to_omc = loadings_df[['Order Number', 'OMC']].drop_duplicates()
-            order_to_omc_dict = dict(zip(order_to_omc['Order Number'], order_to_omc['OMC']))
+            # Create prefix-to-OMC mapping from OMC Loadings
+            # Extract prefixes (letters/alphanumeric before numbers)
+            import re
             
-            # Create OMC column by mapping order numbers
-            df['OMC'] = df['Order Number'].map(order_to_omc_dict)
+            def extract_order_prefix(order_num):
+                """Extract prefix pattern from order number"""
+                if pd.isna(order_num):
+                    return None
+                order_str = str(order_num).strip().upper()
+                # Extract letters/alphanumeric prefix (e.g., "CT" from "CT083083")
+                match = re.match(r'^([A-Z]{2,})', order_str)
+                if match:
+                    return match.group(1)
+                return None
+            
+            # Build prefix to OMC mapping from loadings data
+            loadings_df['Order_Prefix'] = loadings_df['Order Number'].apply(extract_order_prefix)
+            
+            # Create mapping: prefix -> most common OMC for that prefix
+            prefix_to_omc = {}
+            for prefix in loadings_df['Order_Prefix'].dropna().unique():
+                prefix_orders = loadings_df[loadings_df['Order_Prefix'] == prefix]
+                # Get the most common OMC for this prefix
+                most_common_omc = prefix_orders['OMC'].mode()
+                if len(most_common_omc) > 0:
+                    prefix_to_omc[prefix] = most_common_omc.iloc[0]
+            
+            # Also try exact matches first
+            order_to_omc_exact = loadings_df[['Order Number', 'OMC']].drop_duplicates()
+            order_to_omc_dict_exact = dict(zip(order_to_omc_exact['Order Number'], order_to_omc_exact['OMC']))
+            
+            # Extract prefixes from daily orders
+            df['Order_Prefix'] = df['Order Number'].apply(extract_order_prefix)
+            
+            # First try exact match
+            df['OMC'] = df['Order Number'].map(order_to_omc_dict_exact)
+            
+            # Then use prefix matching for unmatched orders
+            df['OMC'] = df.apply(
+                lambda row: prefix_to_omc.get(row['Order_Prefix']) if pd.isna(row['OMC']) and row['Order_Prefix'] else row['OMC'],
+                axis=1
+            )
+            
+            # Clean up temporary column
+            df = df.drop(columns=['Order_Prefix'])
             
             # Count matches
             matched_count = df['OMC'].notna().sum()
             match_rate = (matched_count / len(df) * 100) if len(df) > 0 else 0
+            
+            # Count exact vs prefix matches
+            exact_matches = df['Order Number'].isin(order_to_omc_dict_exact.keys()).sum()
+            prefix_matches = matched_count - exact_matches
             
             # Update session state with matched data
             st.session_state.daily_df = df
@@ -1629,17 +1672,24 @@ def show_daily_orders():
             st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
             
             if matched_count > 0:
-                st.info(f"🔗 **OMC MATCHING:** Successfully matched {matched_count} orders ({match_rate:.1f}%) with OMC names from loadings data!")
+                st.info(f"🔗 **INTELLIGENT OMC MATCHING:** Matched {matched_count} orders ({match_rate:.1f}%) - {exact_matches} exact, {prefix_matches} by prefix pattern!")
                 
-                col1, col2, col3 = st.columns(3)
+                col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("Total Orders", len(df))
                 with col2:
-                    st.metric("Matched with OMC", matched_count)
+                    st.metric("Matched", matched_count)
                 with col3:
-                    st.metric("Match Rate", f"{match_rate:.1f}%")
+                    st.metric("Exact Match", exact_matches)
+                with col4:
+                    st.metric("Prefix Match", prefix_matches)
+                
+                # Show discovered patterns
+                if prefix_matches > 0:
+                    st.caption(f"📋 **Prefix Patterns Discovered:** {', '.join([f'{k}→{v}' for k, v in list(prefix_to_omc.items())[:10]])}")
             else:
-                st.warning("⚠️ No order numbers matched with OMC Loadings data. OMC names will be blank.")
+                st.warning("⚠️ No order numbers matched. OMC names will be blank.")
+                st.info("💡 This could mean:\n- Order number formats are too different\n- OMC Loadings data is from a different time period\n- No common prefix patterns found")
         else:
             # No OMC Loadings data - create empty OMC column
             df['OMC'] = None
