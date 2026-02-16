@@ -30,9 +30,7 @@ def load_bdc_mappings():
     mappings = {}
     for key, value in os.environ.items():
         if key.startswith('BDC_'):
-            # Convert BDC_OILCORP_ENERGIA_LIMITED to "OILCORP ENERGIA LIMITED"
             name = key[4:].replace('_', ' ')
-            # Handle special cases
             if name == "TEMA OIL REFINERY TOR":
                 name = "TEMA OIL REFINERY (TOR)"
             elif name == "SOCIETE NATIONAL BURKINABE SONABHY":
@@ -51,16 +49,12 @@ def load_depot_mappings():
     mappings = {}
     for key, value in os.environ.items():
         if key.startswith('DEPOT_'):
-            # Convert DEPOT_SENTUO_OIL_REFINERY_TEMA to name
             name = key[6:].replace('_', ' ')
-            # Handle special formatting cases
             if "BOST " in name and name != "BOST GLOBAL DEPOT":
-                # BOST ACCRA PLAINS -> BOST - ACCRA PLAINS
                 parts = name.split(' ', 1)
                 if len(parts) == 2:
                     name = f"{parts[0]} - {parts[1]}"
             elif name.endswith(" TEMA") and "SENTUO" in name:
-                # SENTUO OIL REFINERY TEMA -> SENTUO OIL REFINERY- TEMA
                 name = name.replace(" TEMA", "- TEMA")
             elif name == "GHANA OIL COLTD TAKORADI":
                 name = "GHANA OIL CO.LTD, TAKORADI"
@@ -88,10 +82,7 @@ def load_depot_mappings():
     return mappings
 
 def load_product_mappings():
-    """Load Product name to ID mappings from environment variables"""
-    # CLEAN USER-FRIENDLY KEYS FOR SELECTION IN STOCK TRANSACTION
-    # User sees: "PMS", "Gasoil", "LPG"
-    # Link uses: IDs from .env
+    """STOCK TRANSACTION ONLY: Simple names → IDs from .env"""
     return {
         "PMS": int(os.getenv('PRODUCT_PREMIUM_ID', '12')),
         "Gasoil": int(os.getenv('PRODUCT_GASOIL_ID', '14')),
@@ -103,7 +94,7 @@ BDC_MAP = load_bdc_mappings()
 DEPOT_MAP = load_depot_mappings()
 PRODUCT_MAP = load_product_mappings()
 
-# Product options for user selection (clean names)
+# Product options for user-friendly dropdown in Stock Transaction
 PRODUCT_OPTIONS = ["PMS", "Gasoil", "LPG"]
 
 # Mapping from display name to balance product name (for stockout analysis)
@@ -174,13 +165,11 @@ def load_history(data_type, limit=10):
 # ==================== CHART GENERATION FUNCTIONS ====================
 def create_product_pie_chart(df, title="Product Distribution"):
     """Create interactive pie chart for product distribution"""
-    # Determine which column to use for values
     if 'Quantity' in df.columns:
         value_col = 'Quantity'
     elif 'ACTUAL BALANCE (LT\\KG)' in df.columns:
         value_col = 'ACTUAL BALANCE (LT\\KG)'
     else:
-        # Fallback - return empty figure
         fig = go.Figure()
         fig.update_layout(
             title=dict(text="No data available", font=dict(size=20, color='#00ffff', family='Orbitron')),
@@ -213,17 +202,14 @@ def create_product_pie_chart(df, title="Product Distribution"):
 
 def create_bdc_bar_chart(df, title="BDC Performance"):
     """Create interactive bar chart for BDC performance"""
-    # Check if df already has 'Quantity' column (preprocessed data)
     if 'Quantity' in df.columns and 'BDC' in df.columns:
         bdc_summary = df.copy()
     else:
-        # Determine which column to use for values
         if 'Quantity' in df.columns:
             value_col = 'Quantity'
         elif 'ACTUAL BALANCE (LT\\KG)' in df.columns:
             value_col = 'ACTUAL BALANCE (LT\\KG)'
         else:
-            # Return empty figure
             fig = go.Figure()
             fig.update_layout(
                 title=dict(text="No data available", font=dict(size=20, color='#00ffff', family='Orbitron')),
@@ -904,7 +890,6 @@ def parse_daily_line(line, last_known_date):
    
     if date_match:
         date_val = date_match.group(1)
-        # Convert to YYYY/MM/DD format
         try:
             date_obj = datetime.strptime(date_val, "%d/%m/%Y")
             date_val = date_obj.strftime("%Y/%m/%d")
@@ -1032,7 +1017,6 @@ def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
    
     if not df.empty:
         df = simplify_bdc_names(df)
-        # Don't set OMC here - let the matching logic in show_daily_orders handle it
        
     return df
 
@@ -1109,7 +1093,6 @@ def show_bdc_balance():
     st.info("📊 Click the button below to fetch BDC Balance data")
     st.markdown("---")
    
-    # Initialize session state for storing data
     if 'bdc_records' not in st.session_state:
         st.session_state.bdc_records = []
    
@@ -1117,7 +1100,6 @@ def show_bdc_balance():
         with st.spinner("🔄 FETCHING DATA FROM NPA PORTAL..."):
             scraper = StockBalanceScraper()
            
-            # Fetch data from URL (using environment variables)
             url = NPA_CONFIG['BDC_BALANCE_URL']
             params = {
                 'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
@@ -1138,7 +1120,6 @@ def show_bdc_balance():
                 import requests
                 import io
                
-                # Add headers to mimic a browser
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                     'Accept': 'application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -1149,25 +1130,19 @@ def show_bdc_balance():
                 response = requests.get(url, params=params, headers=headers, timeout=30)
                 response.raise_for_status()
                
-                # Check if response is PDF
                 if response.content[:4] == b'%PDF':
                     st.success("✅ PDF received from server")
-                   
-                    # Create a file-like object from the response content
                     pdf_file = io.BytesIO(response.content)
-                   
-                    # Parse the PDF and store in session state
                     st.session_state.bdc_records = scraper.parse_pdf_file(pdf_file)
                    
                     if not st.session_state.bdc_records:
-                        st.warning("⚠️ No records found in PDF. The PDF might be empty or in an unexpected format.")
+                        st.warning("⚠️ No records found in PDF.")
                 else:
-                    st.error("❌ Response is not a PDF. Received content type: " + response.headers.get('Content-Type', 'unknown'))
+                    st.error("❌ Response is not a PDF.")
                     st.session_state.bdc_records = []
                
             except requests.exceptions.RequestException as e:
                 st.error(f"❌ Network Error: {e}")
-                st.info("The NPA website might be down or blocking requests. Please try again later.")
                 st.session_state.bdc_records = []
             except Exception as e:
                 st.error(f"❌ Error: {e}")
@@ -1175,7 +1150,6 @@ def show_bdc_balance():
                 st.code(traceback.format_exc())
                 st.session_state.bdc_records = []
    
-    # Display data if available in session state
     records = st.session_state.bdc_records
    
     if records:
@@ -1183,10 +1157,8 @@ def show_bdc_balance():
         st.success(f"✅ SUCCESSFULLY EXTRACTED {len(records)} RECORDS")
         st.markdown("---")
        
-        # ANALYTICS DASHBOARD
         st.markdown("<h3>📊 ANALYTICS DASHBOARD</h3>", unsafe_allow_html=True)
        
-        # Product Totals Summary
         summary = df.groupby('Product')['ACTUAL BALANCE (LT\\KG)'].sum()
         cols = st.columns(3)
        
@@ -1203,7 +1175,6 @@ def show_bdc_balance():
        
         st.markdown("---")
        
-        # BDC Analytics
         st.markdown("<h3>🏢 BDC BREAKDOWN</h3>", unsafe_allow_html=True)
         bdc_summary = df.groupby('BDC').agg({
             'ACTUAL BALANCE (LT\\KG)': 'sum',
@@ -1225,7 +1196,6 @@ def show_bdc_balance():
        
         st.markdown("---")
        
-        # Product Distribution by BDC
         st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
        
         pivot_data = df.pivot_table(
@@ -1236,7 +1206,6 @@ def show_bdc_balance():
             fill_value=0
         ).reset_index()
        
-        # Ensure all products are present
         for prod in ['GASOIL', 'LPG', 'PREMIUM']:
             if prod not in pivot_data.columns:
                 pivot_data[prod] = 0
@@ -1248,7 +1217,6 @@ def show_bdc_balance():
        
         st.markdown("---")
        
-        # SEARCH AND FILTER SECTION
         st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
        
         col1, col2 = st.columns(2)
@@ -1264,7 +1232,6 @@ def show_bdc_balance():
             else:
                 search_value = st.selectbox("Select Depot:", ['ALL'] + sorted(df['DEPOT'].unique().tolist()), key='bdc_depot_search')
        
-        # Apply filter
         if search_value == 'ALL':
             filtered = df
         else:
@@ -1307,17 +1274,13 @@ def show_omc_loadings():
     st.info("📊 Select date range and fetch OMC loadings data")
     st.markdown("---")
    
-    # Initialize session state for storing data
     if 'omc_df' not in st.session_state:
         st.session_state.omc_df = pd.DataFrame()
     if 'omc_start_date' not in st.session_state:
-        # Default to 7 days ago for better chance of finding data
-        from datetime import timedelta
         st.session_state.omc_start_date = datetime.now() - timedelta(days=7)
     if 'omc_end_date' not in st.session_state:
         st.session_state.omc_end_date = datetime.now()
    
-    # Date inputs
     st.markdown("<h3>📅 SELECT DATE RANGE</h3>", unsafe_allow_html=True)
     st.info("💡 Select a date range where you know there are orders. Try last week or last month for better results.")
    
@@ -1330,15 +1293,12 @@ def show_omc_loadings():
    
     if st.button("🔄 FETCH OMC LOADINGS DATA", width="stretch"):
         with st.spinner("🔄 FETCHING DATA FROM NPA PORTAL..."):
-            # Store dates in session state
             st.session_state.omc_start_date = start_date
             st.session_state.omc_end_date = end_date
            
-            # Format dates for URL (MM/DD/YYYY - this is the correct format for the API!)
             start_str = start_date.strftime("%m/%d/%Y")
             end_str = end_date.strftime("%m/%d/%Y")
            
-            # Show what dates we're requesting
             st.info(f"🔍 Requesting orders from **{start_str}** to **{end_str}**")
            
             url = NPA_CONFIG['OMC_LOADINGS_URL']
@@ -1362,7 +1322,6 @@ def show_omc_loadings():
                 import requests
                 import io
                
-                # Add headers to mimic a browser
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                     'Accept': 'application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -1373,33 +1332,19 @@ def show_omc_loadings():
                 response = requests.get(url, params=params, headers=headers, timeout=30)
                 response.raise_for_status()
                
-                # Check if response is PDF
                 if response.content[:4] == b'%PDF':
                     st.success("✅ PDF received from server")
-                   
-                    # Create a file-like object from the response content
                     pdf_file = io.BytesIO(response.content)
-                   
-                    # Parse the PDF and store in session state
                     st.session_state.omc_df = extract_npa_data_from_pdf(pdf_file)
                    
                     if st.session_state.omc_df.empty:
                         st.warning("⚠️ No order records found in the PDF for this date range.")
-                        st.info("💡 **This means there were no orders in the selected date range.**")
-                        st.markdown("""
-                        **Try:**
-                        - Select a **wider date range** (e.g., last week or last month)
-                        - Select dates you **know have order data**
-                        - Check if the date format is correct (the URL expects DD/MM/YYYY)
-                        - Try recent dates like yesterday or last week
-                        """)
                 else:
-                    st.error("❌ Response is not a PDF. Received content type: " + response.headers.get('Content-Type', 'unknown'))
+                    st.error("❌ Response is not a PDF.")
                     st.session_state.omc_df = pd.DataFrame()
                
             except requests.exceptions.RequestException as e:
                 st.error(f"❌ Network Error: {e}")
-                st.info("The NPA website might be down or blocking requests. Please try again later.")
                 st.session_state.omc_df = pd.DataFrame()
             except Exception as e:
                 st.error(f"❌ Error: {e}")
@@ -1407,22 +1352,18 @@ def show_omc_loadings():
                 st.code(traceback.format_exc())
                 st.session_state.omc_df = pd.DataFrame()
    
-    # Display data if available in session state
     df = st.session_state.omc_df
    
     if not df.empty:
         st.success(f"✅ EXTRACTED {len(df)} RECORDS")
         st.markdown("---")
        
-        # Display date range used
         st.info(f"📊 Showing {len(df)} records from {st.session_state.omc_start_date.strftime('%Y/%m/%d')} to {st.session_state.omc_end_date.strftime('%Y/%m/%d')}")
        
         st.markdown("---")
        
-        # ANALYTICS DASHBOARD
         st.markdown("<h3>📊 ANALYTICS DASHBOARD</h3>", unsafe_allow_html=True)
        
-        # Overall Summary Metrics
         cols = st.columns(4)
         with cols[0]:
             st.markdown(f"""
@@ -1457,7 +1398,6 @@ def show_omc_loadings():
        
         st.markdown("---")
        
-        # Product Distribution
         st.markdown("<h3>📦 PRODUCT BREAKDOWN</h3>", unsafe_allow_html=True)
         product_summary = df.groupby('Product').agg({
             'Quantity': 'sum',
@@ -1471,14 +1411,12 @@ def show_omc_loadings():
         with col1:
             st.dataframe(product_summary, width="stretch", hide_index=True)
         with col2:
-            # Product distribution pie chart data
             for _, row in product_summary.iterrows():
                 pct = (row['Total Volume (LT/KG)'] / product_summary['Total Volume (LT/KG)'].sum()) * 100
                 st.metric(row['Product'], f"{pct:.1f}%")
        
         st.markdown("---")
        
-        # Top OMCs
         st.markdown("<h3>🏢 TOP OMCs BY VOLUME</h3>", unsafe_allow_html=True)
         omc_summary = df.groupby('OMC').agg({
             'Quantity': 'sum',
@@ -1492,7 +1430,6 @@ def show_omc_loadings():
        
         st.markdown("---")
        
-        # BDC Performance
         st.markdown("<h3>🏦 BDC PERFORMANCE</h3>", unsafe_allow_html=True)
         bdc_summary = df.groupby('BDC').agg({
             'Quantity': 'sum',
@@ -1507,7 +1444,6 @@ def show_omc_loadings():
        
         st.markdown("---")
        
-        # Product Distribution by BDC
         st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
         pivot_data = df.pivot_table(
             index='BDC',
@@ -1517,7 +1453,6 @@ def show_omc_loadings():
             fill_value=0
         ).reset_index()
        
-        # Ensure all products are present
         for prod in ['GASOIL', 'LPG', 'PREMIUM']:
             if prod not in pivot_data.columns:
                 pivot_data[prod] = 0
@@ -1529,7 +1464,6 @@ def show_omc_loadings():
        
         st.markdown("---")
        
-        # SEARCH AND FILTER SECTION
         st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
        
         col1, col2 = st.columns(2)
@@ -1547,7 +1481,6 @@ def show_omc_loadings():
             else:
                 search_value = st.selectbox("Select Depot:", ['ALL'] + sorted(df['Depot'].unique().tolist()), key='omc_depot_search')
        
-        # Apply filter
         if search_value == 'ALL':
             filtered = df
         else:
@@ -1562,7 +1495,6 @@ def show_omc_loadings():
        
         st.markdown(f"<h3>📋 FILTERED DATA: {search_value}</h3>", unsafe_allow_html=True)
        
-        # Show filtered summary
         if not filtered.empty:
             cols = st.columns(4)
             with cols[0]:
@@ -1591,16 +1523,13 @@ def show_daily_orders():
     st.info("📊 Select a date range to fetch daily orders")
     st.markdown("---")
    
-    # Initialize session state
     if 'daily_df' not in st.session_state:
         st.session_state.daily_df = pd.DataFrame()
     if 'daily_start_date' not in st.session_state:
-        from datetime import timedelta
         st.session_state.daily_start_date = datetime.now() - timedelta(days=1)
     if 'daily_end_date' not in st.session_state:
         st.session_state.daily_end_date = datetime.now()
    
-    # Date inputs
     st.markdown("<h3>📅 SELECT DATE RANGE</h3>", unsafe_allow_html=True)
     st.info("💡 Select a date range for daily orders. Try yesterday or last few days for better results.")
    
@@ -1616,7 +1545,6 @@ def show_daily_orders():
             st.session_state.daily_start_date = start_date
             st.session_state.daily_end_date = end_date
            
-            # Format dates for URL (MM/DD/YYYY based on your example)
             start_str = start_date.strftime("%m/%d/%Y")
             end_str = end_date.strftime("%m/%d/%Y")
            
@@ -1660,14 +1588,12 @@ def show_daily_orders():
                    
                     if st.session_state.daily_df.empty:
                         st.warning("⚠️ No daily orders found for this date.")
-                        st.info("💡 Try selecting a different date with known order activity.")
                 else:
-                    st.error("❌ Response is not a PDF. Received content type: " + response.headers.get('Content-Type', 'unknown'))
+                    st.error("❌ Response is not a PDF.")
                     st.session_state.daily_df = pd.DataFrame()
                
             except requests.exceptions.RequestException as e:
                 st.error(f"❌ Network Error: {e}")
-                st.info("The NPA website might be down or blocking requests. Please try again later.")
                 st.session_state.daily_df = pd.DataFrame()
             except Exception as e:
                 st.error(f"❌ Error: {e}")
@@ -1675,73 +1601,54 @@ def show_daily_orders():
                 st.code(traceback.format_exc())
                 st.session_state.daily_df = pd.DataFrame()
    
-    # Display data
     df = st.session_state.daily_df
    
     if not df.empty:
-        # ========== INTELLIGENT OMC MATCHING LOGIC ==========
-        # Match order numbers with OMC Loadings using prefix patterns
         if not st.session_state.get('omc_df', pd.DataFrame()).empty:
             loadings_df = st.session_state.omc_df
            
-            # Create prefix-to-OMC mapping from OMC Loadings
-            # Extract prefixes (letters/alphanumeric before numbers)
             import re
            
             def extract_order_prefix(order_num):
-                """Extract prefix pattern from order number"""
                 if pd.isna(order_num):
                     return None
                 order_str = str(order_num).strip().upper()
-                # Extract letters/alphanumeric prefix (e.g., "CT" from "CT083083")
                 match = re.match(r'^([A-Z]{2,})', order_str)
                 if match:
                     return match.group(1)
                 return None
            
-            # Build prefix to OMC mapping from loadings data
             loadings_df['Order_Prefix'] = loadings_df['Order Number'].apply(extract_order_prefix)
            
-            # Create mapping: prefix -> most common OMC for that prefix
             prefix_to_omc = {}
             for prefix in loadings_df['Order_Prefix'].dropna().unique():
                 prefix_orders = loadings_df[loadings_df['Order_Prefix'] == prefix]
-                # Get the most common OMC for this prefix
                 most_common_omc = prefix_orders['OMC'].mode()
                 if len(most_common_omc) > 0:
                     prefix_to_omc[prefix] = most_common_omc.iloc[0]
            
-            # Also try exact matches first
             order_to_omc_exact = loadings_df[['Order Number', 'OMC']].drop_duplicates()
             order_to_omc_dict_exact = dict(zip(order_to_omc_exact['Order Number'], order_to_omc_exact['OMC']))
            
-            # Extract prefixes from daily orders
             df['Order_Prefix'] = df['Order Number'].apply(extract_order_prefix)
            
-            # First try exact match
             df['OMC'] = df['Order Number'].map(order_to_omc_dict_exact)
            
-            # Then use prefix matching for unmatched orders
             df['OMC'] = df.apply(
                 lambda row: prefix_to_omc.get(row['Order_Prefix']) if pd.isna(row['OMC']) and row['Order_Prefix'] else row['OMC'],
                 axis=1
             )
            
-            # Clean up temporary column
             df = df.drop(columns=['Order_Prefix'])
            
-            # Count matches
             matched_count = df['OMC'].notna().sum()
             match_rate = (matched_count / len(df) * 100) if len(df) > 0 else 0
            
-            # Count exact vs prefix matches
             exact_matches = df['Order Number'].isin(order_to_omc_dict_exact.keys()).sum()
             prefix_matches = matched_count - exact_matches
            
-            # Update session state with matched data
             st.session_state.daily_df = df
            
-            # Show matching status
             st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
            
             if matched_count > 0:
@@ -1757,14 +1664,11 @@ def show_daily_orders():
                 with col4:
                     st.metric("Prefix Match", prefix_matches)
                
-                # Show discovered patterns
                 if prefix_matches > 0:
                     st.caption(f"📋 **Prefix Patterns Discovered:** {', '.join([f'{k}→{v}' for k, v in list(prefix_to_omc.items())[:10]])}")
             else:
                 st.warning("⚠️ No order numbers matched. OMC names will be blank.")
-                st.info("💡 This could mean:\n- Order number formats are too different\n- OMC Loadings data is from a different time period\n- No common prefix patterns found")
         else:
-            # No OMC Loadings data - create empty OMC column
             df['OMC'] = None
             st.session_state.daily_df = df
            
@@ -1776,10 +1680,8 @@ def show_daily_orders():
         st.info(f"📊 Showing {len(df)} orders from {st.session_state.daily_start_date.strftime('%Y/%m/%d')} to {st.session_state.daily_end_date.strftime('%Y/%m/%d')}")
         st.markdown("---")
        
-        # ANALYTICS DASHBOARD
         st.markdown("<h3>📊 DAILY ANALYTICS</h3>", unsafe_allow_html=True)
        
-        # Overall Summary
         cols = st.columns(5)
         with cols[0]:
             st.markdown(f"""
@@ -1804,7 +1706,6 @@ def show_daily_orders():
             </div>
             """, unsafe_allow_html=True)
         with cols[3]:
-            # Show OMCs if available
             omc_count = df['OMC'].nunique() if 'OMC' in df.columns and df['OMC'].notna().any() else 0
             st.markdown(f"""
             <div class='metric-card'>
@@ -1823,7 +1724,6 @@ def show_daily_orders():
        
         st.markdown("---")
        
-        # Product Summary
         st.markdown("<h3>📦 PRODUCT SUMMARY</h3>", unsafe_allow_html=True)
         product_summary = df.groupby('Product').agg({
             'Quantity': 'sum',
@@ -1843,7 +1743,6 @@ def show_daily_orders():
        
         st.markdown("---")
        
-        # BDC Summary
         st.markdown("<h3>🏦 BDC SUMMARY</h3>", unsafe_allow_html=True)
         bdc_summary = df.groupby('BDC').agg({
             'Quantity': 'sum',
@@ -1856,8 +1755,6 @@ def show_daily_orders():
        
         st.dataframe(bdc_summary, width="stretch", hide_index=True)
        
-       
-        # OMC Summary (if matched)
         if 'OMC' in df.columns and df['OMC'].notna().any():
             st.markdown("<h3>🏢 OMC SUMMARY (MATCHED)</h3>", unsafe_allow_html=True)
             st.info("📌 OMC names matched from OMC Loadings data using order numbers")
@@ -1876,7 +1773,6 @@ def show_daily_orders():
             st.markdown("---")
         st.markdown("---")
        
-        # Product Distribution by BDC
         st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
         pivot_data = df.pivot_table(
             index='BDC',
@@ -1894,7 +1790,6 @@ def show_daily_orders():
        
         st.markdown("---")
        
-        # Status Breakdown
         st.markdown("<h3>📋 ORDER STATUS BREAKDOWN</h3>", unsafe_allow_html=True)
         status_summary = df.groupby('Status').agg({
             'Order Number': 'count',
@@ -1905,7 +1800,6 @@ def show_daily_orders():
        
         st.markdown("---")
        
-        # SEARCH AND FILTER
         st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
        
         col1, col2 = st.columns(2)
@@ -1923,7 +1817,6 @@ def show_daily_orders():
             else:
                 search_value = st.selectbox("Select Status:", ['ALL'] + sorted(df['Status'].unique().tolist()), key='daily_status_search')
        
-        # Apply filter
         if search_value == 'ALL':
             filtered = df
         else:
@@ -1966,11 +1859,9 @@ def show_market_share():
     st.info("🎯 Comprehensive market share analysis: Stock Balance + Sales Volume")
     st.markdown("---")
    
-    # Check for available data
     has_balance = bool(st.session_state.get('bdc_records'))
     has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
    
-    # Data availability status
     st.markdown("### 📊 DATA AVAILABILITY")
    
     col1, col2 = st.columns(2)
@@ -1996,10 +1887,8 @@ def show_market_share():
    
     st.markdown("---")
    
-    # BDC Search
     st.markdown("### 🔍 SELECT BDC FOR ANALYSIS")
    
-    # Get all BDCs from both sources
     all_bdcs = set()
     if has_balance:
         all_bdcs.update(balance_df['BDC'].unique())
@@ -2021,30 +1910,24 @@ def show_market_share():
     st.markdown(f"## 📊 COMPREHENSIVE MARKET REPORT: {selected_bdc}")
     st.markdown("---")
    
-    # Create tabs for different views
     tab1, tab2, tab3 = st.tabs(["📦 Stock Balance", "🚚 Sales Volume", "📊 Combined Analysis"])
    
-    # ========== TAB 1: STOCK BALANCE ==========
     with tab1:
         if not has_balance:
             st.warning("⚠️ BDC Balance data not available. Please fetch it first.")
         else:
             st.markdown("### 📦 STOCK BALANCE MARKET SHARE")
            
-            # Calculate market share for stock
             balance_col = 'ACTUAL BALANCE (LT\\KG)'
             bdc_balance_data = balance_df[balance_df['BDC'] == selected_bdc]
            
-            # Total market stock
             total_market_stock = balance_df[balance_col].sum()
             bdc_total_stock = bdc_balance_data[balance_col].sum()
             bdc_stock_share = (bdc_total_stock / total_market_stock * 100) if total_market_stock > 0 else 0
            
-            # Rank
             all_bdc_stocks = balance_df.groupby('BDC')[balance_col].sum().sort_values(ascending=False)
             stock_rank = list(all_bdc_stocks.index).index(selected_bdc) + 1 if selected_bdc in all_bdc_stocks.index else 0
            
-            # Overview
             cols = st.columns(3)
             with cols[0]:
                 st.markdown(f"""
@@ -2073,7 +1956,6 @@ def show_market_share():
            
             st.markdown("---")
            
-            # Product-wise stock breakdown
             st.markdown("#### 📦 Stock by Product (PMS, AGO, LPG)")
            
             product_stock_data = []
@@ -2092,7 +1974,6 @@ def show_market_share():
             stock_product_df = pd.DataFrame(product_stock_data)
             st.dataframe(stock_product_df, width="stretch", hide_index=True)
            
-            # Visual cards
             cols = st.columns(3)
             for idx, row in stock_product_df.iterrows():
                 with cols[idx]:
@@ -2115,34 +1996,27 @@ def show_market_share():
                     </div>
                     """, unsafe_allow_html=True)
    
-    # ========== TAB 2: SALES VOLUME ==========
     with tab2:
         if not has_loadings:
             st.warning("⚠️ OMC Loadings data not available. Please fetch it first.")
         else:
             st.markdown("### 🚚 SALES VOLUME MARKET SHARE")
            
-            # Show period
             if 'omc_start_date' in st.session_state and 'omc_end_date' in st.session_state:
                 st.info(f"📅 Analysis Period: {st.session_state.omc_start_date.strftime('%Y/%m/%d')} to {st.session_state.omc_end_date.strftime('%Y/%m/%d')}")
            
-            # Calculate market share for sales
             sales_col = 'Quantity'
             bdc_sales_data = loadings_df[loadings_df['BDC'] == selected_bdc]
            
-            # Total market sales
             total_market_sales = loadings_df[sales_col].sum()
             bdc_total_sales = bdc_sales_data[sales_col].sum()
             bdc_sales_share = (bdc_total_sales / total_market_sales * 100) if total_market_sales > 0 else 0
            
-            # Rank
             all_bdc_sales = loadings_df.groupby('BDC')[sales_col].sum().sort_values(ascending=False)
             sales_rank = list(all_bdc_sales.index).index(selected_bdc) + 1 if selected_bdc in all_bdc_sales.index else 0
            
-            # Revenue
             bdc_revenue = (bdc_sales_data[sales_col] * bdc_sales_data['Price']).sum()
            
-            # Overview
             cols = st.columns(4)
             with cols[0]:
                 st.markdown(f"""
@@ -2179,7 +2053,6 @@ def show_market_share():
            
             st.markdown("---")
            
-            # Product-wise sales breakdown
             st.markdown("#### 🚚 Sales by Product (PMS, AGO, LPG)")
            
             product_sales_data = []
@@ -2188,7 +2061,6 @@ def show_market_share():
                 bdc_product_sales = bdc_sales_data[bdc_sales_data['Product'] == product][sales_col].sum()
                 product_share = (bdc_product_sales / market_product_sales * 100) if market_product_sales > 0 else 0
                
-                # Orders count
                 bdc_orders = len(bdc_sales_data[bdc_sales_data['Product'] == product])
                
                 product_sales_data.append({
@@ -2202,7 +2074,6 @@ def show_market_share():
             sales_product_df = pd.DataFrame(product_sales_data)
             st.dataframe(sales_product_df, width="stretch", hide_index=True)
            
-            # Visual cards
             cols = st.columns(3)
             for idx, row in sales_product_df.iterrows():
                 with cols[idx]:
@@ -2231,7 +2102,6 @@ def show_market_share():
                     </div>
                     """, unsafe_allow_html=True)
    
-    # ========== TAB 3: COMBINED ANALYSIS ==========
     with tab3:
         st.markdown("### 📊 STOCK vs SALES COMPARISON")
        
@@ -2239,7 +2109,6 @@ def show_market_share():
             st.warning("⚠️ Both BDC Balance and OMC Loadings data required for combined analysis")
             st.info("Please fetch both datasets to see the complete picture.")
         else:
-            # Combined overview
             st.markdown("#### 🎯 Performance Overview")
            
             cols = st.columns(2)
@@ -2279,16 +2148,13 @@ def show_market_share():
            
             st.markdown("---")
            
-            # Product-by-product comparison
             st.markdown("#### 📊 Stock vs Sales by Product")
            
             comparison_data = []
             for product in ['PREMIUM', 'GASOIL', 'LPG']:
-                # Stock
                 bdc_stock = stock_product_df[stock_product_df['Product'] == product]['BDC Stock (LT/KG)'].values[0] if len(stock_product_df) > 0 else 0
                 stock_share = stock_product_df[stock_product_df['Product'] == product]['Market Share (%)'].values[0] if len(stock_product_df) > 0 else 0
                
-                # Sales
                 bdc_sales = sales_product_df[sales_product_df['Product'] == product]['BDC Sales (LT/KG)'].values[0] if len(sales_product_df) > 0 else 0
                 sales_share = sales_product_df[sales_product_df['Product'] == product]['Market Share (%)'].values[0] if len(sales_product_df) > 0 else 0
                
@@ -2306,7 +2172,6 @@ def show_market_share():
            
             st.markdown("---")
            
-            # Export
             st.markdown("### 💾 EXPORT COMPLETE REPORT")
            
             if st.button("📄 GENERATE EXCEL REPORT", width="stretch"):
@@ -2317,13 +2182,8 @@ def show_market_share():
                 filepath = os.path.join(output_dir, filename)
                
                 with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-                    # Stock analysis
                     stock_product_df.to_excel(writer, sheet_name='Stock Analysis', index=False)
-                   
-                    # Sales analysis
                     sales_product_df.to_excel(writer, sheet_name='Sales Analysis', index=False)
-                   
-                    # Combined
                     comparison_df.to_excel(writer, sheet_name='Stock vs Sales', index=False)
                
                 st.success(f"✅ Report generated: {filename}")
@@ -2342,7 +2202,6 @@ def show_competitive_intel():
     st.info("🔥 Advanced analytics: Anomaly Detection, Price Intelligence, Performance Scoring & Trend Forecasting")
     st.markdown("---")
    
-    # Check data availability
     has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
    
     if not has_loadings:
@@ -2352,19 +2211,16 @@ def show_competitive_intel():
    
     loadings_df = st.session_state.omc_df
    
-    # Tabs for different intelligence features
     tab1, tab2, tab3 = st.tabs([
         "🚨 Anomaly Detection",
         "💰 Price Intelligence",
         "⭐ Performance Score & Rankings"
     ])
    
-    # TAB 1: ANOMALY DETECTION
     with tab1:
         st.markdown("### 🚨 ANOMALY DETECTION ENGINE")
         st.caption("Automatically detect unusual patterns in orders and pricing")
        
-        # Volume anomalies
         mean_vol = loadings_df['Quantity'].mean()
         std_vol = loadings_df['Quantity'].std()
         anomaly_threshold = mean_vol + (2 * std_vol)
@@ -2387,7 +2243,6 @@ def show_competitive_intel():
        
         st.markdown("---")
        
-        # Price anomalies
         st.markdown("#### 💰 Price Anomalies by Product")
         price_data = []
         for product in ['PREMIUM', 'GASOIL', 'LPG']:
@@ -2408,11 +2263,9 @@ def show_competitive_intel():
        
         st.dataframe(pd.DataFrame(price_data), width="stretch", hide_index=True)
    
-    # TAB 2: PRICE INTELLIGENCE
     with tab2:
         st.markdown("### 💰 PRICE INTELLIGENCE DASHBOARD")
        
-        # Price by BDC
         price_stats = loadings_df.groupby(['BDC', 'Product'])['Price'].agg(['mean', 'min', 'max']).reset_index()
         price_stats.columns = ['BDC', 'Product', 'Avg Price', 'Min Price', 'Max Price']
        
@@ -2425,7 +2278,6 @@ def show_competitive_intel():
        
         st.markdown("---")
        
-        # Best deals
         st.markdown("#### 💡 Best Pricing Opportunities")
         opportunities = []
         for product in ['PREMIUM', 'GASOIL', 'LPG']:
@@ -2444,26 +2296,21 @@ def show_competitive_intel():
        
         st.dataframe(pd.DataFrame(opportunities), width="stretch", hide_index=True)
    
-    # TAB 3: PERFORMANCE SCORING
     with tab3:
         st.markdown("### ⭐ BDC PERFORMANCE LEADERBOARD")
        
-        # Calculate scores
         scores = []
         for bdc in loadings_df['BDC'].unique():
             bdc_df = loadings_df[loadings_df['BDC'] == bdc]
            
-            # Volume score
             vol = bdc_df['Quantity'].sum()
             max_vol = loadings_df.groupby('BDC')['Quantity'].sum().max()
             vol_score = (vol / max_vol) * 40
            
-            # Order count score
             orders = len(bdc_df)
             max_orders = loadings_df.groupby('BDC').size().max()
             order_score = (orders / max_orders) * 30
            
-            # Product diversity
             products = bdc_df['Product'].nunique()
             diversity_score = (products / 3) * 30
            
@@ -2487,7 +2334,6 @@ def show_competitive_intel():
        
         st.markdown("---")
        
-        # Podium
         st.markdown("#### 🏆 TOP 3 CHAMPIONS")
         cols = st.columns(3)
         for idx, (_, row) in enumerate(scores_df.head(3).iterrows()):
@@ -2505,7 +2351,6 @@ def show_competitive_intel():
        
         st.markdown("---")
        
-        # Search specific BDC
         st.markdown("#### 🔍 Check Any BDC")
         selected = st.selectbox("Select BDC:", scores_df['BDC'].unique())
        
@@ -2535,14 +2380,11 @@ def show_stock_transaction():
     st.info("🔥 Track BDC transactions: Inflows, Outflows, Sales & Intelligent Stockout Forecasting")
     st.markdown("---")
    
-    # Initialize session state
     if 'stock_txn_df' not in st.session_state:
         st.session_state.stock_txn_df = pd.DataFrame()
    
-    # Tab selection
     tab1, tab2 = st.tabs(["🔍 BDC Transaction Report", "📊 Stockout Analysis"])
    
-    # TAB 1: BDC TRANSACTION REPORT
     with tab1:
         st.markdown("### 🔍 BDC TRANSACTION REPORT")
         st.info("Get detailed transaction history for any BDC at a specific depot")
@@ -2551,8 +2393,7 @@ def show_stock_transaction():
        
         with col1:
             selected_bdc = st.selectbox("Select BDC:", sorted(BDC_MAP.keys()))
-            # USER SELECTS SIMPLE NAME (PMS, Gasoil, LPG) 
-            selected_product = st.selectbox("Select Product:", PRODUCT_OPTIONS)
+            selected_product = st.selectbox("Select Product:", PRODUCT_OPTIONS)  # PMS, Gasoil, LPG
        
         with col2:
             selected_depot = st.selectbox("Select Depot:", sorted(DEPOT_MAP.keys()))
@@ -2567,12 +2408,11 @@ def show_stock_transaction():
             with st.spinner("🔄 Fetching stock transaction data..."):
                 bdc_id = BDC_MAP[selected_bdc]
                 depot_id = DEPOT_MAP[selected_depot]
-                # GET ID FROM THE CLEAN DISPLAY NAME (PMS -> 12, Gasoil -> 14, etc.)
-                product_id = PRODUCT_MAP[selected_product]
+                product_id = PRODUCT_MAP[selected_product]  # FIXED: Always ID (12/14/28)
                
                 url = NPA_CONFIG['STOCK_TRANSACTION_URL']
                 params = {
-                    'lngProductId': product_id,  # <-- ALWAYS THE ID (12/14/28)
+                    'lngProductId': product_id,
                     'lngBDCId': bdc_id,
                     'lngDepotId': depot_id,
                     'dtpStartDate': start_date.strftime('%Y-%m-%d'),
@@ -2595,46 +2435,39 @@ def show_stock_transaction():
                     if response.content[:4] == b'%PDF':
                         pdf_file = io.BytesIO(response.content)
                        
-                        # Extract transactions from PDF
                         transactions = []
                         with pdfplumber.open(pdf_file) as pdf:
                             for page in pdf.pages:
                                 tables = page.extract_tables()
-                               
-                                if tables:
-                                    for table in tables:
-                                        for row in table:
-                                            if not row or not any(row):
-                                                continue
-                                            if row[0] and 'Date' in str(row[0]):
-                                                continue
-                                           
-                                            if row[0] and re.match(r'\d{2}/\d{2}/\d{4}', str(row[0])):
-                                                try:
-                                                    vol_str = str(row[4]).replace(',', '') if len(row) > 4 and row[4] else '0'
-                                                    bal_str = str(row[5]).replace(',', '') if len(row) > 5 and row[5] else '0'
-                                                   
-                                                    transactions.append({
-                                                        'Date': str(row[0]).strip(),
-                                                        'Trans #': str(row[1]).strip() if len(row) > 1 and row[1] else '',
-                                                        'Description': str(row[2]).strip() if len(row) > 2 and row[2] else '',
-                                                        'Account': str(row[3]).strip() if len(row) > 3 and row[3] else '',
-                                                        'Volume': float(vol_str) if vol_str.replace('.','').replace('-','').isdigit() else 0,
-                                                        'Balance': float(bal_str) if bal_str.replace('.','').replace('-','').isdigit() else 0
-                                                    })
-                                                except Exception as e:
-                                                    pass
+                                for table in tables or []:
+                                    for row in table or []:
+                                        if not row or not any(row):
+                                            continue
+                                        if row[0] and 'Date' in str(row[0]):
+                                            continue
+                                        if row[0] and re.match(r'\d{2}/\d{2}/\d{4}', str(row[0])):
+                                            try:
+                                                vol_str = str(row[4]).replace(',', '') if len(row) > 4 and row[4] else '0'
+                                                bal_str = str(row[5]).replace(',', '') if len(row) > 5 and row[5] else '0'
+                                                transactions.append({
+                                                    'Date': str(row[0]).strip(),
+                                                    'Trans #': str(row[1]).strip() if len(row) > 1 else '',
+                                                    'Description': str(row[2]).strip() if len(row) > 2 else '',
+                                                    'Account': str(row[3]).strip() if len(row) > 3 else '',
+                                                    'Volume': float(vol_str) if vol_str.replace('.','').replace('-','').isdigit() else 0,
+                                                    'Balance': float(bal_str) if bal_str.replace('.','').replace('-','').isdigit() else 0
+                                                })
+                                            except:
+                                                pass
                        
                         if transactions:
                             df = pd.DataFrame(transactions)
-                            # Exclude Balance b/fwd
                             df = df[df['Description'] != 'Balance b/fwd'].reset_index(drop=True)
                            
-                            # Store with metadata
                             st.session_state.stock_txn_df = df
                             st.session_state.stock_txn_bdc = selected_bdc
                             st.session_state.stock_txn_depot = selected_depot
-                            st.session_state.stock_txn_product = selected_product  # Display name (PMS, Gasoil, LPG)
+                            st.session_state.stock_txn_product = selected_product  # Simple name for display
                            
                             st.success(f"✅ Extracted {len(df)} transactions!")
                         else:
@@ -2649,7 +2482,6 @@ def show_stock_transaction():
                     import traceback
                     st.code(traceback.format_exc())
        
-        # Display transaction data
         df = st.session_state.stock_txn_df
        
         if not df.empty:
@@ -2657,37 +2489,29 @@ def show_stock_transaction():
             st.markdown(f"### 📊 TRANSACTION ANALYSIS: {st.session_state.get('stock_txn_bdc', '')}")
             st.caption(f"Depot: {st.session_state.get('stock_txn_depot', '')} | Product: {st.session_state.get('stock_txn_product', '')}")
            
-            # Summary metrics
             cols = st.columns(5)
-           
-            # Inflows (Custody Transfer In, Product Outturn)
             inflows = df[df['Description'].isin(['Custody Transfer In', 'Product Outturn'])]['Volume'].sum()
             with cols[0]:
                 st.metric("📥 Inflows", f"{inflows:,.0f} LT")
            
-            # Outflows (Sale, Custody Transfer Out)
             outflows = df[df['Description'].isin(['Sale', 'Custody Transfer Out'])]['Volume'].sum()
             with cols[1]:
                 st.metric("📤 Outflows", f"{outflows:,.0f} LT")
            
-            # Sales (to OMCs)
             sales = df[df['Description'] == 'Sale']['Volume'].sum()
             with cols[2]:
                 st.metric("💰 Sales to OMCs", f"{sales:,.0f} LT")
            
-            # BDC to BDC transfers
             bdc_transfers = df[df['Description'] == 'Custody Transfer Out']['Volume'].sum()
             with cols[3]:
                 st.metric("🔄 BDC Transfers", f"{bdc_transfers:,.0f} LT")
            
-            # Final balance
             final_balance = df['Balance'].iloc[-1] if len(df) > 0 else 0
             with cols[4]:
                 st.metric("📊 Final Balance", f"{final_balance:,.0f} LT")
            
             st.markdown("---")
            
-            # Transaction breakdown
             st.markdown("### 📋 Transaction Breakdown")
            
             txn_summary = df.groupby('Description').agg({
@@ -2701,7 +2525,6 @@ def show_stock_transaction():
            
             st.markdown("---")
            
-            # Top customers (for Sales)
             if sales > 0:
                 st.markdown("### 🏢 Top Customers (OMC Sales)")
                
@@ -2718,11 +2541,9 @@ def show_stock_transaction():
                    
                     st.markdown("---")
            
-            # Full transaction table
             st.markdown("### 📄 Full Transaction History")
             st.dataframe(df, width="stretch", hide_index=True, height=400)
            
-            # Export
             st.markdown("---")
             if st.button("💾 EXPORT TO EXCEL", width="stretch"):
                 output_dir = os.path.join(os.getcwd(), "stock_transactions")
@@ -2740,12 +2561,10 @@ def show_stock_transaction():
                                      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                      width="stretch")
    
-    # TAB 2: STOCKOUT ANALYSIS
     with tab2:
         st.markdown("### 📊 INTELLIGENT STOCKOUT FORECASTING")
         st.info("Predict when stock will run out based on current balance and sales velocity")
        
-        # Check for required data
         has_balance = bool(st.session_state.get('bdc_records'))
         has_transactions = not st.session_state.stock_txn_df.empty
        
@@ -2770,19 +2589,15 @@ def show_stock_transaction():
         if has_balance and has_transactions:
             st.markdown("---")
            
-            # Get data
             balance_df = pd.DataFrame(st.session_state.bdc_records)
             txn_df = st.session_state.stock_txn_df
            
-            # Get BDC, depot, product from transaction query
             bdc_name = st.session_state.get('stock_txn_bdc', '')
             depot_name = st.session_state.get('stock_txn_depot', '')
-            selected_product_display = st.session_state.get('stock_txn_product', '')  # e.g. "PMS"
+            selected_product_display = st.session_state.get('stock_txn_product', '')
             
-            # MAP DISPLAY NAME TO BALANCE PRODUCT NAME
             product_name = PRODUCT_BALANCE_MAP.get(selected_product_display, selected_product_display)
            
-            # Filter balance for this BDC and product
             bdc_balance = balance_df[
                 (balance_df['BDC'].str.contains(bdc_name, case=False, na=False)) &
                 (balance_df['Product'].str.contains(product_name, case=False, na=False))
@@ -2791,10 +2606,8 @@ def show_stock_transaction():
             if not bdc_balance.empty:
                 current_stock = bdc_balance['ACTUAL BALANCE (LT\\KG)'].sum()
                
-                # Calculate daily sales rate
                 total_sales = txn_df[txn_df['Description'].isin(['Sale', 'Custody Transfer Out'])]['Volume'].sum()
                
-                # Calculate date range
                 txn_df_copy = txn_df.copy()
                 txn_df_copy['Date'] = pd.to_datetime(txn_df_copy['Date'], format='%d/%m/%Y', errors='coerce')
                 date_range_days = (txn_df_copy['Date'].max() - txn_df_copy['Date'].min()).days
@@ -2804,13 +2617,11 @@ def show_stock_transaction():
                 else:
                     daily_sales_rate = 0
                
-                # Calculate days until stockout
                 if daily_sales_rate > 0:
                     days_remaining = current_stock / daily_sales_rate
                 else:
                     days_remaining = float('inf')
                
-                # Determine status
                 if days_remaining < 7:
                     status = "🔴 CRITICAL"
                     status_color = "red"
@@ -2821,7 +2632,6 @@ def show_stock_transaction():
                     status = "🟢 HEALTHY"
                     status_color = "green"
                
-                # Display results
                 st.markdown(f"### {status} - Stockout Forecast")
                
                 cols = st.columns(4)
@@ -2864,7 +2674,6 @@ def show_stock_transaction():
                
                 st.markdown("---")
                
-                # Detailed breakdown
                 st.markdown("### 📊 Detailed Analysis")
                
                 analysis_data = {
@@ -2896,7 +2705,6 @@ def show_stock_transaction():
                
                 st.dataframe(pd.DataFrame(analysis_data), width="stretch", hide_index=True)
                
-                # Recommendations
                 st.markdown("---")
                 st.markdown("### 💡 RECOMMENDATIONS")
                
@@ -2930,11 +2738,9 @@ def show_bdc_intelligence():
     st.info("🎯 Predictive analytics combining stock balance and loading patterns")
     st.markdown("---")
    
-    # Check if we have both BDC balance and OMC loadings data
     has_balance = bool(st.session_state.get('bdc_records'))
     has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
    
-    # Auto-fetch section
     if not has_balance or not has_loadings:
         st.markdown("### 🔄 AUTO-FETCH DATA")
         st.info("BDC Intelligence needs both Stock Balance and OMC Loadings data. Let's fetch them automatically!")
@@ -3000,7 +2806,6 @@ def show_bdc_intelligence():
             if not has_loadings:
                 st.warning("⚠️ OMC Loadings Data Missing")
                
-                # Date range selector for loadings
                 st.markdown("**Select Date Range:**")
                 from datetime import timedelta
                 default_start = datetime.now() - timedelta(days=30)
@@ -3065,16 +2870,13 @@ def show_bdc_intelligence():
        
         st.markdown("---")
        
-        # If still missing data, show message and return
         if not (bool(st.session_state.get('bdc_records')) and not st.session_state.get('omc_df', pd.DataFrame()).empty):
             st.info("👆 Click the buttons above to fetch the required data automatically!")
             return
    
-    # If we reach here, we have both datasets
     balance_df = pd.DataFrame(st.session_state.bdc_records)
     loadings_df = st.session_state.omc_df
    
-    # Show data status
     st.markdown("### ✅ Data Ready")
     col1, col2 = st.columns(2)
     with col1:
@@ -3084,7 +2886,6 @@ def show_bdc_intelligence():
    
     st.markdown("---")
    
-    # Get BDC list from available data
     available_bdcs = set()
     available_bdcs.update(balance_df['BDC'].unique())
     available_bdcs.update(loadings_df['BDC'].unique())
@@ -3094,7 +2895,6 @@ def show_bdc_intelligence():
         st.warning("⚠️ No BDCs found in the data")
         return
    
-    # BDC Selector
     st.markdown("### 🔍 SELECT BDC FOR ANALYSIS")
     selected_bdc = st.selectbox("Choose BDC:", available_bdcs, key='intel_bdc_select')
    
@@ -3105,13 +2905,11 @@ def show_bdc_intelligence():
     st.markdown(f"## 📈 INTELLIGENCE REPORT: {selected_bdc}")
     st.markdown("---")
    
-    # Analyze the selected BDC
     tab1, tab2, tab3 = st.tabs(["📊 Overview", "⏱️ Stockout Prediction", "📉 Consumption Analysis"])
    
     with tab1:
         st.markdown("### 📊 CURRENT STATUS")
        
-        # Get current stock levels
         bdc_balance = balance_df[balance_df['BDC'] == selected_bdc]
        
         if not bdc_balance.empty:
@@ -3132,7 +2930,6 @@ def show_bdc_intelligence():
                
                 st.markdown("---")
                
-                # Depot breakdown
                 st.markdown("#### 🏭 Stock by Depot")
                 depot_breakdown = bdc_balance.groupby(['DEPOT', 'Product'])[col_name].sum().reset_index()
                 depot_pivot = depot_breakdown.pivot(index='DEPOT', columns='Product', values=col_name).fillna(0)
@@ -3140,7 +2937,6 @@ def show_bdc_intelligence():
         else:
             st.warning(f"⚠️ No stock balance data found for {selected_bdc}")
        
-        # Get loading statistics
         st.markdown("---")
         st.markdown("### 🚚 LOADING ACTIVITY")
        
@@ -3159,7 +2955,6 @@ def show_bdc_intelligence():
                     avg_order = bdc_loadings['Quantity'].mean()
                     st.metric("Avg Order Size", f"{avg_order:,.0f} LT")
                
-                # Product breakdown
                 st.markdown("#### 📦 Loading by Product")
                 product_loadings = bdc_loadings.groupby('Product').agg({
                     'Quantity': ['sum', 'mean', 'count']
@@ -3183,7 +2978,6 @@ def show_bdc_intelligence():
             st.warning(f"⚠️ No loading data for {selected_bdc}")
             return
        
-        # Calculate daily consumption rates
         loadings_df_copy = bdc_loadings.copy()
         loadings_df_copy['Date'] = pd.to_datetime(loadings_df_copy['Date'], errors='coerce')
         loadings_df_copy = loadings_df_copy.dropna(subset=['Date'])
@@ -3192,18 +2986,15 @@ def show_bdc_intelligence():
             st.warning("⚠️ No valid date information in loading data")
             return
        
-        # Calculate date range
         date_range = (loadings_df_copy['Date'].max() - loadings_df_copy['Date'].min()).days
         if date_range == 0:
-            date_range = 1 # Prevent division by zero
+            date_range = 1
        
-        # Calculate consumption by product
         daily_consumption = loadings_df_copy.groupby('Product')['Quantity'].sum() / date_range
        
         col_name = 'ACTUAL BALANCE (LT\\KG)'
         current_stock = bdc_balance.groupby('Product')[col_name].sum()
        
-        # Calculate days until stockout
         st.markdown("#### 📅 Estimated Days Until Stockout")
        
         predictions = []
@@ -3214,7 +3005,6 @@ def show_bdc_intelligence():
             if daily_rate > 0:
                 days_remaining = stock / daily_rate
                
-                # Determine status color
                 if days_remaining < 7:
                     status = "🔴 CRITICAL"
                     color = "#ff0000"
@@ -3233,7 +3023,6 @@ def show_bdc_intelligence():
                     'Status': status
                 })
                
-                # Create visual indicator
                 st.markdown(f"""
                 <div style='background: rgba(22,33,62,0.6); padding: 20px; border-radius: 10px;
                             border: 2px solid {color}; margin: 10px 0;'>
@@ -3279,7 +3068,6 @@ def show_bdc_intelligence():
             st.warning(f"⚠️ No loading data for {selected_bdc}")
             return
        
-        # Prepare time series data
         ts_df = bdc_loadings.copy()
         ts_df['Date'] = pd.to_datetime(ts_df['Date'], errors='coerce')
         ts_df = ts_df.dropna(subset=['Date'])
@@ -3288,13 +3076,11 @@ def show_bdc_intelligence():
             st.warning("⚠️ No valid dates in loading data")
             return
        
-        # Daily consumption by product
         daily_by_product = ts_df.groupby([ts_df['Date'].dt.date, 'Product'])['Quantity'].sum().reset_index()
         daily_by_product.columns = ['Date', 'Product', 'Volume']
        
         st.markdown("#### 📈 Daily Consumption Trend")
        
-        # Create line chart for each product
         for product in daily_by_product['Product'].unique():
             product_data = daily_by_product[daily_by_product['Product'] == product]
            
@@ -3316,7 +3102,6 @@ def show_bdc_intelligence():
        
         st.dataframe(stats, width="stretch", hide_index=True)
        
-        # Top OMCs
         st.markdown("---")
         st.markdown("#### 🏢 Top OMCs Loading from this BDC")
        
