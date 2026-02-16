@@ -2387,80 +2387,140 @@ def show_stock_transaction():
             with st.spinner("🔄 Fetching stock transaction data..."):
                 bdc_id = BDC_MAP[selected_bdc]
                 depot_id = DEPOT_MAP[selected_depot]
-                # FIXED: Get ID from simple name (PMS -> 12, etc.)
                 product_id = STOCK_PRODUCT_MAP[selected_product]
-               
+                
+                # DEBUG INFO
+                st.info(f"""
+                **DEBUG - Request Parameters:**
+                - BDC: {selected_bdc} (ID: {bdc_id})
+                - Depot: {selected_depot} (ID: {depot_id})
+                - Product: {selected_product} (ID: {product_id})
+                - Date Range: {start_date} to {end_date}
+                """)
+                
                 url = NPA_CONFIG['STOCK_TRANSACTION_URL']
                 params = {
-                    'lngProductId': product_id,  # ALWAYS NUMERIC ID
+                    'lngProductId': product_id,
                     'lngBDCId': bdc_id,
                     'lngDepotId': depot_id,
-                    'dtpStartDate': start_date.strftime('%Y-%m-%d'),
-                    'dtpEndDate': end_date.strftime('%Y-%m-%d'),
+                    'dtpStartDate': start_date.strftime('%m/%d/%Y'),  # CHANGED
+                    'dtpEndDate': end_date.strftime('%m/%d/%Y'),      # CHANGED
                     'lngUserId': NPA_CONFIG['USER_ID']
                 }
-               
+                
+                # Show full URL for debugging
+                import urllib.parse
+                query_string = urllib.parse.urlencode(params)
+                full_url = f"{url}?{query_string}"
+                st.code(full_url, language="text")
+                
                 try:
                     import requests
                     import io
-                   
+                    
                     headers = {
                         'User-Agent': 'Mozilla/5.0',
                         'Accept': 'application/pdf',
                     }
-                   
+                    
                     response = requests.get(url, params=params, headers=headers, timeout=30)
+                    
+                    # DEBUG: Show response details
+                    st.info(f"""
+                    **Response Info:**
+                    - Status Code: {response.status_code}
+                    - Content Type: {response.headers.get('Content-Type', 'unknown')}
+                    - Content Length: {len(response.content)} bytes
+                    """)
+                    
                     response.raise_for_status()
-                   
+                    
                     if response.content[:4] == b'%PDF':
+                        st.success("✅ PDF received!")
+                        
+                        # Save PDF for inspection
+                        debug_pdf_path = f"debug_stock_txn_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+                        with open(debug_pdf_path, 'wb') as f:
+                            f.write(response.content)
+                        st.success(f"📄 PDF saved to: {debug_pdf_path}")
+                        
                         pdf_file = io.BytesIO(response.content)
-                       
-                        transactions = []
+                        
+                        # Try to extract text first to see what's in the PDF
                         with pdfplumber.open(pdf_file) as pdf:
-                            for page in pdf.pages:
+                            st.info(f"📄 PDF has {len(pdf.pages)} page(s)")
+                            
+                            # Show first page text for debugging
+                            if len(pdf.pages) > 0:
+                                first_page_text = pdf.pages[0].extract_text()
+                                st.text_area("First Page Text (Debug)", first_page_text[:1000], height=200)
+                        
+                        # Now try to extract transactions
+                        pdf_file = io.BytesIO(response.content)  # Reset stream
+                        transactions = []
+                        
+                        with pdfplumber.open(pdf_file) as pdf:
+                            for page_num, page in enumerate(pdf.pages):
+                                st.caption(f"Processing page {page_num + 1}...")
                                 tables = page.extract_tables()
-                                for table in tables or []:
-                                    for row in table or []:
-                                        if not row or not any(row):
-                                            continue
-                                        if row[0] and 'Date' in str(row[0]):
-                                            continue
-                                        if row[0] and re.match(r'\d{2}/\d{2}/\d{4}', str(row[0])):
-                                            try:
-                                                vol_str = str(row[4]).replace(',', '') if len(row) > 4 and row[4] else '0'
-                                                bal_str = str(row[5]).replace(',', '') if len(row) > 5 and row[5] else '0'
-                                                transactions.append({
-                                                    'Date': str(row[0]).strip(),
-                                                    'Trans #': str(row[1]).strip() if len(row) > 1 and row[1] else '',
-                                                    'Description': str(row[2]).strip() if len(row) > 2 and row[2] else '',
-                                                    'Account': str(row[3]).strip() if len(row) > 3 and row[3] else '',
-                                                    'Volume': float(vol_str) if vol_str.replace('.','').replace('-','').isdigit() else 0,
-                                                    'Balance': float(bal_str) if bal_str.replace('.','').replace('-','').isdigit() else 0
-                                                })
-                                            except:
-                                                pass
-                       
+                                
+                                if tables:
+                                    st.success(f"Found {len(tables)} table(s) on page {page_num + 1}")
+                                    
+                                    for table_num, table in enumerate(tables):
+                                        st.caption(f"Table {table_num + 1} has {len(table) if table else 0} rows")
+                                        
+                                        for row_num, row in enumerate(table or []):
+                                            if not row or not any(row):
+                                                continue
+                                            if row[0] and 'Date' in str(row[0]):
+                                                continue
+                                            
+                                            # Show first few rows for debugging
+                                            if row_num < 3:
+                                                st.caption(f"Row {row_num}: {row}")
+                                            
+                                            if row[0] and re.match(r'\d{2}/\d{2}/\d{4}', str(row[0])):
+                                                try:
+                                                    vol_str = str(row[4]).replace(',', '') if len(row) > 4 and row[4] else '0'
+                                                    bal_str = str(row[5]).replace(',', '') if len(row) > 5 and row[5] else '0'
+                                                    
+                                                    transactions.append({
+                                                        'Date': str(row[0]).strip(),
+                                                        'Trans #': str(row[1]).strip() if len(row) > 1 and row[1] else '',
+                                                        'Description': str(row[2]).strip() if len(row) > 2 and row[2] else '',
+                                                        'Account': str(row[3]).strip() if len(row) > 3 and row[3] else '',
+                                                        'Volume': float(vol_str) if vol_str.replace('.','').replace('-','').isdigit() else 0,
+                                                        'Balance': float(bal_str) if bal_str.replace('.','').replace('-','').isdigit() else 0
+                                                    })
+                                                except Exception as e:
+                                                    st.error(f"Error parsing row {row_num}: {e}")
+                                else:
+                                    st.warning(f"No tables found on page {page_num + 1}")
+                        
                         if transactions:
                             df = pd.DataFrame(transactions)
                             df = df[df['Description'] != 'Balance b/fwd'].reset_index(drop=True)
-                           
+                            
                             st.session_state.stock_txn_df = df
                             st.session_state.stock_txn_bdc = selected_bdc
                             st.session_state.stock_txn_depot = selected_depot
-                            st.session_state.stock_txn_product = selected_product  # Simple name for display
-                           
+                            st.session_state.stock_txn_product = selected_product
+                            
                             st.success(f"✅ Extracted {len(df)} transactions!")
                         else:
-                            st.warning("⚠️ No transactions found")
-                            st.session_state.stock_txn_df = pd.DataFrame()
+                            st.warning("⚠️ No transactions found in PDF")
+                            st.info("The PDF might be empty or contain a message like 'No data available for this period'")
                     else:
-                        st.error("❌ Invalid PDF response")
-                        st.session_state.stock_txn_df = pd.DataFrame()
-               
+                        st.error("❌ Response is not a PDF")
+                        # Show what we got instead
+                        st.code(response.text[:500])
+                        
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
                     import traceback
                     st.code(traceback.format_exc())
+        
        
         df = st.session_state.stock_txn_df
        
