@@ -6,6 +6,8 @@ pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly
 
 USAGE:
 streamlit run npa_dashboard.py
+
+FIXED: Product ID mapping for Stock Transaction now uses separate variable
 """
 
 import streamlit as st
@@ -92,7 +94,7 @@ def load_product_mappings():
 # Load all mappings at startup
 BDC_MAP = load_bdc_mappings()
 DEPOT_MAP = load_depot_mappings()
-PRODUCT_MAP = load_product_mappings()
+STOCK_PRODUCT_MAP = load_product_mappings()  # FIXED: Renamed to avoid conflict
 
 # Product options for user-friendly dropdown in Stock Transaction
 PRODUCT_OPTIONS = ["PMS", "Gasoil", "LPG"]
@@ -159,6 +161,7 @@ def load_history(data_type, limit=10):
             continue
    
     return history
+
 
 # ==================== CHART GENERATION FUNCTIONS ====================
 def create_product_pie_chart(df, title="Product Distribution"):
