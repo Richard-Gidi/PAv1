@@ -119,7 +119,6 @@ NPA_CONFIG = {
 
 # ==================== HISTORY & CACHE FUNCTIONS ====================
 def save_to_history(data_type, df, metadata=None):
-    """Save data to history for comparison and tracking"""
     history_dir = os.path.join(os.getcwd(), "data_history")
     os.makedirs(history_dir, exist_ok=True)
    
@@ -144,7 +143,6 @@ def save_to_history(data_type, df, metadata=None):
     return filepath
 
 def load_history(data_type, limit=10):
-    """Load recent history for comparison"""
     history_dir = os.path.join(os.getcwd(), "data_history")
     if not os.path.exists(history_dir):
         return []
@@ -164,7 +162,6 @@ def load_history(data_type, limit=10):
 
 # ==================== CHART GENERATION FUNCTIONS ====================
 def create_product_pie_chart(df, title="Product Distribution"):
-    """Create interactive pie chart for product distribution"""
     if 'Quantity' in df.columns:
         value_col = 'Quantity'
     elif 'ACTUAL BALANCE (LT\\KG)' in df.columns:
@@ -201,7 +198,6 @@ def create_product_pie_chart(df, title="Product Distribution"):
     return fig
 
 def create_bdc_bar_chart(df, title="BDC Performance"):
-    """Create interactive bar chart for BDC performance"""
     if 'Quantity' in df.columns and 'BDC' in df.columns:
         bdc_summary = df.copy()
     else:
@@ -247,7 +243,6 @@ def create_bdc_bar_chart(df, title="BDC Performance"):
     return fig
 
 def create_trend_chart(df, date_col='Date', value_col='Quantity', title="Trend Analysis"):
-    """Create time series trend chart"""
     df_trend = df.copy()
     df_trend[date_col] = pd.to_datetime(df_trend[date_col], errors='coerce')
     df_trend = df_trend.dropna(subset=[date_col])
@@ -281,7 +276,6 @@ def create_trend_chart(df, date_col='Date', value_col='Quantity', title="Trend A
     return fig
 
 def create_comparison_chart(df1, df2, label1="Period 1", label2="Period 2"):
-    """Create comparison chart between two datasets"""
     prod1 = df1.groupby('Product')['Quantity'].sum().reset_index()
     prod2 = df2.groupby('Product')['Quantity'].sum().reset_index()
    
@@ -320,7 +314,6 @@ def create_comparison_chart(df1, df2, label1="Period 1", label2="Period 2"):
 
 # ==================== ALERT FUNCTIONS ====================
 def check_low_stock_alerts(df, threshold=10000):
-    """Check for low stock alerts"""
     col_name = 'ACTUAL BALANCE (LT\\KG)'
     if col_name not in df.columns:
         return []
@@ -340,7 +333,6 @@ def check_low_stock_alerts(df, threshold=10000):
     return alerts
 
 def check_volume_spikes(df, threshold_pct=50):
-    """Check for unusual volume spikes"""
     if 'Quantity' not in df.columns:
         return []
    
@@ -616,7 +608,6 @@ class StockBalanceScraper:
         return out_path
    
     def parse_text_data(self, text_content):
-        """Parse text content from web page"""
         records = []
         lines = [ln.strip() for ln in (text_content or "").split('\n') if ln.strip()]
         current_bdc = current_depot = current_date = None
@@ -702,7 +693,6 @@ def _parse_loaded_line(line: str, current_product: str, current_depot: str, curr
         return None
 
 def extract_npa_data_from_pdf(pdf_file) -> pd.DataFrame:
-    """Extract NPA data from PDF file or file-like object"""
     extracted_rows = []
     current_depot = ""
     current_bdc = ""
@@ -784,7 +774,6 @@ def save_to_excel_multi(df: pd.DataFrame, filename: str = None) -> str:
     return out_path
 
 def parse_text_to_dataframe(text_content: str) -> pd.DataFrame:
-    """Parse text content from web page like we'd parse a PDF"""
     extracted_rows = []
     current_depot = ""
     current_bdc = ""
@@ -843,7 +832,6 @@ DAILY_PRODUCT_MAP = {
 }
 
 def clean_currency(value_str):
-    """Converts '54,000.00' -> 54000.0"""
     if not value_str: return 0.0
     try:
         return float(value_str.replace(",", "").strip())
@@ -851,7 +839,6 @@ def clean_currency(value_str):
         return 0.0
 
 def get_product_category(text):
-    """Determines product category from line text."""
     text_upper = text.upper()
     if "AVIATION" in text_upper or "TURBINE" in text_upper: return "ATK"
     if "RFO" in text_upper: return "RFO"
@@ -862,10 +849,8 @@ def get_product_category(text):
     return "PREMIUM"
 
 def parse_daily_line(line, last_known_date):
-    """Parses a single line of text to extract order details."""
     line = line.strip()
    
-    # Regex to find Price and Volume at the end
     pv_match = re.search(r"(\d{1,4}\.\d{2,4})\s+(\d{1,3}(?:,\d{3})*\.\d{2})$", line)
    
     if not pv_match:
@@ -877,14 +862,12 @@ def parse_daily_line(line, last_known_date):
     volume = clean_currency(vol_str)
     remainder = line[:pv_match.start()].strip()
    
-    # Extract BRV (Truck Number)
     tokens = remainder.split()
     if not tokens: return None
    
     brv = tokens[-1]
     tokens = tokens[:-1]
     remainder = " ".join(tokens)
-    # Extract Date
     date_val = last_known_date
     date_match = re.search(r"(\d{2}/\d{2}/\d{4})", remainder)
    
@@ -897,7 +880,6 @@ def parse_daily_line(line, last_known_date):
             pass
         remainder = remainder.replace(date_match.group(1), "").strip()
    
-    # Extract Product and Order Number
     product_cat = get_product_category(line)
    
     noise_words = [
@@ -930,7 +912,6 @@ def parse_daily_line(line, last_known_date):
     }
 
 def simplify_bdc_names(df):
-    """Take the first 2 words of every BDC name."""
     if "BDC" not in df.columns or df.empty:
         return df
     unique_bdcs = df["BDC"].unique()
@@ -948,7 +929,6 @@ def simplify_bdc_names(df):
     return df
 
 def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
-    """Extract Daily Orders from PDF file."""
     all_rows = []
    
     ctx = {
@@ -970,7 +950,6 @@ def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
                     clean = line.strip()
                     if not clean: continue
                    
-                    # Update Context Headers
                     if clean.startswith("DEPOT:"):
                         raw_depot = clean.replace("DEPOT:", "").strip()
                        
@@ -988,7 +967,6 @@ def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
                             ctx["Status"] = parts[-1].strip()
                         continue
                        
-                    # Parse Data Row
                     if not re.search(r"\d{2}$", clean):
                         continue
                        
@@ -1021,14 +999,12 @@ def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
     return df
 
 def save_daily_orders_excel(df: pd.DataFrame, filename: str = None) -> str:
-    """Save daily orders to Excel with summary."""
     out_dir = os.path.join(os.getcwd(), "daily_orders")
     os.makedirs(out_dir, exist_ok=True)
     if filename is None:
         filename = f"daily_orders_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     out_path = os.path.join(out_dir, filename)
    
-    # Create Summary Pivot
     if not df.empty:
         pivot = df.pivot_table(
             index="BDC",
@@ -1038,7 +1014,6 @@ def save_daily_orders_excel(df: pd.DataFrame, filename: str = None) -> str:
             fill_value=0
         ).reset_index()
        
-        # Calculate Grand Total
         product_cols = [c for c in pivot.columns if c != "BDC"]
         pivot["Grand Total"] = pivot[product_cols].sum(axis=1)
     else:
@@ -2393,7 +2368,8 @@ def show_stock_transaction():
        
         with col1:
             selected_bdc = st.selectbox("Select BDC:", sorted(BDC_MAP.keys()))
-            selected_product = st.selectbox("Select Product:", PRODUCT_OPTIONS)  # PMS, Gasoil, LPG
+            # FIXED: Simple product selection
+            selected_product = st.selectbox("Select Product:", PRODUCT_OPTIONS)
        
         with col2:
             selected_depot = st.selectbox("Select Depot:", sorted(DEPOT_MAP.keys()))
@@ -2408,11 +2384,12 @@ def show_stock_transaction():
             with st.spinner("🔄 Fetching stock transaction data..."):
                 bdc_id = BDC_MAP[selected_bdc]
                 depot_id = DEPOT_MAP[selected_depot]
-                product_id = PRODUCT_MAP[selected_product]  # FIXED: Always ID (12/14/28)
+                # FIXED: Get ID from simple name (PMS -> 12, etc.)
+                product_id = PRODUCT_MAP[selected_product]
                
                 url = NPA_CONFIG['STOCK_TRANSACTION_URL']
                 params = {
-                    'lngProductId': product_id,
+                    'lngProductId': product_id,  # ALWAYS NUMERIC ID
                     'lngBDCId': bdc_id,
                     'lngDepotId': depot_id,
                     'dtpStartDate': start_date.strftime('%Y-%m-%d'),
@@ -2451,9 +2428,9 @@ def show_stock_transaction():
                                                 bal_str = str(row[5]).replace(',', '') if len(row) > 5 and row[5] else '0'
                                                 transactions.append({
                                                     'Date': str(row[0]).strip(),
-                                                    'Trans #': str(row[1]).strip() if len(row) > 1 else '',
-                                                    'Description': str(row[2]).strip() if len(row) > 2 else '',
-                                                    'Account': str(row[3]).strip() if len(row) > 3 else '',
+                                                    'Trans #': str(row[1]).strip() if len(row) > 1 and row[1] else '',
+                                                    'Description': str(row[2]).strip() if len(row) > 2 and row[2] else '',
+                                                    'Account': str(row[3]).strip() if len(row) > 3 and row[3] else '',
                                                     'Volume': float(vol_str) if vol_str.replace('.','').replace('-','').isdigit() else 0,
                                                     'Balance': float(bal_str) if bal_str.replace('.','').replace('-','').isdigit() else 0
                                                 })
