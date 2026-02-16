@@ -2147,7 +2147,7 @@ def show_market_share():
                         width="stretch"
                     )
 
-def show_competitive_intel():
+#def show_competitive_intel():
 # COMPETITIVE INTELLIGENCE FUNCTION - INSERT BEFORE show_bdc_intelligence
 
 def show_competitive_intel():
