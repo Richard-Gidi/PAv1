@@ -1836,12 +1836,12 @@ def show_market_share():
     st.markdown("<h2>📊 BDC MARKET SHARE ANALYSIS</h2>", unsafe_allow_html=True)
     st.info("🎯 Comprehensive market share analysis: Stock Balance + Sales Volume")
     st.markdown("---")
-   
+
     has_balance = bool(st.session_state.get('bdc_records'))
     has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
-   
+
     st.markdown("### 📊 DATA AVAILABILITY")
-   
+
     col1, col2 = st.columns(2)
     with col1:
         if has_balance:
@@ -1857,55 +1857,55 @@ def show_market_share():
                 st.caption(f"Period: {st.session_state.omc_start_date.strftime('%Y/%m/%d')} to {st.session_state.omc_end_date.strftime('%Y/%m/%d')}")
         else:
             st.warning("⚠️ OMC Loadings Data Not Loaded")
-   
+
     if not has_balance and not has_loadings:
         st.error("❌ No data available for market share analysis")
         st.info("Please fetch data from **BDC Balance** and/or **OMC Loadings** sections first.")
         return
-   
+
     st.markdown("---")
-   
+
     st.markdown("### 🔍 SELECT BDC FOR ANALYSIS")
-   
+
     all_bdcs = set()
     if has_balance:
         all_bdcs.update(balance_df['BDC'].unique())
     if has_loadings:
         all_bdcs.update(loadings_df['BDC'].unique())
-   
+
     all_bdcs = sorted(list(all_bdcs))
-   
+
     if not all_bdcs:
         st.error("❌ No BDCs found in data")
         return
-   
+
     selected_bdc = st.selectbox("Choose BDC:", all_bdcs, key='market_share_bdc')
-   
+
     if not selected_bdc:
         return
-   
+
     st.markdown("---")
     st.markdown(f"## 📊 COMPREHENSIVE MARKET REPORT: {selected_bdc}")
     st.markdown("---")
-   
+
     tab1, tab2, tab3 = st.tabs(["📦 Stock Balance", "🚚 Sales Volume", "📊 Combined Analysis"])
-   
+
     with tab1:
         if not has_balance:
             st.warning("⚠️ BDC Balance data not available. Please fetch it first.")
         else:
             st.markdown("### 📦 STOCK BALANCE MARKET SHARE")
-           
+
             balance_col = 'ACTUAL BALANCE (LT\\KG)'
             bdc_balance_data = balance_df[balance_df['BDC'] == selected_bdc]
-           
+
             total_market_stock = balance_df[balance_col].sum()
             bdc_total_stock = bdc_balance_data[balance_col].sum()
             bdc_stock_share = (bdc_total_stock / total_market_stock * 100) if total_market_stock > 0 else 0
-           
+
             all_bdc_stocks = balance_df.groupby('BDC')[balance_col].sum().sort_values(ascending=False)
             stock_rank = list(all_bdc_stocks.index).index(selected_bdc) + 1 if selected_bdc in all_bdc_stocks.index else 0
-           
+
             cols = st.columns(3)
             with cols[0]:
                 st.markdown(f"""
@@ -1931,27 +1931,27 @@ def show_market_share():
                     <p style='color: #888; font-size: 14px; margin: 0;'>out of {len(all_bdc_stocks)}</p>
                 </div>
                 """, unsafe_allow_html=True)
-           
+
             st.markdown("---")
-           
+
             st.markdown("#### 📦 Stock by Product (PMS, AGO, LPG)")
-           
+
             product_stock_data = []
             for product in ['PREMIUM', 'GASOIL', 'LPG']:
                 market_product_stock = balance_df[balance_df['Product'] == product][balance_col].sum()
                 bdc_product_stock = bdc_balance_data[bdc_balance_data['Product'] == product][balance_col].sum()
                 product_share = (bdc_product_stock / market_product_stock * 100) if market_product_stock > 0 else 0
-               
+
                 product_stock_data.append({
                     'Product': product,
                     'BDC Stock (LT/KG)': bdc_product_stock,
                     'Market Total (LT/KG)': market_product_stock,
                     'Market Share (%)': product_share
                 })
-           
+
             stock_product_df = pd.DataFrame(product_stock_data)
             st.dataframe(stock_product_df, width="stretch", hide_index=True)
-           
+
             cols = st.columns(3)
             for idx, row in stock_product_df.iterrows():
                 with cols[idx]:
@@ -1973,28 +1973,29 @@ def show_market_share():
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
-   
+
     with tab2:
         if not has_loadings:
             st.warning("⚠️ OMC Loadings data not available. Please fetch it first.")
         else:
             st.markdown("### 🚚 SALES VOLUME MARKET SHARE")
-           
+
             if 'omc_start_date' in st.session_state and 'omc_end_date' in st.session_state:
                 st.info(f"📅 Analysis Period: {st.session_state.omc_start_date.strftime('%Y/%m/%d')} to {st.session_state.omc_end_date.strftime('%Y/%m/%d')}")
-           
+
             sales_col = 'Quantity'
             bdc_sales_data = loadings_df[loadings_df['BDC'] == selected_bdc]
-           
+
             total_market_sales = loadings_df[sales_col].sum()
             bdc_total_sales = bdc_sales_data[sales_col].sum()
             bdc_sales_share = (bdc_total_sales / total_market_sales * 100) if total_market_sales > 0 else 0
-           
+
             all_bdc_sales = loadings_df.groupby('BDC')[sales_col].sum().sort_values(ascending=False)
             sales_rank = list(all_bdc_sales.index).index(selected_bdc) + 1 if selected_bdc in all_bdc_sales.index else 0
-           
+            total_bdc_count = len(all_bdc_sales)
+
             bdc_revenue = (bdc_sales_data[sales_col] * bdc_sales_data['Price']).sum()
-           
+
             cols = st.columns(4)
             with cols[0]:
                 st.markdown(f"""
@@ -2015,9 +2016,9 @@ def show_market_share():
             with cols[2]:
                 st.markdown(f"""
                 <div class='metric-card'>
-                    <h2>SALES RANK</h2>
+                    <h2>OVERALL RANK</h2>
                     <h1>#{sales_rank}</h1>
-                    <p style='color: #888; font-size: 14px; margin: 0;'>out of {len(all_bdc_sales)}</p>
+                    <p style='color: #888; font-size: 14px; margin: 0;'>out of {total_bdc_count} BDCs</p>
                 </div>
                 """, unsafe_allow_html=True)
             with cols[3]:
@@ -2028,32 +2029,146 @@ def show_market_share():
                     <p style='color: #888; font-size: 14px; margin: 0;'>Total Value</p>
                 </div>
                 """, unsafe_allow_html=True)
-           
+
             st.markdown("---")
-           
+
+            # ── Per-product rank calculations ──────────────────────────────────
+            # Build a rank table: for each product, rank ALL BDCs by sales volume
+            product_rank_lookup = {}   # product -> {bdc: rank, total_bdcs: n}
+            for product in ['PREMIUM', 'GASOIL', 'LPG']:
+                prod_bdc_sales = (
+                    loadings_df[loadings_df['Product'] == product]
+                    .groupby('BDC')[sales_col]
+                    .sum()
+                    .sort_values(ascending=False)
+                )
+                if selected_bdc in prod_bdc_sales.index:
+                    rank = list(prod_bdc_sales.index).index(selected_bdc) + 1
+                else:
+                    rank = None   # BDC had zero / no sales in this product
+                product_rank_lookup[product] = {
+                    'rank': rank,
+                    'total': len(prod_bdc_sales)
+                }
+
             st.markdown("#### 🚚 Sales by Product (PMS, AGO, LPG)")
-           
+
             product_sales_data = []
             for product in ['PREMIUM', 'GASOIL', 'LPG']:
                 market_product_sales = loadings_df[loadings_df['Product'] == product][sales_col].sum()
                 bdc_product_sales = bdc_sales_data[bdc_sales_data['Product'] == product][sales_col].sum()
                 product_share = (bdc_product_sales / market_product_sales * 100) if market_product_sales > 0 else 0
-               
+
                 bdc_orders = len(bdc_sales_data[bdc_sales_data['Product'] == product])
-               
+
+                rank_info = product_rank_lookup[product]
+                rank_str = (
+                    f"#{rank_info['rank']} / {rank_info['total']}"
+                    if rank_info['rank'] is not None
+                    else f"N/A / {rank_info['total']}"
+                )
+
                 product_sales_data.append({
                     'Product': product,
                     'BDC Sales (LT/KG)': bdc_product_sales,
                     'Market Total (LT/KG)': market_product_sales,
-                    'Market Share (%)': product_share,
+                    'Market Share (%)': round(product_share, 2),
+                    'Rank (by Product)': rank_str,
                     'Orders': bdc_orders
                 })
-           
+
             sales_product_df = pd.DataFrame(product_sales_data)
             st.dataframe(sales_product_df, width="stretch", hide_index=True)
-           
+
+            # ── Per-product rank leaderboard (top 5 competitors per product) ──
+            st.markdown("#### 🏆 Per-Product BDC Rankings (Top 5)")
+
+            rank_cols = st.columns(3)
+            for col_idx, product in enumerate(['PREMIUM', 'GASOIL', 'LPG']):
+                with rank_cols[col_idx]:
+                    prod_bdc_sales = (
+                        loadings_df[loadings_df['Product'] == product]
+                        .groupby('BDC')[sales_col]
+                        .sum()
+                        .sort_values(ascending=False)
+                        .head(5)
+                        .reset_index()
+                    )
+                    prod_bdc_sales.columns = ['BDC', 'Volume (LT)']
+                    prod_bdc_sales.insert(0, 'Rank', range(1, len(prod_bdc_sales) + 1))
+
+                    # Highlight selected BDC row
+                    rows_html = ""
+                    for _, r in prod_bdc_sales.iterrows():
+                        is_selected = (r['BDC'] == selected_bdc)
+                        row_color = "#ff00ff" if is_selected else "#e0e0e0"
+                        bg_color = "rgba(255,0,255,0.15)" if is_selected else "transparent"
+                        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(int(r['Rank']), "")
+                        rows_html += f"""
+                        <tr style='background:{bg_color};'>
+                            <td style='color:{row_color}; padding:6px 8px; font-weight:{"bold" if is_selected else "normal"};'>
+                                {medal} #{int(r['Rank'])}
+                            </td>
+                            <td style='color:{row_color}; padding:6px 8px; font-weight:{"bold" if is_selected else "normal"};
+                                       max-width:140px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;'
+                                title='{r["BDC"]}'>
+                                {r['BDC'][:18] + "…" if len(r['BDC']) > 18 else r['BDC']}
+                            </td>
+                            <td style='color:{row_color}; padding:6px 8px; text-align:right; font-weight:{"bold" if is_selected else "normal"};'>
+                                {r['Volume (LT)']:,.0f}
+                            </td>
+                        </tr>"""
+
+                    # If selected BDC is not in top-5, append its actual rank below a divider
+                    rank_info = product_rank_lookup[product]
+                    selected_not_in_top5 = selected_bdc not in prod_bdc_sales['BDC'].values
+                    if selected_not_in_top5 and rank_info['rank'] is not None:
+                        bdc_vol = bdc_sales_data[bdc_sales_data['Product'] == product][sales_col].sum()
+                        rows_html += f"""
+                        <tr>
+                            <td colspan='3' style='color:#888; padding:4px 8px; font-size:12px;'>⋯ {rank_info['rank'] - 5} more BDCs ⋯</td>
+                        </tr>
+                        <tr style='background:rgba(255,0,255,0.15);'>
+                            <td style='color:#ff00ff; padding:6px 8px; font-weight:bold;'>#{rank_info['rank']}</td>
+                            <td style='color:#ff00ff; padding:6px 8px; font-weight:bold;'
+                                title='{selected_bdc}'>
+                                {selected_bdc[:18] + "…" if len(selected_bdc) > 18 else selected_bdc}
+                            </td>
+                            <td style='color:#ff00ff; padding:6px 8px; text-align:right; font-weight:bold;'>
+                                {bdc_vol:,.0f}
+                            </td>
+                        </tr>"""
+
+                    st.markdown(f"""
+                    <div style='background:rgba(22,33,62,0.6); border-radius:10px;
+                                border:2px solid #00ffff; padding:12px; margin-bottom:8px;'>
+                        <p style='color:#00ffff; font-family:Orbitron,sans-serif; font-size:14px;
+                                  margin:0 0 8px 0; font-weight:bold; text-align:center;'>{product}</p>
+                        <table style='width:100%; border-collapse:collapse; font-family:Rajdhani,sans-serif; font-size:13px;'>
+                            <thead>
+                                <tr style='border-bottom:1px solid rgba(0,255,255,0.3);'>
+                                    <th style='color:#888; padding:4px 8px; text-align:left;'>Rank</th>
+                                    <th style='color:#888; padding:4px 8px; text-align:left;'>BDC</th>
+                                    <th style='color:#888; padding:4px 8px; text-align:right;'>Volume (LT)</th>
+                                </tr>
+                            </thead>
+                            <tbody>{rows_html}</tbody>
+                        </table>
+                    </div>
+                    """, unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # ── Original product cards (with rank badge added) ─────────────────
+            st.markdown("#### 📊 Product Detail Cards")
             cols = st.columns(3)
-            for idx, row in sales_product_df.iterrows():
+            for idx, row in enumerate(product_sales_data):
+                rank_info = product_rank_lookup[row['Product']]
+                rank_display = (
+                    f"#{rank_info['rank']} of {rank_info['total']}"
+                    if rank_info['rank'] is not None
+                    else "No sales"
+                )
                 with cols[idx]:
                     st.markdown(f"""
                     <div style='background: rgba(22,33,62,0.6); padding: 15px; border-radius: 10px;
@@ -2072,6 +2187,12 @@ def show_market_share():
                             </p>
                         </div>
                         <div style='margin-top: 10px;'>
+                            <p style='color: #888; margin: 5px 0; font-size: 14px;'>Rank (this product)</p>
+                            <p style='color: #ffaa00; margin: 0; font-size: 20px; font-weight: bold;'>
+                                {rank_display}
+                            </p>
+                        </div>
+                        <div style='margin-top: 10px;'>
                             <p style='color: #888; margin: 5px 0; font-size: 14px;'>Orders</p>
                             <p style='color: #ffffff; margin: 0; font-size: 16px;'>
                                 {row['Orders']:,}
@@ -2079,16 +2200,16 @@ def show_market_share():
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
-   
+
     with tab3:
         st.markdown("### 📊 STOCK vs SALES COMPARISON")
-       
+
         if not has_balance or not has_loadings:
             st.warning("⚠️ Both BDC Balance and OMC Loadings data required for combined analysis")
             st.info("Please fetch both datasets to see the complete picture.")
         else:
             st.markdown("#### 🎯 Performance Overview")
-           
+
             cols = st.columns(2)
             with cols[0]:
                 st.markdown(f"""
@@ -2106,7 +2227,7 @@ def show_market_share():
                     </p>
                 </div>
                 """, unsafe_allow_html=True)
-           
+
             with cols[1]:
                 st.markdown(f"""
                 <div style='background: rgba(22,33,62,0.6); padding: 20px; border-radius: 15px;
@@ -2123,49 +2244,58 @@ def show_market_share():
                     </p>
                 </div>
                 """, unsafe_allow_html=True)
-           
+
             st.markdown("---")
-           
+
             st.markdown("#### 📊 Stock vs Sales by Product")
-           
+
             comparison_data = []
             for product in ['PREMIUM', 'GASOIL', 'LPG']:
                 bdc_stock = stock_product_df[stock_product_df['Product'] == product]['BDC Stock (LT/KG)'].values[0] if len(stock_product_df) > 0 else 0
                 stock_share = stock_product_df[stock_product_df['Product'] == product]['Market Share (%)'].values[0] if len(stock_product_df) > 0 else 0
-               
-                bdc_sales = sales_product_df[sales_product_df['Product'] == product]['BDC Sales (LT/KG)'].values[0] if len(sales_product_df) > 0 else 0
-                sales_share = sales_product_df[sales_product_df['Product'] == product]['Market Share (%)'].values[0] if len(sales_product_df) > 0 else 0
-               
+
+                bdc_sales_row = next((r for r in product_sales_data if r['Product'] == product), {})
+                bdc_sales_vol = bdc_sales_row.get('BDC Sales (LT/KG)', 0)
+                sales_share = bdc_sales_row.get('Market Share (%)', 0)
+
+                rank_info = product_rank_lookup[product]
+                rank_str = (
+                    f"#{rank_info['rank']} / {rank_info['total']}"
+                    if rank_info['rank'] is not None
+                    else f"N/A / {rank_info['total']}"
+                )
+
                 comparison_data.append({
                     'Product': product,
                     'Stock (LT)': bdc_stock,
                     'Stock Share (%)': stock_share,
-                    'Sales (LT)': bdc_sales,
+                    'Sales (LT)': bdc_sales_vol,
                     'Sales Share (%)': sales_share,
-                    'Stock/Sales Ratio': f"{(bdc_stock/bdc_sales):.2f}x" if bdc_sales > 0 else "N/A"
+                    'Sales Rank (Product)': rank_str,
+                    'Stock/Sales Ratio': f"{(bdc_stock / bdc_sales_vol):.2f}x" if bdc_sales_vol > 0 else "N/A"
                 })
-           
+
             comparison_df = pd.DataFrame(comparison_data)
             st.dataframe(comparison_df, width="stretch", hide_index=True)
-           
+
             st.markdown("---")
-           
+
             st.markdown("### 💾 EXPORT COMPLETE REPORT")
-           
+
             if st.button("📄 GENERATE EXCEL REPORT", width="stretch"):
                 output_dir = os.path.join(os.getcwd(), "market_share_reports")
                 os.makedirs(output_dir, exist_ok=True)
-               
+
                 filename = f"market_share_{selected_bdc}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
                 filepath = os.path.join(output_dir, filename)
-               
+
                 with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
                     stock_product_df.to_excel(writer, sheet_name='Stock Analysis', index=False)
-                    sales_product_df.to_excel(writer, sheet_name='Sales Analysis', index=False)
+                    pd.DataFrame(product_sales_data).to_excel(writer, sheet_name='Sales Analysis', index=False)
                     comparison_df.to_excel(writer, sheet_name='Stock vs Sales', index=False)
-               
+
                 st.success(f"✅ Report generated: {filename}")
-               
+
                 with open(filepath, 'rb') as f:
                     st.download_button(
                         "⬇️ DOWNLOAD REPORT",
