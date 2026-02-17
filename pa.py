@@ -2499,7 +2499,7 @@ def show_stock_transaction():
 
         col1, col2 = st.columns(2)
         with col1:
-            selected_bdc = st.selectbox("Select BDC:", sorted(BDC_MAP.keys()))
+            selected_bdc     = st.selectbox("Select BDC:", sorted(BDC_MAP.keys()))
             selected_product = st.selectbox("Select Product:", PRODUCT_OPTIONS)
         with col2:
             selected_depot = st.selectbox("Select Depot:", sorted(DEPOT_MAP.keys()))
@@ -2512,18 +2512,18 @@ def show_stock_transaction():
 
         if st.button("📊 FETCH TRANSACTION REPORT", width="stretch"):
             with st.spinner("🔄 Fetching stock transaction data..."):
-                bdc_id    = BDC_MAP[selected_bdc]
-                depot_id  = DEPOT_MAP[selected_depot]
+                bdc_id     = BDC_MAP[selected_bdc]
+                depot_id   = DEPOT_MAP[selected_depot]
                 product_id = STOCK_PRODUCT_MAP[selected_product]
 
                 url = NPA_CONFIG['STOCK_TRANSACTION_URL']
                 params = {
-                    'lngProductId':  product_id,
-                    'lngBDCId':      bdc_id,
-                    'lngDepotId':    depot_id,
-                    'dtpStartDate':  start_date.strftime('%m/%d/%Y'),
-                    'dtpEndDate':    end_date.strftime('%m/%d/%Y'),
-                    'lngUserId':     NPA_CONFIG['USER_ID']
+                    'lngProductId': product_id,
+                    'lngBDCId':     bdc_id,
+                    'lngDepotId':   depot_id,
+                    'dtpStartDate': start_date.strftime('%m/%d/%Y'),
+                    'dtpEndDate':   end_date.strftime('%m/%d/%Y'),
+                    'lngUserId':    NPA_CONFIG['USER_ID']
                 }
 
                 st.info(f"🔍 Requesting: {selected_bdc} → {selected_depot} → {selected_product}")
@@ -2531,276 +2531,39 @@ def show_stock_transaction():
                 try:
                     import requests, io
 
-                    headers = {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                        'Accept':     'application/pdf',
-                    }
-
-                    response = requests.get(url, params=params, headers=headers, timeout=30)
+                    response = requests.get(
+                        url, params=params,
+                        headers={'User-Agent': 'Mozilla/5.0', 'Accept': 'application/pdf'},
+                        timeout=30
+                    )
                     response.raise_for_status()
 
                     if response.content[:4] != b'%PDF':
                         st.error("❌ Response is not a PDF")
                         st.code(response.text[:500])
                         st.session_state.stock_txn_df = pd.DataFrame()
-                        return
-
-                    st.success(f"✅ PDF received ({len(response.content):,} bytes)")
-                    pdf_bytes = io.BytesIO(response.content)
-
-                    # ── Lines that are footer/summary rows — NEVER include these ──
-                    FOOTER_SKIP = {
-                        'actual stock balance',
-                        'stock commitments',
-                        'available stock balance',
-                        'last stock update date',
-                        'last stock update',
-                    }
-
-                    # ── Lines that are report header/metadata — skip these too ──
-                    HEADER_SKIP_FRAGMENTS = [
-                        'stock transaction report',
-                        'national petroleum authority',
-                        'bdc :',
-                        'depot :',
-                        'product :',
-                        'printed by',
-                        'printed on',
-                        'page ',
-                    ]
-
-                    def _is_footer(line: str) -> bool:
-                        lo = line.strip().lower()
-                        # exact footer lines
-                        if lo in FOOTER_SKIP:
-                            return True
-                        # footer lines that start with these keywords
-                        for kw in FOOTER_SKIP:
-                            if lo.startswith(kw):
-                                return True
-                        return False
-
-                    def _is_header(line: str) -> bool:
-                        lo = line.strip().lower()
-                        for frag in HEADER_SKIP_FRAGMENTS:
-                            if frag in lo:
-                                return True
-                        return False
-
-                    def _is_number(s: str) -> bool:
-                        """Float-safe number check: handles 50,000.00 and -50,000.00"""
-                        return bool(re.match(r'^-?[\d,]+\.?\d*$', s.strip()))
-
-                    def _to_float(s: str) -> float:
-                        try:
-                            return float(s.replace(',', ''))
-                        except (ValueError, AttributeError):
-                            return 0.0
-
-                    all_transactions = []
-
-                    with pdfplumber.open(pdf_bytes) as pdf:
-                        st.info(f"📑 PDF has {len(pdf.pages)} page(s)")
-
-                        for page_num, page in enumerate(pdf.pages, 1):
-
-                            # ── Try table extraction first ───────────────────
-                            tables = page.extract_tables()
-
-                            if tables:
-                                for table in tables:
-                                    for row in table:
-                                        if not row or not any(cell for cell in row if cell):
-                                            continue
-
-                                        # Skip header row
-                                        first = str(row[0] or '').strip()
-                                        if 'Date' in first or 'date' in first:
-                                            continue
-
-                                        # Skip footer rows
-                                        full_row_text = ' '.join(str(c or '') for c in row)
-                                        if _is_footer(full_row_text) or _is_header(full_row_text):
-                                            continue
-
-                                        # Must start with a date pattern dd/mm/yyyy
-                                        if not re.match(r'^\d{2}/\d{2}/\d{4}', first):
-                                            continue
-
-                                        try:
-                                            date_val    = first
-                                            trans_num   = str(row[1] or '').strip() if len(row) > 1 else ''
-                                            description = str(row[2] or '').strip() if len(row) > 2 else ''
-                                            account     = str(row[3] or '').strip() if len(row) > 3 else ''
-
-                                            # Volume and balance — handle variable column count
-                                            vol_raw  = str(row[4] or '0').strip().replace(',', '') if len(row) > 4 else '0'
-                                            bal_raw  = str(row[5] or '0').strip().replace(',', '') if len(row) > 5 else '0'
-
-                                            # If only 5 cols, last col is balance
-                                            if len(row) == 5:
-                                                bal_raw  = str(row[4] or '0').strip().replace(',', '')
-                                                vol_raw  = '0'
-
-                                            volume  = _to_float(vol_raw)
-                                            balance = _to_float(bal_raw)
-
-                                            if description.lower() == 'balance b/fwd':
-                                                continue
-
-                                            all_transactions.append({
-                                                'Date':        date_val,
-                                                'Trans #':     trans_num,
-                                                'Description': description,
-                                                'Account':     account,
-                                                'Volume':      volume,
-                                                'Balance':     balance,
-                                            })
-                                        except Exception:
-                                            continue
-
-                            else:
-                                # ── Fallback: text line parsing ──────────────
-                                page_text = page.extract_text(x_tolerance=2, y_tolerance=2)
-                                if not page_text:
-                                    continue
-
-                                for raw_line in page_text.split('\n'):
-                                    line = raw_line.strip()
-                                    if not line:
-                                        continue
-
-                                    # Skip footer and header lines
-                                    if _is_footer(line) or _is_header(line):
-                                        continue
-
-                                    # Skip column header row
-                                    if re.match(r'^Date\s+Trans', line, re.IGNORECASE):
-                                        continue
-
-                                    # Must start with a date
-                                    if not re.match(r'^\d{2}/\d{2}/\d{4}', line):
-                                        continue
-
-                                    parts = line.split()
-
-                                    # ── Extract all numeric tokens (float-safe) ──
-                                    # BUG FIX: old code used .isdigit() which fails on
-                                    # floats like "50,000.00". Use _is_number() instead.
-                                    numeric_tokens = [
-                                        p for p in parts if _is_number(p)
-                                    ]
-
-                                    if len(numeric_tokens) < 2:
-                                        # Not enough numbers to be a data row
-                                        continue
-
-                                    # Last two numbers are volume and balance
-                                    vol_str = numeric_tokens[-2]
-                                    bal_str = numeric_tokens[-1]
-                                    volume  = _to_float(vol_str)
-                                    balance = _to_float(bal_str)
-
-                                    # First token is date
-                                    date_val  = parts[0]
-                                    trans_num = ''
-                                    description = ''
-                                    account     = ''
-
-                                    # Find where numeric block starts
-                                    vol_idx = None
-                                    for i, p in enumerate(parts):
-                                        if p == vol_str or p == numeric_tokens[-2]:
-                                            # make sure it's near the end
-                                            if i >= len(parts) - 3:
-                                                vol_idx = i
-                                                break
-
-                                    # Tokens between date and numeric block
-                                    middle = parts[1:vol_idx] if vol_idx else parts[1:-2]
-
-                                    # Determine description type (case-insensitive)
-                                    middle_str = ' '.join(middle)
-                                    lo = middle_str.lower()
-
-                                    if 'balance b/fwd' in lo or "balance b/f" in lo:
-                                        continue   # skip opening balance rows
-
-                                    if 'stock take' in lo:
-                                        description = 'Stock Take'
-                                        account     = ''
-                                    elif 'custody transfer in' in lo:
-                                        description = 'Custody Transfer In'
-                                        account     = re.sub(r'(?i)custody\s*transfer\s*in\s*', '', middle_str).strip()
-                                    elif 'custody transfer out' in lo:
-                                        description = 'Custody Transfer Out'
-                                        account     = re.sub(r'(?i)custody\s*transfer\s*out\s*', '', middle_str).strip()
-                                    elif 'product outturn' in lo:
-                                        description = 'Product Outturn'
-                                        account     = re.sub(r'(?i)product\s*outturn\s*', '', middle_str).strip()
-                                    elif 'sale' in lo:
-                                        description = 'Sale'
-                                        account     = re.sub(r'(?i)\bsale\b\s*', '', middle_str).strip()
-                                    else:
-                                        # Try to use first non-numeric word group as description
-                                        if middle:
-                                            # First token after date might be trans number (all digits)
-                                            idx = 0
-                                            if middle[0].isdigit():
-                                                trans_num = middle[0]
-                                                idx = 1
-                                            description = ' '.join(middle[idx:]).strip()
-                                        else:
-                                            continue   # no useful content
-
-                                    # Skip if balance is zero and volume is zero
-                                    if balance == 0 and volume == 0:
-                                        continue
-
-                                    all_transactions.append({
-                                        'Date':        date_val,
-                                        'Trans #':     trans_num,
-                                        'Description': description,
-                                        'Account':     account,
-                                        'Volume':      volume,
-                                        'Balance':     balance,
-                                    })
-
-                    st.info(f"📊 Raw transactions extracted: {len(all_transactions)}")
-
-                    if not all_transactions:
-                        st.warning("⚠️ No transactions found. The date range may have no activity.")
-                        st.session_state.stock_txn_df = pd.DataFrame()
                     else:
-                        df = pd.DataFrame(all_transactions)
+                        st.success(f"✅ PDF received ({len(response.content):,} bytes)")
+                        records = _parse_stock_transaction_pdf(io.BytesIO(response.content))
 
-                        # Final safety filter: remove any footer rows that slipped through
-                        footer_mask = df['Description'].str.lower().str.strip().isin(FOOTER_SKIP)
-                        df = df[~footer_mask].reset_index(drop=True)
+                        if records:
+                            df = pd.DataFrame(records)
+                            st.session_state.stock_txn_df     = df
+                            st.session_state.stock_txn_bdc     = selected_bdc
+                            st.session_state.stock_txn_depot   = selected_depot
+                            st.session_state.stock_txn_product = selected_product
+                            st.success(f"✅ Extracted {len(df)} transactions!")
+                        else:
+                            st.warning("⚠️ No transactions found for this date range / selection.")
+                            st.session_state.stock_txn_df = pd.DataFrame()
 
-                        # Remove Balance b/fwd rows
-                        bfwd_mask = df['Description'].str.lower().str.contains(
-                            r'balance\s*b[/\s]?f', regex=True, na=False
-                        )
-                        df = df[~bfwd_mask].reset_index(drop=True)
-
-                        st.session_state.stock_txn_df = df
-                        st.session_state.stock_txn_bdc     = selected_bdc
-                        st.session_state.stock_txn_depot   = selected_depot
-                        st.session_state.stock_txn_product = selected_product
-
-                        st.success(f"✅ Extracted {len(df)} transactions!")
-
-                except requests.exceptions.RequestException as e:
-                    st.error(f"❌ Network Error: {e}")
-                    st.session_state.stock_txn_df = pd.DataFrame()
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
                     import traceback
                     st.code(traceback.format_exc())
                     st.session_state.stock_txn_df = pd.DataFrame()
 
-        # ── Display results ───────────────────────────────────────────────────
+        # ── Display section ───────────────────────────────────────────────────
         df = st.session_state.stock_txn_df
 
         if not df.empty:
@@ -2811,40 +2574,30 @@ def show_stock_transaction():
                 f"Product: {st.session_state.get('stock_txn_product', '')}"
             )
 
+            inflows      = df[df['Description'].isin(['Custody Transfer In', 'Product Outturn'])]['Volume'].sum()
+            outflows     = df[df['Description'].isin(['Sale', 'Custody Transfer Out'])]['Volume'].sum()
+            sales        = df[df['Description'] == 'Sale']['Volume'].sum()
+            bdc_transfer = df[df['Description'] == 'Custody Transfer Out']['Volume'].sum()
+            final_bal    = df['Balance'].iloc[-1] if len(df) > 0 else 0
+
             cols = st.columns(5)
-            inflows = df[df['Description'].isin(
-                ['Custody Transfer In', 'Product Outturn']
-            )]['Volume'].sum()
-            with cols[0]:
-                st.metric("📥 Inflows", f"{inflows:,.0f} LT")
-
-            outflows = df[df['Description'].isin(
-                ['Sale', 'Custody Transfer Out']
-            )]['Volume'].sum()
-            with cols[1]:
-                st.metric("📤 Outflows", f"{outflows:,.0f} LT")
-
-            sales = df[df['Description'] == 'Sale']['Volume'].sum()
-            with cols[2]:
-                st.metric("💰 Sales to OMCs", f"{sales:,.0f} LT")
-
-            bdc_transfers = df[df['Description'] == 'Custody Transfer Out']['Volume'].sum()
-            with cols[3]:
-                st.metric("🔄 BDC Transfers", f"{bdc_transfers:,.0f} LT")
-
-            final_balance = df['Balance'].iloc[-1] if len(df) > 0 else 0
-            with cols[4]:
-                st.metric("📊 Final Balance", f"{final_balance:,.0f} LT")
+            with cols[0]: st.metric("📥 Inflows",      f"{inflows:,.0f} LT")
+            with cols[1]: st.metric("📤 Outflows",     f"{outflows:,.0f} LT")
+            with cols[2]: st.metric("💰 Sales to OMCs",f"{sales:,.0f} LT")
+            with cols[3]: st.metric("🔄 BDC Transfers",f"{bdc_transfer:,.0f} LT")
+            with cols[4]: st.metric("📊 Final Balance", f"{final_bal:,.0f} LT")
 
             st.markdown("---")
-
             st.markdown("### 📋 Transaction Breakdown")
-            txn_summary = df.groupby('Description').agg(
-                Total_Volume=('Volume', 'sum'),
-                Count=('Trans #', 'count')
-            ).reset_index()
-            txn_summary.columns = ['Transaction Type', 'Total Volume (LT)', 'Count']
-            txn_summary = txn_summary.sort_values('Total Volume (LT)', ascending=False)
+            txn_summary = (
+                df.groupby('Description')
+                  .agg(Total_Volume=('Volume', 'sum'), Count=('Trans #', 'count'))
+                  .reset_index()
+                  .rename(columns={'Description': 'Transaction Type',
+                                   'Total_Volume': 'Total Volume (LT)',
+                                   'Count': 'Count'})
+                  .sort_values('Total Volume (LT)', ascending=False)
+            )
             st.dataframe(txn_summary, width="stretch", hide_index=True)
 
             st.markdown("---")
@@ -2852,16 +2605,15 @@ def show_stock_transaction():
             if sales > 0:
                 st.markdown("### 🏢 Top Customers (OMC Sales)")
                 sales_df = df[df['Description'] == 'Sale']
-                if not sales_df.empty:
-                    customer_summary = (
-                        sales_df.groupby('Account')['Volume']
-                        .sum()
-                        .sort_values(ascending=False)
-                        .head(10)
-                        .reset_index()
-                    )
-                    customer_summary.columns = ['Customer', 'Volume Sold (LT)']
-                    st.dataframe(customer_summary, width="stretch", hide_index=True)
+                customer_summary = (
+                    sales_df.groupby('Account')['Volume']
+                    .sum()
+                    .sort_values(ascending=False)
+                    .head(10)
+                    .reset_index()
+                )
+                customer_summary.columns = ['Customer', 'Volume Sold (LT)']
+                st.dataframe(customer_summary, width="stretch", hide_index=True)
                 st.markdown("---")
 
             st.markdown("### 📄 Full Transaction History")
@@ -2871,23 +2623,22 @@ def show_stock_transaction():
             if st.button("💾 EXPORT TO EXCEL", width="stretch"):
                 output_dir = os.path.join(os.getcwd(), "stock_transactions")
                 os.makedirs(output_dir, exist_ok=True)
-
                 filename = (
                     f"stock_txn_{st.session_state.get('stock_txn_bdc', 'export')}_"
                     f"{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
                 )
                 filepath = os.path.join(output_dir, filename)
-
                 with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
                     df.to_excel(writer, sheet_name='Transactions', index=False)
                     txn_summary.to_excel(writer, sheet_name='Summary', index=False)
-
                 with open(filepath, 'rb') as f:
                     st.download_button(
                         "⬇️ DOWNLOAD", f, filename,
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         width="stretch"
                     )
+        else:
+            st.info("👆 Select options and click the button above to fetch transaction data")
 
     with tab2:
         st.markdown("### 📊 INTELLIGENT STOCKOUT FORECASTING")
@@ -2898,15 +2649,11 @@ def show_stock_transaction():
 
         col1, col2 = st.columns(2)
         with col1:
-            if has_balance:
-                st.success("✅ BDC Balance Data Available")
-            else:
-                st.warning("⚠️ BDC Balance Data Required")
+            if has_balance:   st.success("✅ BDC Balance Data Available")
+            else:             st.warning("⚠️ BDC Balance Data Required")
         with col2:
-            if has_transactions:
-                st.success("✅ Transaction Data Available")
-            else:
-                st.warning("⚠️ Transaction Data Required")
+            if has_transactions: st.success("✅ Transaction Data Available")
+            else:                st.warning("⚠️ Transaction Data Required")
 
         if not has_balance:
             st.info("💡 **Step 1:** Fetch BDC Balance data from the BDC Balance section first")
@@ -2916,9 +2663,8 @@ def show_stock_transaction():
         if has_balance and has_transactions:
             st.markdown("---")
 
-            balance_df  = pd.DataFrame(st.session_state.bdc_records)
-            txn_df      = st.session_state.stock_txn_df
-
+            balance_df               = pd.DataFrame(st.session_state.bdc_records)
+            txn_df                   = st.session_state.stock_txn_df
             bdc_name                 = st.session_state.get('stock_txn_bdc', '')
             depot_name               = st.session_state.get('stock_txn_depot', '')
             selected_product_display = st.session_state.get('stock_txn_product', '')
@@ -2935,118 +2681,233 @@ def show_stock_transaction():
                     txn_df['Description'].isin(['Sale', 'Custody Transfer Out'])
                 ]['Volume'].sum()
 
-                txn_df_copy = txn_df.copy()
-                txn_df_copy['Date'] = pd.to_datetime(
-                    txn_df_copy['Date'], format='%d/%m/%Y', errors='coerce'
-                )
-                date_range_days = (
-                    txn_df_copy['Date'].max() - txn_df_copy['Date'].min()
-                ).days
+                txn_copy = txn_df.copy()
+                txn_copy['_dt'] = pd.to_datetime(txn_copy['Date'], format='%d/%m/%Y', errors='coerce')
+                date_range_days = (txn_copy['_dt'].max() - txn_copy['_dt'].min()).days or 1
 
-                if date_range_days > 0:
-                    daily_sales_rate = total_sales / date_range_days
-                else:
-                    daily_sales_rate = 0
+                daily_sales_rate = total_sales / date_range_days if date_range_days > 0 else 0
+                days_remaining   = (current_stock / daily_sales_rate
+                                    if daily_sales_rate > 0 else float('inf'))
 
-                days_remaining = (
-                    current_stock / daily_sales_rate
-                    if daily_sales_rate > 0 else float('inf')
-                )
-
-                if days_remaining < 7:
-                    status = "🔴 CRITICAL"
-                    status_color = "red"
-                elif days_remaining < 14:
-                    status = "🟡 WARNING"
-                    status_color = "orange"
-                else:
-                    status = "🟢 HEALTHY"
-                    status_color = "green"
+                if   days_remaining < 7:  status, sc = "🔴 CRITICAL", "red"
+                elif days_remaining < 14: status, sc = "🟡 WARNING",  "orange"
+                else:                     status, sc = "🟢 HEALTHY",  "green"
 
                 st.markdown(f"### {status} - Stockout Forecast")
 
                 cols = st.columns(4)
                 with cols[0]:
-                    st.markdown(f"""
-                    <div class='metric-card'>
-                        <h2>CURRENT STOCK</h2>
-                        <h1>{current_stock:,.0f}</h1>
-                        <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG</p>
-                    </div>""", unsafe_allow_html=True)
+                    st.markdown(f"<div class='metric-card'><h2>CURRENT STOCK</h2>"
+                                f"<h1>{current_stock:,.0f}</h1>"
+                                f"<p style='color:#888;font-size:14px;margin:0;'>LT/KG</p></div>",
+                                unsafe_allow_html=True)
                 with cols[1]:
-                    st.markdown(f"""
-                    <div class='metric-card'>
-                        <h2>DAILY SALES RATE</h2>
-                        <h1>{daily_sales_rate:,.0f}</h1>
-                        <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG per day</p>
-                    </div>""", unsafe_allow_html=True)
+                    st.markdown(f"<div class='metric-card'><h2>DAILY SALES RATE</h2>"
+                                f"<h1>{daily_sales_rate:,.0f}</h1>"
+                                f"<p style='color:#888;font-size:14px;margin:0;'>LT/KG per day</p></div>",
+                                unsafe_allow_html=True)
                 with cols[2]:
                     days_text = f"{days_remaining:.1f}" if days_remaining != float('inf') else "∞"
-                    st.markdown(f"""
-                    <div class='metric-card' style='border-color: {status_color};'>
-                        <h2>DAYS REMAINING</h2>
-                        <h1>{days_text}</h1>
-                        <p style='color: #888; font-size: 14px; margin: 0;'>days</p>
-                    </div>""", unsafe_allow_html=True)
+                    st.markdown(f"<div class='metric-card' style='border-color:{sc};'>"
+                                f"<h2>DAYS REMAINING</h2><h1>{days_text}</h1>"
+                                f"<p style='color:#888;font-size:14px;margin:0;'>days</p></div>",
+                                unsafe_allow_html=True)
                 with cols[3]:
-                    st.markdown(f"""
-                    <div class='metric-card'>
-                        <h2>ANALYSIS PERIOD</h2>
-                        <h1>{date_range_days}</h1>
-                        <p style='color: #888; font-size: 14px; margin: 0;'>days</p>
-                    </div>""", unsafe_allow_html=True)
+                    st.markdown(f"<div class='metric-card'><h2>ANALYSIS PERIOD</h2>"
+                                f"<h1>{date_range_days}</h1>"
+                                f"<p style='color:#888;font-size:14px;margin:0;'>days</p></div>",
+                                unsafe_allow_html=True)
 
                 st.markdown("---")
                 st.markdown("### 📊 Detailed Analysis")
-
-                analysis_data = {
-                    'Metric': [
-                        'BDC', 'Depot', 'Product',
-                        'Current Stock (LT)', 'Total Sales (Period)',
-                        'Analysis Period (days)', 'Daily Sales Rate',
-                        'Days Until Stockout', 'Projected Stockout Date', 'Status'
-                    ],
-                    'Value': [
-                        bdc_name, depot_name, product_name,
-                        f"{current_stock:,.0f}",
-                        f"{total_sales:,.0f}",
-                        f"{date_range_days}",
-                        f"{daily_sales_rate:,.0f} LT/day",
-                        f"{days_remaining:.1f} days" if days_remaining != float('inf') else "No depletion expected",
-                        (datetime.now() + timedelta(days=days_remaining)).strftime('%Y-%m-%d')
-                        if days_remaining != float('inf') else "N/A",
-                        status
-                    ]
-                }
-                st.dataframe(pd.DataFrame(analysis_data), width="stretch", hide_index=True)
+                stockout_date = (
+                    (datetime.now() + timedelta(days=days_remaining)).strftime('%Y-%m-%d')
+                    if days_remaining != float('inf') else "N/A"
+                )
+                analysis_df = pd.DataFrame({
+                    'Metric': ['BDC','Depot','Product','Current Stock (LT)',
+                               'Total Sales (Period)','Analysis Period (days)',
+                               'Daily Sales Rate','Days Until Stockout',
+                               'Projected Stockout Date','Status'],
+                    'Value':  [bdc_name, depot_name, product_name,
+                               f"{current_stock:,.0f}", f"{total_sales:,.0f}",
+                               f"{date_range_days}",   f"{daily_sales_rate:,.0f} LT/day",
+                               f"{days_remaining:.1f} days" if days_remaining != float('inf') else "No depletion expected",
+                               stockout_date, status]
+                })
+                st.dataframe(analysis_df, width="stretch", hide_index=True)
 
                 st.markdown("---")
                 st.markdown("### 💡 RECOMMENDATIONS")
-
                 if days_remaining < 7:
-                    st.error("""
-                    **🚨 IMMEDIATE ACTION REQUIRED:**
-                    - Critical stock level - replenishment urgent
-                    - Expected stockout in less than 7 days
-                    - Consider emergency procurement or transfers
-                    """)
+                    st.error("**🚨 IMMEDIATE ACTION REQUIRED:**\n"
+                             "- Critical stock level — replenishment urgent\n"
+                             "- Expected stockout in less than 7 days\n"
+                             "- Consider emergency procurement or transfers")
                 elif days_remaining < 14:
-                    st.warning("""
-                    **⚠️ ACTION RECOMMENDED:**
-                    - Stock level below safety threshold
-                    - Expected stockout in 7-14 days
-                    - Plan replenishment within next week
-                    """)
+                    st.warning("**⚠️ ACTION RECOMMENDED:**\n"
+                               "- Stock level below safety threshold\n"
+                               "- Expected stockout in 7–14 days\n"
+                               "- Plan replenishment within next week")
                 else:
-                    st.success("""
-                    **✅ STOCK LEVELS HEALTHY:**
-                    - Current stock sufficient for 14+ days
-                    - Continue normal operations
-                    - Monitor sales trends
-                    """)
+                    st.success("**✅ STOCK LEVELS HEALTHY:**\n"
+                               "- Current stock sufficient for 14+ days\n"
+                               "- Continue normal operations\n"
+                               "- Monitor sales trends")
             else:
-                st.warning(f"⚠️ No balance data found for {bdc_name} - {product_name}")
+                st.warning(f"⚠️ No balance data found for {bdc_name} — {product_name}")
                 st.info("Make sure the BDC name and product match between Balance and Transaction data")
+
+
+# ── Standalone PDF parser (used by show_stock_transaction) ────────────────────
+def _parse_stock_transaction_pdf(pdf_file) -> list:
+    """
+    Parse an NPA Stock Transaction Report PDF.
+
+    PDF structure (confirmed from real file):
+      - No tables on data pages; pure text lines.
+      - Page 2 footer summary appears as a 4-row table — ignored automatically
+        because we only parse lines that start with DD/MM/YYYY.
+      - Each data line:
+          DD/MM/YYYY  TRANS#  DESCRIPTION  ACCOUNT_NAME...  VOLUME  BALANCE
+        where VOLUME and BALANCE are plain integers with optional commas,
+        and BALANCE may be negative in parentheses: (16,453)
+
+    Lines skipped:
+      - Header / metadata lines (BDC :, Depot :, Product :, Printed by :, etc.)
+      - Date-range header ("01 February, 2026 - 16 February, 2026")
+      - Column header row ("Date  Trans #  Description ...")
+      - Footer summary rows (Actual Stock Balance, Stock Commitments,
+        Available Stock Balance, Last Stock Update Date)
+      - Balance b/fwd opening-balance rows
+    """
+
+    # Known description strings — sorted longest-first so multi-word matches win
+    DESCRIPTIONS = sorted([
+        'Balance b/fwd',
+        'Stock Take',
+        'Sale',
+        'Custody Transfer In',
+        'Custody Transfer Out',
+        'Product Outturn',
+    ], key=len, reverse=True)
+
+    # Line-level skip prefixes (lowercase)
+    SKIP_PREFIXES = (
+        'national petroleum authority',
+        'stock transaction report',
+        'bdc :',
+        'depot :',
+        'product :',
+        'printed by',
+        'printed on',
+        'date trans #',
+        'actual stock balance',
+        'stock commitments',
+        'available stock balance',
+        'last stock update',
+        'i.t.s from',
+    )
+
+    def _should_skip(line: str) -> bool:
+        lo = line.strip().lower()
+        if lo.startswith(SKIP_PREFIXES):
+            return True
+        # Date-range header: "01 February, 2026 - 16 February, 2026"
+        if re.match(r'^\d{1,2}\s+\w+,\s+\d{4}', line.strip()):
+            return True
+        return False
+
+    def _parse_num(s: str):
+        """Parse integer or parenthesis-negative: 30,000 → 30000, (16,453) → -16453"""
+        s = s.strip()
+        neg = s.startswith('(') and s.endswith(')')
+        val_str = s.strip('()').replace(',', '')
+        try:
+            val = int(val_str)
+            return -val if neg else val
+        except ValueError:
+            return None
+
+    def _parse_line(line: str):
+        line = line.strip()
+
+        # Must start with DD/MM/YYYY
+        if not re.match(r'^\d{2}/\d{2}/\d{4}\b', line):
+            return None
+
+        parts = line.split()
+        date  = parts[0]
+        trans = parts[1] if len(parts) > 1 else ''
+
+        # Text after "date trans#"
+        rest = line[len(date):].strip()
+        rest = rest[len(trans):].strip()
+
+        # Match description
+        description = None
+        after_desc  = rest
+        for desc in DESCRIPTIONS:
+            if rest.lower().startswith(desc.lower()):
+                description = desc
+                after_desc  = rest[len(desc):].strip()
+                break
+
+        if description is None:
+            return None
+
+        # Skip opening balance rows
+        if description == 'Balance b/fwd':
+            return None
+
+        # after_desc = "ACCOUNT_NAME... VOLUME BALANCE"
+        # Numbers: plain integers with commas OR paren-negative (16,453)
+        num_re  = r'\([\d,]+\)|[\d,]+'
+        nums    = re.findall(num_re, after_desc)
+
+        if len(nums) < 2:
+            return None
+
+        volume  = _parse_num(nums[-2])
+        balance = _parse_num(nums[-1])
+
+        # Account name = after_desc minus the trailing "VOLUME BALANCE" tokens
+        vol_tok = nums[-2]
+        bal_tok = nums[-1]
+        trail   = re.search(
+            re.escape(vol_tok) + r'\s+' + re.escape(bal_tok) + r'\s*$',
+            after_desc
+        )
+        account = after_desc[:trail.start()].strip() if trail else ' '.join(after_desc.split()[:-2])
+
+        return {
+            'Date':        date,
+            'Trans #':     trans,
+            'Description': description,
+            'Account':     account,
+            'Volume':      volume if volume is not None else 0,
+            'Balance':     balance if balance is not None else 0,
+        }
+
+    records = []
+    try:
+        with pdfplumber.open(pdf_file) as pdf:
+            for page in pdf.pages:
+                text = page.extract_text()
+                if not text:
+                    continue
+                for raw in text.split('\n'):
+                    line = raw.strip()
+                    if not line or _should_skip(line):
+                        continue
+                    row = _parse_line(line)
+                    if row:
+                        records.append(row)
+    except Exception as e:
+        import streamlit as _st
+        _st.error(f"PDF parse error: {e}")
+
+    return records
 
 def show_bdc_intelligence():
     st.markdown("<h2>🧠 BDC INTELLIGENCE CENTER</h2>", unsafe_allow_html=True)
