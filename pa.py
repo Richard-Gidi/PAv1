@@ -580,7 +580,7 @@ class StockBalanceScraper:
                     dff = pd.DataFrame(columns=df.columns)
                 dff.to_excel(writer, index=False, sheet_name=prod)
         return out_path
- 
+
     def parse_text_data(self, text_content):
         records = []
         lines = [ln.strip() for ln in (text_content or "").split('\n') if ln.strip()]
@@ -1959,9 +1959,7 @@ def show_market_share():
                 </div>
                 """, unsafe_allow_html=True)
             st.markdown("---")
-            # ── Per-product rank calculations ──────────────────────────────────
-            # Build a rank table: for each product, rank ALL BDCs by sales volume
-            product_rank_lookup = {} # product -> {bdc: rank, total_bdcs: n}
+            product_rank_lookup = {}
             for product in ['PREMIUM', 'GASOIL', 'LPG']:
                 prod_bdc_sales = (
                     loadings_df[loadings_df['Product'] == product]
@@ -1972,7 +1970,7 @@ def show_market_share():
                 if selected_bdc in prod_bdc_sales.index:
                     rank = list(prod_bdc_sales.index).index(selected_bdc) + 1
                 else:
-                    rank = None # BDC had zero / no sales in this product
+                    rank = None
                 product_rank_lookup[product] = {
                     'rank': rank,
                     'total': len(prod_bdc_sales)
@@ -2000,7 +1998,6 @@ def show_market_share():
                 })
             sales_product_df = pd.DataFrame(product_sales_data)
             st.dataframe(sales_product_df, use_container_width=True, hide_index=True)
-            # ── Per-product rank leaderboard (top 5 competitors per product) ──
             st.markdown("#### 🏆 Per-Product BDC Rankings (Top 5)")
             rank_cols = st.columns(3)
             for col_idx, product in enumerate(['PREMIUM', 'GASOIL', 'LPG']):
@@ -2015,7 +2012,6 @@ def show_market_share():
                     )
                     prod_bdc_sales.columns = ['BDC', 'Volume (LT)']
                     prod_bdc_sales.insert(0, 'Rank', range(1, len(prod_bdc_sales) + 1))
-                    # Highlight selected BDC row
                     rows_html = ""
                     for _, r in prod_bdc_sales.iterrows():
                         is_selected = (r['BDC'] == selected_bdc)
@@ -2036,7 +2032,6 @@ def show_market_share():
                                 {r['Volume (LT)']:,.0f}
                             </td>
                         </tr>"""
-                    # If selected BDC is not in top-5, append its actual rank below a divider
                     rank_info = product_rank_lookup[product]
                     selected_not_in_top5 = selected_bdc not in prod_bdc_sales['BDC'].values
                     if selected_not_in_top5 and rank_info['rank'] is not None:
@@ -2073,7 +2068,6 @@ def show_market_share():
                     </div>
                     """, unsafe_allow_html=True)
             st.markdown("---")
-            # ── Original product cards (with rank badge added) ─────────────────
             st.markdown("#### 📊 Product Detail Cards")
             cols = st.columns(3)
             for idx, row in enumerate(product_sales_data):
@@ -2444,7 +2438,6 @@ def show_stock_transaction():
                     import traceback
                     st.code(traceback.format_exc())
                     st.session_state.stock_txn_df = pd.DataFrame()
-        # ── Display section ───────────────────────────────────────────────────
         df = st.session_state.stock_txn_df
         if not df.empty:
             st.markdown("---")
@@ -2615,61 +2608,59 @@ def show_stock_transaction():
             else:
                 st.warning(f"⚠️ No balance data found for {bdc_name} — {product_name}")
                 st.info("Make sure the BDC name and product match between Balance and Transaction data")
-# ═══════════════════════════════════════════════════════════════════
-# PASTE FROM HERE INTO npa_dashboard.py
-# ═══════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NATIONAL STOCKOUT — HYBRID APPROACH
+# ─────────────────────────────────────────────────────────────────────────────
+# Total Depletion = BDC→OMC Sales (OMC Loadings) + BDC→BDC Transfers (Custody
+# Transfer Out from Stock Transactions)
+# Stock         = BDC Balance (all BDCs, all products, current snapshot)
+# Days Supply   = National Stock ÷ Average Daily Total Depletion
+# ═══════════════════════════════════════════════════════════════════════════════
+
 import concurrent.futures
 import io
 import time
-# ── helpers ──────────────────────────────────────────────────────────────────
-def _fetch_pdf_bytes(url: str, params: dict, timeout: int = 45) -> bytes | None:
-    """GET a URL and return raw bytes if the response is a PDF, else None."""
-    import requests
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
-                      'AppleWebKit/537.36 (KHTML, like Gecko) '
-                      'Chrome/120.0.0.0 Safari/537.36',
+import requests as _requests
+
+# ── Low-level helpers ─────────────────────────────────────────────────────────
+
+def _fetch_pdf_bytes(url: str, params: dict, timeout: int = 45):
+    """GET a URL; return raw PDF bytes or None."""
+    _headers = {
+        'User-Agent': (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/120.0.0.0 Safari/537.36'
+        ),
         'Accept': 'application/pdf,text/html,*/*;q=0.8',
     }
     try:
-        r = requests.get(url, params=params, headers=headers, timeout=timeout)
+        r = _requests.get(url, params=params, headers=_headers, timeout=timeout)
         r.raise_for_status()
-        if r.content[:4] == b'%PDF':
-            return r.content
-        return None
+        return r.content if r.content[:4] == b'%PDF' else None
     except Exception:
         return None
-def _fetch_stock_txn_for_bdc_depot_product(
-    bdc_id: int, depot_id: int, product_id: int,
-    start_str: str, end_str: str,
-    user_id: str, url: str
-) -> list[dict]:
-    """Fetch & parse stock-transaction PDF for one (BDC, depot, product) combo."""
-    params = {
-        'lngProductId': product_id,
-        'lngBDCId': bdc_id,
-        'lngDepotId': depot_id,
-        'dtpStartDate': start_str,
-        'dtpEndDate': end_str,
-        'lngUserId': user_id,
-    }
-    pdf_bytes = _fetch_pdf_bytes(url, params)
-    if not pdf_bytes:
-        return []
-    return _parse_stock_txn_bytes(pdf_bytes)
-def _parse_stock_txn_bytes(pdf_bytes: bytes) -> list[dict]:
-    """Parse a stock-transaction PDF (bytes) → list of row dicts."""
-    import pdfplumber, re
+
+
+def _parse_stock_txn_bytes(pdf_bytes: bytes) -> list:
+    """
+    Parse a stock-transaction PDF (bytes) → list of row dicts.
+    Only 'Custody Transfer Out' rows are needed for national analysis,
+    but we return all rows so the per-BDC view still works.
+    """
     DESCRIPTIONS = sorted([
         'Balance b/fwd', 'Stock Take', 'Sale',
         'Custody Transfer In', 'Custody Transfer Out', 'Product Outturn',
     ], key=len, reverse=True)
+
     SKIP_PREFIXES = (
         'national petroleum authority', 'stock transaction report',
         'bdc :', 'depot :', 'product :', 'printed by', 'printed on',
         'date trans #', 'actual stock balance', 'stock commitments',
         'available stock balance', 'last stock update', 'i.t.s from',
     )
+
     def _should_skip(line: str) -> bool:
         lo = line.strip().lower()
         if lo.startswith(SKIP_PREFIXES):
@@ -2677,6 +2668,7 @@ def _parse_stock_txn_bytes(pdf_bytes: bytes) -> list[dict]:
         if re.match(r'^\d{1,2}\s+\w+,\s+\d{4}', line.strip()):
             return True
         return False
+
     def _parse_num(s: str):
         s = s.strip()
         neg = s.startswith('(') and s.endswith(')')
@@ -2685,6 +2677,7 @@ def _parse_stock_txn_bytes(pdf_bytes: bytes) -> list[dict]:
             return -int(val_str) if neg else int(val_str)
         except ValueError:
             return None
+
     def _parse_line(line: str):
         line = line.strip()
         if not re.match(r'^\d{2}/\d{2}/\d{4}\b', line):
@@ -2713,13 +2706,12 @@ def _parse_stock_txn_bytes(pdf_bytes: bytes) -> list[dict]:
         )
         account = after_desc[:trail.start()].strip() if trail else ' '.join(after_desc.split()[:-2])
         return {
-            'Date': date,
-            'Trans #': trans,
-            'Description': description,
+            'Date': date, 'Trans #': trans, 'Description': description,
             'Account': account,
             'Volume': volume if volume is not None else 0,
             'Balance': balance if balance is not None else 0,
         }
+
     records = []
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
@@ -2737,300 +2729,429 @@ def _parse_stock_txn_bytes(pdf_bytes: bytes) -> list[dict]:
     except Exception:
         pass
     return records
-# ── main page function ────────────────────────────────────────────────────────
+
+
+def _fetch_custody_transfers_for_combo(
+    bdc_id: int, depot_id: int, product_id: int,
+    prod_key: str, start_str: str, end_str: str,
+    user_id: str, url: str
+) -> list:
+    """
+    Fetch stock-transaction PDF for one (BDC, depot, product) combo and
+    return only Custody Transfer Out rows, tagged with prod_key.
+    """
+    params = {
+        'lngProductId': product_id,
+        'lngBDCId':     bdc_id,
+        'lngDepotId':   depot_id,
+        'dtpStartDate': start_str,
+        'dtpEndDate':   end_str,
+        'lngUserId':    user_id,
+    }
+    pdf_bytes = _fetch_pdf_bytes(url, params)
+    if not pdf_bytes:
+        return []
+    rows = _parse_stock_txn_bytes(pdf_bytes)
+    # Keep only Custody Transfer Out
+    out = []
+    for r in rows:
+        if r.get('Description') == 'Custody Transfer Out':
+            r['_product_key'] = prod_key
+            out.append(r)
+    return out
+
+
+# ── OMC Loadings national fetch ───────────────────────────────────────────────
+
+def _fetch_national_omc_loadings(start_str: str, end_str: str) -> pd.DataFrame:
+    """
+    Fetch the industry-wide OMC loadings PDF (all BDCs) and return a DataFrame
+    with columns: Product (PREMIUM/GASOIL/LPG), Quantity.
+    """
+    cfg = NPA_CONFIG
+    params = {
+        'lngCompanyId':   cfg['COMPANY_ID'],
+        'szITSfromPersol': 'persol',
+        'strGroupBy':     'BDC',
+        'strGroupBy1':    '',           # empty → all OMCs / all BDCs
+        'strQuery1':      ' and iorderstatus=4',
+        'strQuery2':      start_str,
+        'strQuery3':      end_str,
+        'strQuery4':      '',
+        'strPicHeight':   '',
+        'strPicWeight':   '',
+        'intPeriodID':    '4',
+        'iUserId':        cfg['USER_ID'],
+        'iAppId':         cfg['APP_ID'],
+    }
+    pdf_bytes = _fetch_pdf_bytes(cfg['OMC_LOADINGS_URL'], params)
+    if not pdf_bytes:
+        return pd.DataFrame()
+    df = extract_npa_data_from_pdf(io.BytesIO(pdf_bytes))
+    return df   # columns: Date, OMC, Truck, Product, Quantity, Price, Depot, Order Number, BDC
+
+
+# ── Main page ─────────────────────────────────────────────────────────────────
+
 def show_national_stockout():
     """
-    Full-industry stockout forecast.
-    Auto-fetches:
-      1. BDC Balance → current stock per product across all BDCs
-      2. Stock Transactions (Sale + Custody Transfer Out) per BDC×Depot×Product
-         → national daily depletion rate
-    Combines both to project days-to-stockout for Ghana.
+    National Stockout Forecast — Hybrid Approach
+    ─────────────────────────────────────────────
+    Total Depletion per product = 
+        BDC→OMC Sales   (from OMC Loadings, single API call, all BDCs)
+      + BDC→BDC Transfers (Custody Transfer Out from Stock Transactions, parallel)
+
+    Stock = BDC Balance (all BDCs, current snapshot, single API call)
+
+    Days of Supply = National Stock ÷ (Total Depletion ÷ period_days)
     """
-    import streamlit as st
-    import pandas as pd
-    from datetime import datetime, timedelta
     st.markdown("<h2>🌍 NATIONAL STOCKOUT FORECAST</h2>", unsafe_allow_html=True)
-    st.info(
-        "🛢️ Industry-wide analysis: Total national stock balance vs. total daily depletion "
-        "(OMC sales + BDC-to-BDC transfers) to forecast how many days Ghana's fuel supply will last."
-    )
+
+    st.markdown("""
+    <div style='background:rgba(0,255,255,0.06); border:1.5px solid #00ffff;
+                border-radius:12px; padding:18px 22px; margin-bottom:16px;'>
+        <p style='color:#00ffff; font-family:Orbitron,sans-serif; font-size:15px;
+                  font-weight:700; margin:0 0 10px;'>📐 METHODOLOGY</p>
+        <table style='width:100%; font-family:Rajdhani,sans-serif; font-size:14px; border-collapse:collapse;'>
+            <tr>
+                <td style='color:#ffaa00; padding:4px 8px; font-weight:700; white-space:nowrap;'>📦 National Stock</td>
+                <td style='color:#e0e0e0; padding:4px 8px;'>BDC Balance report — current stock snapshot across all BDCs &amp; depots</td>
+            </tr>
+            <tr>
+                <td style='color:#00ff88; padding:4px 8px; font-weight:700; white-space:nowrap;'>🚚 BDC → OMC Sales</td>
+                <td style='color:#e0e0e0; padding:4px 8px;'>OMC Loadings report (single industry-wide call) — released orders to OMCs</td>
+            </tr>
+            <tr>
+                <td style='color:#ff00ff; padding:4px 8px; font-weight:700; white-space:nowrap;'>🔄 BDC → BDC Transfers</td>
+                <td style='color:#e0e0e0; padding:4px 8px;'>Custody Transfer Out from Stock Transactions — parallel fetch across all BDCs &amp; depots</td>
+            </tr>
+            <tr style='border-top:1px solid rgba(0,255,255,0.2);'>
+                <td style='color:#00ffff; padding:8px 8px 4px; font-weight:700; white-space:nowrap;'>⚡ Total Depletion</td>
+                <td style='color:#ffffff; padding:8px 8px 4px; font-weight:700;'>BDC→OMC + BDC→BDC = Complete picture of fuel leaving the system</td>
+            </tr>
+            <tr>
+                <td style='color:#00ffff; padding:4px 8px; font-weight:700; white-space:nowrap;'>📅 Days of Supply</td>
+                <td style='color:#e0e0e0; padding:4px 8px;'>National Stock ÷ Average Daily Total Depletion</td>
+            </tr>
+        </table>
+    </div>
+    """, unsafe_allow_html=True)
+
     st.markdown("---")
-    # ── 1. Date range picker ──────────────────────────────────────────────────
+
+    # ── Date range ────────────────────────────────────────────────────────────
     st.markdown("### 📅 SELECT ANALYSIS PERIOD")
     st.caption(
-        "Transactions in this window are used to compute the average daily depletion rate. "
-        "Longer windows (e.g. 30 days) give more stable estimates."
+        "The period is used to compute the average daily depletion rate. "
+        "30 days gives a stable estimate; shorter windows capture recent trends."
     )
+
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input(
-            "From", value=datetime.now() - timedelta(days=30),
-            key='ns_start'
-        )
+        start_date = st.date_input("From", value=datetime.now() - timedelta(days=30), key='ns_start')
     with col2:
-        end_date = st.date_input(
-            "To", value=datetime.now(),
-            key='ns_end'
-        )
-    start_str = start_date.strftime("%m/%d/%Y")
-    end_str = end_date.strftime("%m/%d/%Y")
+        end_date   = st.date_input("To",   value=datetime.now(),                       key='ns_end')
+
+    start_str  = start_date.strftime("%m/%d/%Y")
+    end_str    = end_date.strftime("%m/%d/%Y")
     period_days = max((end_date - start_date).days, 1)
+
+    n_bdcs   = len(BDC_MAP)
+    n_depots = len(DEPOT_MAP)
+    n_prods  = 3
+    est_calls = n_bdcs * n_depots * n_prods
+
+    st.info(
+        f"📊 **Estimated API calls:** {n_bdcs} BDCs × {n_depots} depots × {n_prods} products "
+        f"= **{est_calls:,} calls** for Custody Transfer Out "
+        f"+ 2 single calls (Balance + OMC Loadings). "
+        f"Expected time: ~{est_calls // 12 // 60 + 1}–{est_calls // 12 // 40 + 2} minutes."
+    )
+
     st.markdown("---")
-    # ── 2. Big fetch button ───────────────────────────────────────────────────
+
     if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", use_container_width=True):
         _run_national_analysis(start_str, end_str, period_days)
-    # ── 3. Display cached results ─────────────────────────────────────────────
-    if 'ns_results' in st.session_state and st.session_state.ns_results:
+
+    if st.session_state.get('ns_results'):
         _display_national_results(period_days)
-# ── orchestration ─────────────────────────────────────────────────────────────
+
+
+# ── Orchestration ─────────────────────────────────────────────────────────────
+
 def _run_national_analysis(start_str: str, end_str: str, period_days: int):
-    import streamlit as st
-    import pandas as pd
-    cfg = NPA_CONFIG # already defined in npa_dashboard.py
-    # ── Step A: BDC Balance ───────────────────────────────────────────────────
-    with st.status("📡 Fetching national BDC stock balance…", expanded=True) as status:
+    cfg = NPA_CONFIG
+
+    # ── STEP A: BDC Balance ───────────────────────────────────────────────────
+    with st.status("📡 Step 1 / 3 — Fetching national BDC stock balance…", expanded=True) as status_a:
         st.write("Connecting to NPA portal…")
         bal_params = {
-            'lngCompanyId': cfg['COMPANY_ID'],
+            'lngCompanyId':    cfg['COMPANY_ID'],
             'strITSfromPersol': cfg['ITS_FROM_PERSOL'],
-            'strGroupBy': 'BDC',
-            'strGroupBy1': 'DEPOT',
+            'strGroupBy':      'BDC',
+            'strGroupBy1':     'DEPOT',
             'strQuery1': '', 'strQuery2': '', 'strQuery3': '', 'strQuery4': '',
             'strPicHeight': '1', 'szPicWeight': '1',
-            'lngUserId': cfg['USER_ID'],
-            'intAppId': cfg['APP_ID'],
+            'lngUserId':  cfg['USER_ID'],
+            'intAppId':   cfg['APP_ID'],
         }
         bal_bytes = _fetch_pdf_bytes(cfg['BDC_BALANCE_URL'], bal_params)
         if not bal_bytes:
-            st.error("❌ Could not fetch BDC Balance PDF. Check network/credentials.")
-            status.update(label="❌ Balance fetch failed", state="error")
+            st.error("❌ Could not fetch BDC Balance PDF.")
+            status_a.update(label="❌ Balance fetch failed", state="error")
             return
-        scraper = StockBalanceScraper() # defined in npa_dashboard.py
+
+        scraper = StockBalanceScraper()
         bal_records = scraper.parse_pdf_file(io.BytesIO(bal_bytes))
         if not bal_records:
-            st.error("❌ No balance records found in PDF.")
-            status.update(label="❌ No balance records", state="error")
+            st.error("❌ No balance records parsed.")
+            status_a.update(label="❌ No balance records", state="error")
             return
+
         bal_df = pd.DataFrame(bal_records)
-        n_bdcs = bal_df['BDC'].nunique()
-        st.write(f"✅ Balance: {len(bal_df)} rows across {n_bdcs} BDCs")
-        status.update(label=f"✅ Balance loaded ({len(bal_df)} rows)", state="running")
-    # ── Step B: Stock Transactions ─────────────────────────────────────────────
-    # Build the full job list: every (bdc_id, depot_id, product_id) combo
-    products_to_fetch = {
-        "PMS": int(STOCK_PRODUCT_MAP["PMS"]), # → PREMIUM
-        "Gasoil": int(STOCK_PRODUCT_MAP["Gasoil"]), # → GASOIL
-        "LPG": int(STOCK_PRODUCT_MAP["LPG"]), # → LPG
+        st.write(f"✅ Balance: {len(bal_df)} rows across {bal_df['BDC'].nunique()} BDCs")
+        status_a.update(label=f"✅ Step 1 done — {len(bal_df)} balance rows", state="running")
+
+    # ── STEP B: OMC Loadings (BDC → OMC) ─────────────────────────────────────
+    with st.status("🚚 Step 2 / 3 — Fetching national OMC loadings (BDC → OMC sales)…", expanded=True) as status_b:
+        st.write("Fetching industry-wide OMC loadings…")
+        omc_df = _fetch_national_omc_loadings(start_str, end_str)
+
+        if omc_df.empty:
+            st.warning(
+                "⚠️ No OMC loadings found for this period. "
+                "BDC→OMC sales will be 0; only BDC→BDC transfers will be counted."
+            )
+            omc_by_product = pd.Series({'PREMIUM': 0.0, 'GASOIL': 0.0, 'LPG': 0.0}, name='omc_sales')
+        else:
+            # OMC Loadings uses PREMIUM / GASOIL / LPG already
+            omc_by_product = (
+                omc_df[omc_df['Product'].isin(['PREMIUM', 'GASOIL', 'LPG'])]
+                .groupby('Product')['Quantity']
+                .sum()
+                .rename('omc_sales')
+            )
+            st.write(f"✅ OMC loadings: {len(omc_df):,} rows | "
+                     f"PREMIUM={omc_by_product.get('PREMIUM', 0):,.0f}  "
+                     f"GASOIL={omc_by_product.get('GASOIL', 0):,.0f}  "
+                     f"LPG={omc_by_product.get('LPG', 0):,.0f}")
+
+        status_b.update(label=f"✅ Step 2 done — OMC loadings fetched", state="running")
+
+    # ── STEP C: Custody Transfer Out (BDC → BDC) ─────────────────────────────
+    # Map: prod_key → (balance product name, product_id)
+    PROD_MAP = {
+        "PMS":    ("PREMIUM", int(STOCK_PRODUCT_MAP["PMS"])),
+        "Gasoil": ("GASOIL",  int(STOCK_PRODUCT_MAP["Gasoil"])),
+        "LPG":    ("LPG",     int(STOCK_PRODUCT_MAP["LPG"])),
     }
-    all_bdc_ids = list(BDC_MAP.values()) # defined in npa_dashboard.py
-    all_depot_ids = list(DEPOT_MAP.values()) # defined in npa_dashboard.py
+
+    all_bdc_ids   = list(BDC_MAP.values())
+    all_depot_ids = list(DEPOT_MAP.values())
     jobs = []
-    for prod_name, prod_id in products_to_fetch.items():
+    for prod_key, (_, prod_id) in PROD_MAP.items():
         for bdc_id in all_bdc_ids:
             for depot_id in all_depot_ids:
-                jobs.append((bdc_id, depot_id, prod_id, prod_name))
+                jobs.append((bdc_id, depot_id, prod_id, prod_key))
+
     total_jobs = len(jobs)
-    st.markdown(f"### 🔄 Fetching Transactions")
+
+    st.markdown(f"### 🔄 Step 3 / 3 — Fetching Custody Transfer Out transactions")
     st.caption(
-        f"Querying {len(all_bdc_ids)} BDCs × {len(all_depot_ids)} depots × "
-        f"{len(products_to_fetch)} products = **{total_jobs} API calls** "
-        f"(parallel, ~{total_jobs // 10}–{total_jobs // 5} seconds)"
+        f"{len(all_bdc_ids)} BDCs × {len(all_depot_ids)} depots × 3 products "
+        f"= **{total_jobs:,} API calls** (parallel)"
     )
-    progress_bar = st.progress(0, text="Starting parallel fetch…")
-    status_text = st.empty()
-    results_placeholder = st.empty()
-    all_txn_rows: list[dict] = []
-    completed = 0
-    errors = 0
-    nodata = 0
+
+    progress_bar  = st.progress(0, text="Starting parallel fetch…")
+    status_text   = st.empty()
+
+    cto_rows: list = []
+    completed = errors = nodata = 0
+
     txn_url = cfg['STOCK_TRANSACTION_URL']
     user_id = cfg['USER_ID']
-    # Use ThreadPoolExecutor for parallel HTTP calls (I/O-bound)
-    MAX_WORKERS = 12 # polite concurrency
+
     def _job(args):
-        bdc_id, depot_id, prod_id, prod_name = args
-        rows = _fetch_stock_txn_for_bdc_depot_product(
-            bdc_id, depot_id, prod_id,
+        bdc_id, depot_id, prod_id, prod_key = args
+        return _fetch_custody_transfers_for_combo(
+            bdc_id, depot_id, prod_id, prod_key,
             start_str, end_str, user_id, txn_url
         )
-        return prod_name, rows
-    futures_map = {}
+
+    MAX_WORKERS = 15
     with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         future_to_job = {executor.submit(_job, j): j for j in jobs}
         for future in concurrent.futures.as_completed(future_to_job):
             completed += 1
             try:
-                prod_name, rows = future.result()
+                rows = future.result()
                 if rows:
-                    for r in rows:
-                        r['_product_name'] = prod_name
-                    all_txn_rows.extend(rows)
+                    cto_rows.extend(rows)
                 else:
                     nodata += 1
             except Exception:
                 errors += 1
+
             pct = completed / total_jobs
             progress_bar.progress(
                 pct,
                 text=f"Fetched {completed}/{total_jobs} "
-                     f"({len(all_txn_rows)} rows, {errors} errors, {nodata} empty)"
+                     f"({len(cto_rows)} CTO rows, {errors} errors)"
             )
-            if completed % 20 == 0 or completed == total_jobs:
+            if completed % 50 == 0 or completed == total_jobs:
                 status_text.info(
-                    f"🔄 Progress: {completed}/{total_jobs} calls | "
-                    f"📄 Rows: {len(all_txn_rows)} | "
-                    f"✅ With data: {completed - errors - nodata} | "
+                    f"🔄 {completed}/{total_jobs} calls | "
+                    f"🔄 CTO rows: {len(cto_rows)} | "
                     f"⬜ Empty: {nodata} | ❌ Errors: {errors}"
                 )
+
     progress_bar.progress(1.0, text="✅ All API calls complete")
-    if not all_txn_rows:
-        st.error(
-            "❌ No transaction records found for any BDC/Depot/Product combination "
-            "in this date range. Try a longer period or check your credentials."
-        )
-        return
-    txn_df = pd.DataFrame(all_txn_rows)
-    # ── Step C: Aggregate & compute ────────────────────────────────────────────
-    # Product name normalisation (transaction PDF uses 'PREMIUM' etc.;
-    # we also stored _product_name = "PMS" / "Gasoil" / "LPG")
-    PROD_DISPLAY = {"PMS": "PREMIUM (PMS)", "Gasoil": "GASOIL (AGO)", "LPG": "LPG"}
-    PROD_BALANCE = {"PMS": "PREMIUM", "Gasoil": "GASOIL", "LPG": "LPG"}
-    # Sales = Sale + Custody Transfer Out
-    SALE_DESCRIPTIONS = {'Sale', 'Custody Transfer Out'}
-    sales_df = txn_df[txn_df['Description'].isin(SALE_DESCRIPTIONS)].copy()
-    sales_by_product = (
-        sales_df.groupby('_product_name')['Volume']
-        .sum()
-        .rename_axis('product_key')
-        .reset_index(name='total_sales')
+
+    cto_df = pd.DataFrame(cto_rows) if cto_rows else pd.DataFrame(
+        columns=['Date', 'Trans #', 'Description', 'Account', 'Volume', 'Balance', '_product_key']
     )
-    # Daily depletion rate
-    sales_by_product['daily_rate'] = sales_by_product['total_sales'] / period_days
-    # Balance per product
+
+    # Map prod_key → balance product name for aggregation
+    KEY_TO_BAL = {k: v[0] for k, v in PROD_MAP.items()}   # PMS→PREMIUM, Gasoil→GASOIL, LPG→LPG
+
+    if not cto_df.empty:
+        cto_df['bal_product'] = cto_df['_product_key'].map(KEY_TO_BAL)
+        cto_by_product = cto_df.groupby('bal_product')['Volume'].sum().rename('cto_sales')
+    else:
+        cto_by_product = pd.Series({'PREMIUM': 0.0, 'GASOIL': 0.0, 'LPG': 0.0}, name='cto_sales')
+
+    # ── STEP D: Combine & compute ─────────────────────────────────────────────
     col_bal = 'ACTUAL BALANCE (LT\\KG)'
     balance_by_product = (
         bal_df.groupby('Product')[col_bal]
         .sum()
+        .rename('total_balance')
+    )
+
+    products = ['PREMIUM', 'GASOIL', 'LPG']
+    DISPLAY = {'PREMIUM': 'PREMIUM (PMS)', 'GASOIL': 'GASOIL (AGO)', 'LPG': 'LPG'}
+
+    rows_out = []
+    for prod in products:
+        bal   = float(balance_by_product.get(prod, 0))
+        omc   = float(omc_by_product.get(prod, 0))
+        cto   = float(cto_by_product.get(prod, 0))
+        total = omc + cto
+        daily = total / period_days if period_days > 0 else 0
+        days  = (bal / daily) if daily > 0 else float('inf')
+        rows_out.append({
+            'product':        prod,
+            'display_name':   DISPLAY[prod],
+            'total_balance':  bal,
+            'omc_sales':      omc,
+            'cto_sales':      cto,
+            'total_depletion': total,
+            'daily_rate':     daily,
+            'days_remaining': days,
+        })
+
+    forecast_df = pd.DataFrame(rows_out)
+
+    # ── BDC-level stock breakdown ─────────────────────────────────────────────
+    bdc_pivot = (
+        bal_df.pivot_table(index='BDC', columns='Product', values=col_bal,
+                           aggfunc='sum', fill_value=0)
         .reset_index()
-        .rename(columns={'Product': 'bal_product', col_bal: 'total_balance'})
     )
-    # Map balance product names (PREMIUM/GASOIL/LPG) → product_key (PMS/Gasoil/LPG)
-    BAL_TO_KEY = {v: k for k, v in PROD_BALANCE.items()}
-    balance_by_product['product_key'] = balance_by_product['bal_product'].map(BAL_TO_KEY)
-    balance_by_product = balance_by_product.dropna(subset=['product_key'])
-    # Merge
-    forecast_df = pd.merge(
-        sales_by_product, balance_by_product[['product_key', 'total_balance']],
-        on='product_key', how='outer'
-    ).fillna(0)
-    forecast_df['days_remaining'] = forecast_df.apply(
-        lambda r: (r['total_balance'] / r['daily_rate'])
-                  if r['daily_rate'] > 0 else float('inf'),
-        axis=1
-    )
-    forecast_df['display_name'] = forecast_df['product_key'].map(PROD_DISPLAY)
-    # Supplementary: breakdown by description type
-    desc_breakdown = (
-        txn_df.groupby(['_product_name', 'Description'])['Volume']
-        .sum()
-        .reset_index()
-        .rename(columns={'_product_name': 'product_key', 'Volume': 'total_volume'})
-    )
-    # ── Cache results ─────────────────────────────────────────────────────────
+    for p in ['GASOIL', 'LPG', 'PREMIUM']:
+        if p not in bdc_pivot.columns:
+            bdc_pivot[p] = 0
+    bdc_pivot['TOTAL'] = bdc_pivot[['GASOIL', 'LPG', 'PREMIUM']].sum(axis=1)
+    bdc_pivot = bdc_pivot.sort_values('TOTAL', ascending=False)
+    nat_total = bdc_pivot['TOTAL'].sum()
+    bdc_pivot['Market Share %'] = (bdc_pivot['TOTAL'] / nat_total * 100).round(2)
+
+    # ── Cache ─────────────────────────────────────────────────────────────────
     st.session_state.ns_results = {
-        'forecast_df': forecast_df,
-        'txn_df': txn_df,
-        'bal_df': bal_df,
-        'desc_breakdown': desc_breakdown,
-        'period_days': period_days,
-        'start_str': start_str,
-        'end_str': end_str,
-        'n_bdcs_balance': n_bdcs,
-        'n_txn_rows': len(txn_df),
-        'n_sale_rows': len(sales_df),
+        'forecast_df':   forecast_df,
+        'bal_df':        bal_df,
+        'omc_df':        omc_df,
+        'cto_df':        cto_df,
+        'bdc_pivot':     bdc_pivot,
+        'period_days':   period_days,
+        'start_str':     start_str,
+        'end_str':       end_str,
+        'n_bdcs_balance': bal_df['BDC'].nunique(),
+        'n_omc_rows':    len(omc_df),
+        'n_cto_rows':    len(cto_df),
     }
-    st.session_state.ns_period_days = period_days
+
     st.success("✅ Analysis complete! Scroll down to see results.")
     st.rerun()
-# ── display layer ─────────────────────────────────────────────────────────────
+
+
+# ── Display ───────────────────────────────────────────────────────────────────
+
 def _display_national_results(period_days_arg: int):
-    import streamlit as st
-    import pandas as pd
-    from datetime import datetime, timedelta
     res = st.session_state.ns_results
-    forecast_df = res['forecast_df']
-    desc_breakdown = res['desc_breakdown']
-    bal_df = res['bal_df']
-    txn_df = res['txn_df']
-    period_days = res['period_days']
-    start_str = res['start_str']
-    end_str = res['end_str']
-    # ── Section header ────────────────────────────────────────────────────────
+    forecast_df  = res['forecast_df']
+    bal_df       = res['bal_df']
+    omc_df       = res['omc_df']
+    cto_df       = res['cto_df']
+    bdc_pivot    = res['bdc_pivot']
+    period_days  = res['period_days']
+    start_str    = res['start_str']
+    end_str      = res['end_str']
+
     st.markdown("---")
     st.markdown(
         f"<h3>🇬🇭 GHANA NATIONAL FUEL SUPPLY — "
-        f"ANALYSIS PERIOD: {start_str} → {end_str} ({period_days} days)</h3>",
+        f"{start_str} → {end_str} ({period_days} days)</h3>",
         unsafe_allow_html=True
     )
     st.caption(
-        f"Data sources: BDC Balance ({res['n_bdcs_balance']} BDCs) | "
-        f"Stock Transactions ({res['n_txn_rows']:,} rows, {res['n_sale_rows']:,} sale rows)"
+        f"Balance: {res['n_bdcs_balance']} BDCs | "
+        f"OMC Loadings: {res['n_omc_rows']:,} rows | "
+        f"BDC→BDC Transfers: {res['n_cto_rows']:,} rows"
     )
     st.markdown("---")
-    # ── KPI cards per product ─────────────────────────────────────────────────
-    st.markdown("### 🛢️ NATIONAL STOCKOUT FORECAST BY PRODUCT")
-    PRODUCT_ICONS = {"PMS": "⛽", "Gasoil": "🚛", "LPG": "🔵"}
-    PRODUCT_COLORS = {"PMS": "#00ffff", "Gasoil": "#ffaa00", "LPG": "#00ff88"}
+
+    # ── KPI cards ─────────────────────────────────────────────────────────────
+    st.markdown("### 🛢️ DAYS OF SUPPLY — NATIONAL FORECAST")
+    ICONS   = {'PREMIUM': '⛽', 'GASOIL': '🚛', 'LPG': '🔵'}
+    COLORS  = {'PREMIUM': '#00ffff', 'GASOIL': '#ffaa00', 'LPG': '#00ff88'}
+
     cols = st.columns(len(forecast_df))
     for col, (_, row) in zip(cols, forecast_df.iterrows()):
-        days = row['days_remaining']
-        prod_key = row['product_key']
-        color = PRODUCT_COLORS.get(prod_key, "#ffffff")
+        days  = row['days_remaining']
+        prod  = row['product']
+        color = COLORS.get(prod, '#ffffff')
+
         if days == float('inf'):
-            days_text = "∞"
-            status_text = "🔵 NO DEPLETION DATA"
-            border_color = "#888888"
+            days_text, status_text, border = "∞", "🔵 NO DATA", "#888888"
         elif days < 7:
-            days_text = f"{days:.1f}"
-            status_text = "🔴 CRITICAL"
-            border_color = "#ff0000"
+            days_text, status_text, border = f"{days:.1f}", "🔴 CRITICAL", "#ff0000"
         elif days < 14:
-            days_text = f"{days:.1f}"
-            status_text = "🟡 WARNING"
-            border_color = "#ffaa00"
+            days_text, status_text, border = f"{days:.1f}", "🟡 WARNING",  "#ffaa00"
         elif days < 30:
-            days_text = f"{days:.1f}"
-            status_text = "🟠 MONITOR"
-            border_color = "#ff6600"
+            days_text, status_text, border = f"{days:.1f}", "🟠 MONITOR",  "#ff6600"
         else:
-            days_text = f"{days:.1f}"
-            status_text = "🟢 HEALTHY"
-            border_color = "#00ff88"
+            days_text, status_text, border = f"{days:.1f}", "🟢 HEALTHY",  "#00ff88"
+
         stockout_date = (
             (datetime.now() + timedelta(days=days)).strftime('%d %b %Y')
             if days != float('inf') else "N/A"
         )
+
         with col:
             st.markdown(f"""
-            <div style='background: rgba(10,14,39,0.85); padding: 24px 16px;
-                        border-radius: 16px; border: 2.5px solid {border_color};
-                        text-align: center; margin-bottom: 8px;
-                        box-shadow: 0 0 18px {border_color}55;'>
-                <div style='font-size:36px; margin-bottom: 4px;'>{PRODUCT_ICONS.get(prod_key,"🛢️")}</div>
-                <div style='font-family:Orbitron,sans-serif; font-size:18px;
-                             color:{color}; font-weight:700; letter-spacing:2px;'>
-                    {row["display_name"]}
-                </div>
-                <div style='margin: 16px 0 8px;'>
+            <div style='background:rgba(10,14,39,0.85); padding:24px 16px; border-radius:16px;
+                        border:2.5px solid {border}; text-align:center; margin-bottom:8px;
+                        box-shadow:0 0 18px {border}55;'>
+                <div style='font-size:36px; margin-bottom:4px;'>{ICONS.get(prod,'🛢️')}</div>
+                <div style='font-family:Orbitron,sans-serif; font-size:18px; color:{color};
+                             font-weight:700; letter-spacing:2px;'>{row["display_name"]}</div>
+                <div style='margin:16px 0 8px;'>
                     <div style='color:#888; font-size:11px; text-transform:uppercase; letter-spacing:1px;'>
-                        Days of Supply Left
-                    </div>
-                    <div style='font-family:Orbitron,sans-serif; font-size:48px;
-                                 color:{border_color}; font-weight:900; line-height:1.1;'>
-                        {days_text}
-                    </div>
-                    <div style='color:{border_color}; font-size:14px; font-weight:700;
+                        Days of Supply Left</div>
+                    <div style='font-family:Orbitron,sans-serif; font-size:48px; color:{border};
+                                 font-weight:900; line-height:1.1;'>{days_text}</div>
+                    <div style='color:{border}; font-size:14px; font-weight:700;
                                  margin-top:4px;'>{status_text}</div>
                 </div>
                 <div style='border-top:1px solid rgba(255,255,255,0.08); padding-top:12px; margin-top:12px;'>
@@ -3039,165 +3160,167 @@ def _display_national_results(period_days_arg: int):
                         <tr>
                             <td style='color:#888; text-align:left; padding:2px 0;'>📦 Stock</td>
                             <td style='color:#e0e0e0; text-align:right; padding:2px 0; font-weight:600;'>
-                                {row["total_balance"]:,.0f} LT
-                            </td>
+                                {row["total_balance"]:,.0f} LT</td>
                         </tr>
                         <tr>
                             <td style='color:#888; text-align:left; padding:2px 0;'>📉 Daily Rate</td>
                             <td style='color:#e0e0e0; text-align:right; padding:2px 0; font-weight:600;'>
-                                {row["daily_rate"]:,.0f} LT/day
-                            </td>
+                                {row["daily_rate"]:,.0f} LT/day</td>
                         </tr>
                         <tr>
                             <td style='color:#888; text-align:left; padding:2px 0;'>🗓️ Est. Empty</td>
-                            <td style='color:{border_color}; text-align:right; padding:2px 0; font-weight:700;'>
-                                {stockout_date}
-                            </td>
+                            <td style='color:{border}; text-align:right; padding:2px 0; font-weight:700;'>
+                                {stockout_date}</td>
                         </tr>
                     </table>
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
     st.markdown("---")
-    # ── Summary table ─────────────────────────────────────────────────────────
-    st.markdown("### 📊 DETAILED NATIONAL SUMMARY TABLE")
+
+    # ── National summary table ─────────────────────────────────────────────────
+    st.markdown("### 📊 NATIONAL SUMMARY TABLE")
+
     summary_rows = []
     for _, row in forecast_df.iterrows():
         days = row['days_remaining']
-        if days == float('inf'): status = "No Data"
-        elif days < 7: status = "🔴 CRITICAL"
-        elif days < 14: status = "🟡 WARNING"
-        elif days < 30: status = "🟠 MONITOR"
-        else: status = "🟢 HEALTHY"
-        stockout_date = (
+        if   days == float('inf'): status = "No Data"
+        elif days < 7:             status = "🔴 CRITICAL"
+        elif days < 14:            status = "🟡 WARNING"
+        elif days < 30:            status = "🟠 MONITOR"
+        else:                      status = "🟢 HEALTHY"
+        stockout = (
             (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
             if days != float('inf') else "N/A"
         )
         summary_rows.append({
-            'Product': row['display_name'],
-            'National Stock (LT/KG)': f"{row['total_balance']:,.0f}",
-            f'Total Sales ({period_days}d) (LT)': f"{row['total_sales']:,.0f}",
-            'Avg Daily Depletion (LT)': f"{row['daily_rate']:,.0f}",
-            'Days of Supply': f"{days:.1f}" if days != float('inf') else "∞",
-            'Projected Empty Date': stockout_date,
-            'Status': status,
+            'Product':                        row['display_name'],
+            'National Stock (LT/KG)':         f"{row['total_balance']:,.0f}",
+            f'OMC Sales ({period_days}d, LT)': f"{row['omc_sales']:,.0f}",
+            f'BDC Transfers ({period_days}d, LT)': f"{row['cto_sales']:,.0f}",
+            f'Total Depletion ({period_days}d, LT)': f"{row['total_depletion']:,.0f}",
+            'Avg Daily Depletion (LT/day)':   f"{row['daily_rate']:,.0f}",
+            'Days of Supply':                 f"{days:.1f}" if days != float('inf') else "∞",
+            'Projected Empty':                stockout,
+            'Status':                         status,
         })
+
     st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
     st.markdown("---")
-    # ── Sales breakdown (Sale vs Custody Transfer Out) ─────────────────────────
-    st.markdown("### 🔍 SALES BREAKDOWN: OMC Loadings vs BDC-to-BDC Transfers")
+
+    # ── Depletion breakdown chart ──────────────────────────────────────────────
+    st.markdown("### 🔍 DEPLETION BREAKDOWN: BDC→OMC vs BDC→BDC Transfers")
     st.caption(
-        "**Sale** = BDC → OMC (retail loading) | "
-        "**Custody Transfer Out** = BDC → BDC transfer. "
-        "Both deplete national supply."
+        "**BDC→OMC Sales** = OMC Loadings (released orders) | "
+        "**BDC→BDC Transfers** = Custody Transfer Out from Stock Transactions"
     )
-    SALE_DESCS = ['Sale', 'Custody Transfer Out']
-    bd = desc_breakdown[desc_breakdown['Description'].isin(SALE_DESCS)].copy()
-    bd['display_name'] = bd['product_key'].map(
-        {"PMS": "PREMIUM (PMS)", "Gasoil": "GASOIL (AGO)", "LPG": "LPG"}
-    )
-    pivot_bd = bd.pivot_table(
-        index='display_name', columns='Description',
-        values='total_volume', aggfunc='sum', fill_value=0
-    ).reset_index().rename(columns={'display_name': 'Product'})
-    for col in ['Sale', 'Custody Transfer Out']:
-        if col not in pivot_bd.columns:
-            pivot_bd[col] = 0
-    pivot_bd['Total Depletion (LT)'] = pivot_bd['Sale'] + pivot_bd['Custody Transfer Out']
-    pivot_bd['OMC Sale %'] = (
-        pivot_bd['Sale'] / pivot_bd['Total Depletion (LT)'].replace(0, 1) * 100
-    ).round(1)
-    pivot_bd['BDC Transfer %'] = (
-        pivot_bd['Custody Transfer Out'] /
-        pivot_bd['Total Depletion (LT)'].replace(0, 1) * 100
-    ).round(1)
-    # Format numbers
-    display_pivot = pivot_bd.copy()
-    for c in ['Sale', 'Custody Transfer Out', 'Total Depletion (LT)']:
-        display_pivot[c] = display_pivot[c].apply(lambda x: f"{x:,.0f}")
-    for c in ['OMC Sale %', 'BDC Transfer %']:
-        display_pivot[c] = display_pivot[c].apply(lambda x: f"{x:.1f}%")
-    st.dataframe(display_pivot, use_container_width=True, hide_index=True)
+
+    bd_cols = st.columns(3)
+    for col, (_, row) in zip(bd_cols, forecast_df.iterrows()):
+        prod      = row['product']
+        omc_v     = row['omc_sales']
+        cto_v     = row['cto_sales']
+        total_v   = row['total_depletion']
+        omc_pct   = (omc_v / total_v * 100) if total_v > 0 else 0
+        cto_pct   = (cto_v / total_v * 100) if total_v > 0 else 0
+
+        with col:
+            st.markdown(f"""
+            <div style='background:rgba(22,33,62,0.6); padding:18px; border-radius:12px;
+                        border:2px solid {COLORS.get(prod,"#ffffff")}; margin-bottom:8px;'>
+                <div style='font-family:Orbitron,sans-serif; font-size:15px; font-weight:700;
+                             color:{COLORS.get(prod,"#ffffff")}; text-align:center;
+                             margin-bottom:14px;'>{ICONS.get(prod,"🛢️")} {row["display_name"]}</div>
+                <table style='width:100%; font-family:Rajdhani,sans-serif; font-size:13px; border-collapse:collapse;'>
+                    <tr>
+                        <td style='color:#888; padding:4px 0;'>🚚 BDC→OMC Sales</td>
+                        <td style='color:#00ff88; text-align:right; font-weight:700;'>{omc_v:,.0f} LT</td>
+                        <td style='color:#00ff88; text-align:right; width:50px;'>{omc_pct:.1f}%</td>
+                    </tr>
+                    <tr>
+                        <td style='color:#888; padding:4px 0;'>🔄 BDC→BDC Transfers</td>
+                        <td style='color:#ff00ff; text-align:right; font-weight:700;'>{cto_v:,.0f} LT</td>
+                        <td style='color:#ff00ff; text-align:right; width:50px;'>{cto_pct:.1f}%</td>
+                    </tr>
+                    <tr style='border-top:1px solid rgba(255,255,255,0.15);'>
+                        <td style='color:#ffffff; padding:6px 0 2px; font-weight:700;'>⚡ Total Depletion</td>
+                        <td style='color:#00ffff; text-align:right; font-weight:700;'>{total_v:,.0f} LT</td>
+                        <td style='color:#00ffff; text-align:right;'>100%</td>
+                    </tr>
+                    <tr>
+                        <td style='color:#888; padding:2px 0; font-size:12px;'>📅 Per Day (avg)</td>
+                        <td colspan='2' style='color:#e0e0e0; text-align:right;
+                            font-size:12px;'>{row["daily_rate"]:,.0f} LT/day</td>
+                    </tr>
+                </table>
+            </div>
+            """, unsafe_allow_html=True)
+
     st.markdown("---")
-    # ── Inflow vs Outflow balance ──────────────────────────────────────────────
+
+    # ── Inflow vs Outflow (from CTO data + balance) ───────────────────────────
     st.markdown("### ⚖️ NATIONAL INFLOW vs OUTFLOW")
-    st.caption("Inflow = Custody Transfer In + Product Outturn | Outflow = Sale + Custody Transfer Out")
-    INFLOW_DESCS = ['Custody Transfer In', 'Product Outturn']
-    OUTFLOW_DESCS = ['Sale', 'Custody Transfer Out']
-    flow_agg = (
-        txn_df.groupby(['_product_name', 'Description'])['Volume']
-        .sum()
-        .reset_index()
+    st.caption(
+        "Inflow approximated from balance report inflow signals | "
+        "Outflow = Total Depletion (OMC Sales + CTO)"
     )
+
     flow_rows = []
-    for prod_key in ["PMS", "Gasoil", "LPG"]:
-        prod_rows = flow_agg[flow_agg['_product_name'] == prod_key]
-        inflow = prod_rows[prod_rows['Description'].isin(INFLOW_DESCS)]['Volume'].sum()
-        outflow = prod_rows[prod_rows['Description'].isin(OUTFLOW_DESCS)]['Volume'].sum()
-        net = inflow - outflow
+    for _, row in forecast_df.iterrows():
+        prod      = row['product']
+        outflow   = row['total_depletion']
+        # Approximate inflow from balance (we don't fetch inflow transactions,
+        # but the net can be inferred if we had prior balance — show what we have)
         flow_rows.append({
-            'Product': {"PMS": "PREMIUM (PMS)", "Gasoil": "GASOIL (AGO)", "LPG": "LPG"}[prod_key],
-            'Total Inflow (LT)': f"{inflow:,.0f}",
-            'Total Outflow (LT)': f"{outflow:,.0f}",
-            'Net Flow (LT)': f"{net:+,.0f}",
-            'Flow Balance': "✅ Surplus" if net >= 0 else "⚠️ Deficit",
+            'Product':              row['display_name'],
+            f'Total Outflow ({period_days}d, LT)': f"{outflow:,.0f}",
+            'Avg Daily Outflow (LT/day)':          f"{row['daily_rate']:,.0f}",
+            'Note': '— inflow data requires receipts report',
         })
+
     st.dataframe(pd.DataFrame(flow_rows), use_container_width=True, hide_index=True)
     st.markdown("---")
-    # ── BDC-level stock balance breakdown ─────────────────────────────────────
-    st.markdown("### 🏦 CURRENT STOCK BY BDC (from Balance Report)")
-    col_bal = 'ACTUAL BALANCE (LT\\KG)'
-    bdc_stock = (
-        bal_df.groupby(['BDC', 'Product'])[col_bal]
-        .sum()
-        .reset_index()
-    )
-    bdc_pivot = bdc_stock.pivot_table(
-        index='BDC', columns='Product', values=col_bal,
-        aggfunc='sum', fill_value=0
-    ).reset_index()
-    for prod in ['GASOIL', 'LPG', 'PREMIUM']:
-        if prod not in bdc_pivot.columns:
-            bdc_pivot[prod] = 0
-    bdc_pivot['TOTAL'] = bdc_pivot[['GASOIL', 'LPG', 'PREMIUM']].sum(axis=1)
-    bdc_pivot = bdc_pivot.sort_values('TOTAL', ascending=False)
-    # Add % of national total
-    nat_total = bdc_pivot['TOTAL'].sum()
-    bdc_pivot['Market Share %'] = (bdc_pivot['TOTAL'] / nat_total * 100).round(2)
-    fmt_cols = ['GASOIL', 'LPG', 'PREMIUM', 'TOTAL']
+
+    # ── BDC-level stock ───────────────────────────────────────────────────────
+    st.markdown("### 🏦 CURRENT STOCK BY BDC")
     display_bdc = bdc_pivot.copy()
-    for c in fmt_cols:
+    for c in ['GASOIL', 'LPG', 'PREMIUM', 'TOTAL']:
         display_bdc[c] = display_bdc[c].apply(lambda x: f"{x:,.0f}")
     display_bdc['Market Share %'] = display_bdc['Market Share %'].apply(lambda x: f"{x:.2f}%")
     st.dataframe(display_bdc, use_container_width=True, hide_index=True)
     st.markdown("---")
+
     # ── Export ────────────────────────────────────────────────────────────────
     st.markdown("### 💾 EXPORT NATIONAL REPORT")
-    if st.button("📄 GENERATE EXCEL REPORT", use_container_width=True):
-        import os
-        from openpyxl import load_workbook
+    if st.button("📄 GENERATE EXCEL REPORT", use_container_width=True, key='ns_export'):
         out_dir = os.path.join(os.getcwd(), "national_stockout_reports")
         os.makedirs(out_dir, exist_ok=True)
         filename = f"national_stockout_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         filepath = os.path.join(out_dir, filename)
-        # Build a nice summary df
-        summary_df_export = pd.DataFrame([{
-            'Product': row['display_name'],
-            'National Stock (LT/KG)': row['total_balance'],
-            f'Total Sales ({period_days}d LT)': row['total_sales'],
-            'Avg Daily Depletion (LT)': row['daily_rate'],
-            'Days of Supply': row['days_remaining'] if row['days_remaining'] != float('inf') else 9999,
-            'Projected Empty Date': (
+
+        summary_export = pd.DataFrame([{
+            'Product':                   row['display_name'],
+            'National Stock (LT/KG)':    row['total_balance'],
+            f'OMC Sales ({period_days}d LT)': row['omc_sales'],
+            f'BDC Transfers ({period_days}d LT)': row['cto_sales'],
+            f'Total Depletion ({period_days}d LT)': row['total_depletion'],
+            'Avg Daily Depletion (LT)':  row['daily_rate'],
+            'Days of Supply':            row['days_remaining'] if row['days_remaining'] != float('inf') else 9999,
+            'Projected Empty':           (
                 (datetime.now() + timedelta(days=row['days_remaining'])).strftime('%Y-%m-%d')
                 if row['days_remaining'] != float('inf') else 'N/A'
             ),
         } for _, row in forecast_df.iterrows()])
+
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-            summary_df_export.to_excel(writer, sheet_name='Stockout Forecast', index=False)
-            pivot_bd.to_excel(writer, sheet_name='Sales Breakdown', index=False)
-            pd.DataFrame(flow_rows).to_excel(writer, sheet_name='Inflow vs Outflow', index=False)
-            bdc_pivot.to_excel(writer, sheet_name='Stock by BDC', index=False)
-            txn_df.to_excel(writer, sheet_name='All Transactions', index=False)
+            summary_export.to_excel(writer,   sheet_name='Stockout Forecast',  index=False)
+            bdc_pivot.to_excel(writer,         sheet_name='Stock by BDC',       index=False)
+            if not omc_df.empty:
+                omc_df.to_excel(writer,        sheet_name='OMC Loadings',       index=False)
+            if not cto_df.empty:
+                cto_df.to_excel(writer,        sheet_name='BDC Transfers (CTO)', index=False)
+
         st.success(f"✅ Report saved: {filename}")
         with open(filepath, 'rb') as f:
             st.download_button(
@@ -3205,60 +3328,36 @@ def _display_national_results(period_days_arg: int):
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
+
+
+# ── (kept for BDC Transaction tab) ───────────────────────────────────────────
+
 def _parse_stock_transaction_pdf(pdf_file) -> list:
     """
     Parse an NPA Stock Transaction Report PDF.
-    PDF structure (confirmed from real file):
-      - No tables on data pages; pure text lines.
-      - Page 2 footer summary appears as a 4-row table — ignored automatically
-        because we only parse lines that start with DD/MM/YYYY.
-      - Each data line:
-          DD/MM/YYYY TRANS# DESCRIPTION ACCOUNT_NAME... VOLUME BALANCE
-        where VOLUME and BALANCE are plain integers with optional commas,
-        and BALANCE may be negative in parentheses: (16,453)
-    Lines skipped:
-      - Header / metadata lines (BDC :, Depot :, Product :, Printed by :, etc.)
-      - Date-range header ("01 February, 2026 - 16 February, 2026")
-      - Column header row ("Date Trans # Description ...")
-      - Footer summary rows (Actual Stock Balance, Stock Commitments,
-        Available Stock Balance, Last Stock Update Date)
-      - Balance b/fwd opening-balance rows
+    Used by the per-BDC Stock Transaction tab.
     """
-    # Known description strings — sorted longest-first so multi-word matches win
     DESCRIPTIONS = sorted([
-        'Balance b/fwd',
-        'Stock Take',
-        'Sale',
-        'Custody Transfer In',
-        'Custody Transfer Out',
-        'Product Outturn',
+        'Balance b/fwd', 'Stock Take', 'Sale',
+        'Custody Transfer In', 'Custody Transfer Out', 'Product Outturn',
     ], key=len, reverse=True)
-    # Line-level skip prefixes (lowercase)
+
     SKIP_PREFIXES = (
-        'national petroleum authority',
-        'stock transaction report',
-        'bdc :',
-        'depot :',
-        'product :',
-        'printed by',
-        'printed on',
-        'date trans #',
-        'actual stock balance',
-        'stock commitments',
-        'available stock balance',
-        'last stock update',
-        'i.t.s from',
+        'national petroleum authority', 'stock transaction report',
+        'bdc :', 'depot :', 'product :', 'printed by', 'printed on',
+        'date trans #', 'actual stock balance', 'stock commitments',
+        'available stock balance', 'last stock update', 'i.t.s from',
     )
+
     def _should_skip(line: str) -> bool:
         lo = line.strip().lower()
         if lo.startswith(SKIP_PREFIXES):
             return True
-        # Date-range header: "01 February, 2026 - 16 February, 2026"
         if re.match(r'^\d{1,2}\s+\w+,\s+\d{4}', line.strip()):
             return True
         return False
+
     def _parse_num(s: str):
-        """Parse integer or parenthesis-negative: 30,000 → 30000, (16,453) → -16453"""
         s = s.strip()
         neg = s.startswith('(') and s.endswith(')')
         val_str = s.strip('()').replace(',', '')
@@ -3267,54 +3366,44 @@ def _parse_stock_transaction_pdf(pdf_file) -> list:
             return -val if neg else val
         except ValueError:
             return None
+
     def _parse_line(line: str):
         line = line.strip()
-        # Must start with DD/MM/YYYY
         if not re.match(r'^\d{2}/\d{2}/\d{4}\b', line):
             return None
         parts = line.split()
-        date = parts[0]
+        date  = parts[0]
         trans = parts[1] if len(parts) > 1 else ''
-        # Text after "date trans#"
-        rest = line[len(date):].strip()
-        rest = rest[len(trans):].strip()
-        # Match description
+        rest  = line[len(date):].strip()
+        rest  = rest[len(trans):].strip()
         description = None
-        after_desc = rest
+        after_desc  = rest
         for desc in DESCRIPTIONS:
             if rest.lower().startswith(desc.lower()):
                 description = desc
-                after_desc = rest[len(desc):].strip()
+                after_desc  = rest[len(desc):].strip()
                 break
-        if description is None:
+        if description is None or description == 'Balance b/fwd':
             return None
-        # Skip opening balance rows
-        if description == 'Balance b/fwd':
-            return None
-        # after_desc = "ACCOUNT_NAME... VOLUME BALANCE"
-        # Numbers: plain integers with commas OR paren-negative (16,453)
-        num_re = r'\([\d,]+\)|[\d,]+'
-        nums = re.findall(num_re, after_desc)
+        nums = re.findall(r'\([\d,]+\)|[\d,]+', after_desc)
         if len(nums) < 2:
             return None
-        volume = _parse_num(nums[-2])
+        volume  = _parse_num(nums[-2])
         balance = _parse_num(nums[-1])
-        # Account name = after_desc minus the trailing "VOLUME BALANCE" tokens
         vol_tok = nums[-2]
         bal_tok = nums[-1]
-        trail = re.search(
+        trail   = re.search(
             re.escape(vol_tok) + r'\s+' + re.escape(bal_tok) + r'\s*$',
             after_desc
         )
         account = after_desc[:trail.start()].strip() if trail else ' '.join(after_desc.split()[:-2])
         return {
-            'Date': date,
-            'Trans #': trans,
-            'Description': description,
+            'Date': date, 'Trans #': trans, 'Description': description,
             'Account': account,
-            'Volume': volume if volume is not None else 0,
+            'Volume':  volume  if volume  is not None else 0,
             'Balance': balance if balance is not None else 0,
         }
+
     records = []
     try:
         with pdfplumber.open(pdf_file) as pdf:
@@ -3324,18 +3413,17 @@ def _parse_stock_transaction_pdf(pdf_file) -> list:
                     continue
                 for raw in text.split("\n"):
                     line = raw.strip()
-                    if not line:
-                        continue
-                    if _should_skip(line):
+                    if not line or _should_skip(line):
                         continue
                     row = _parse_line(line)
                     if row:
                         records.append(row)
-             
     except Exception as e:
         st.error(f"Error parsing PDF: {e}")
         return []
     return records
+
+
 def show_bdc_intelligence():
     st.markdown("<h2>🧠 BDC INTELLIGENCE CENTER</h2>", unsafe_allow_html=True)
     st.info("🎯 Predictive analytics combining stock balance and loading patterns")
