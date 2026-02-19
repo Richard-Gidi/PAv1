@@ -2650,32 +2650,74 @@ def _fetch_pdf_bytes(url: str, params: dict, timeout: int = 45):
 
 # ── OMC Loadings national fetch ───────────────────────────────────────────────
 
-def _fetch_national_omc_loadings(start_str: str, end_str: str) -> pd.DataFrame:
+def _fetch_national_omc_loadings(start_str: str, end_str: str,
+                                  progress_cb=None) -> pd.DataFrame:
     """
-    Fetch the industry-wide OMC loadings PDF (all BDCs) and return a DataFrame
-    with columns: Product (PREMIUM/GASOIL/LPG), Quantity.
+    Fetch industry-wide OMC loadings by splitting the date range into
+    7-day chunks. Each chunk produces a small, manageable PDF.
+    Results are concatenated and returned as a single DataFrame.
+
+    progress_cb: optional callable(done, total) for progress updates.
     """
     cfg = NPA_CONFIG
-    params = {
-        'lngCompanyId':   cfg['COMPANY_ID'],
-        'szITSfromPersol': 'persol',
-        'strGroupBy':     'BDC',
-        'strGroupBy1':    '',           # empty → all OMCs / all BDCs
-        'strQuery1':      ' and iorderstatus=4',
-        'strQuery2':      start_str,
-        'strQuery3':      end_str,
-        'strQuery4':      '',
-        'strPicHeight':   '',
-        'strPicWeight':   '',
-        'intPeriodID':    '4',
-        'iUserId':        cfg['USER_ID'],
-        'iAppId':         cfg['APP_ID'],
-    }
-    pdf_bytes = _fetch_pdf_bytes(cfg['OMC_LOADINGS_URL'], params)
-    if not pdf_bytes:
+
+    # Parse dates
+    fmt = "%m/%d/%Y"
+    d_start = datetime.strptime(start_str, fmt)
+    d_end   = datetime.strptime(end_str,   fmt)
+
+    # Build weekly windows
+    windows = []
+    cursor = d_start
+    while cursor <= d_end:
+        chunk_end = min(cursor + timedelta(days=6), d_end)
+        windows.append((cursor.strftime(fmt), chunk_end.strftime(fmt)))
+        cursor = chunk_end + timedelta(days=1)
+
+    all_frames = []
+    total = len(windows)
+
+    def _fetch_window(w_start, w_end):
+        params = {
+            'lngCompanyId':    cfg['COMPANY_ID'],
+            'szITSfromPersol': 'persol',
+            'strGroupBy':      'BDC',
+            'strGroupBy1':     '',
+            'strQuery1':       ' and iorderstatus=4',
+            'strQuery2':       w_start,
+            'strQuery3':       w_end,
+            'strQuery4':       '',
+            'strPicHeight':    '',
+            'strPicWeight':    '',
+            'intPeriodID':     '4',
+            'iUserId':         cfg['USER_ID'],
+            'iAppId':          cfg['APP_ID'],
+        }
+        pdf_bytes = _fetch_pdf_bytes(cfg['OMC_LOADINGS_URL'], params, timeout=60)
+        if not pdf_bytes:
+            return pd.DataFrame()
+        return extract_npa_data_from_pdf(io.BytesIO(pdf_bytes))
+
+    # Fetch windows in parallel (up to 4 at a time — don't hammer the server)
+    completed = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        future_map = {executor.submit(_fetch_window, ws, we): (ws, we)
+                      for ws, we in windows}
+        for future in concurrent.futures.as_completed(future_map):
+            completed += 1
+            try:
+                chunk_df = future.result()
+                if not chunk_df.empty:
+                    all_frames.append(chunk_df)
+            except Exception:
+                pass
+            if progress_cb:
+                progress_cb(completed, total)
+
+    if not all_frames:
         return pd.DataFrame()
-    df = extract_npa_data_from_pdf(io.BytesIO(pdf_bytes))
-    return df   # columns: Date, OMC, Truck, Product, Quantity, Price, Depot, Order Number, BDC
+    return pd.concat(all_frames, ignore_index=True).drop_duplicates()
+
 
 
 # ── Main page ─────────────────────────────────────────────────────────────────
@@ -2808,12 +2850,25 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int):
         status_a.update(label=f"✅ Step 1 done — {n_bdcs} BDCs, stock parsed", state="running")
 
     # ── STEP 2: OMC Loadings (national depletion — fuel leaving wholesale) ─────
-    with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings (BDC → OMC)…", expanded=True) as status_b:
+    with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings (chunked by week)…", expanded=True) as status_b:
+        # Calculate number of weekly chunks for the user
+        from math import ceil
+        n_weeks = ceil(period_days / 7)
         st.write(
-            "Fetching industry-wide OMC loadings — "
-            "all BDCs, all OMCs, released orders only (status=4)…"
+            f"Splitting **{period_days}-day** period into **{n_weeks} weekly chunks** "
+            f"to avoid large PDF crashes. Fetching in parallel (4 workers)…"
         )
-        omc_df = _fetch_national_omc_loadings(start_str, end_str)
+
+        prog_bar   = st.progress(0, text="Starting…")
+        prog_text  = st.empty()
+
+        def _on_progress(done, total):
+            pct = done / total
+            prog_bar.progress(pct, text=f"Week chunk {done}/{total} fetched")
+            prog_text.caption(f"✅ {done} / {total} weekly windows complete")
+
+        omc_df = _fetch_national_omc_loadings(start_str, end_str, progress_cb=_on_progress)
+        prog_bar.progress(1.0, text="✅ All chunks fetched")
 
         if omc_df.empty:
             st.warning(
@@ -2828,12 +2883,12 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int):
                 .sum()
             )
             st.write(
-                f"✅ {len(omc_df):,} loading records | "
+                f"✅ **{len(omc_df):,} total loading records** across {n_weeks} weeks | "
                 f"PMS: **{omc_by_product.get('PREMIUM', 0):,.0f} LT** | "
                 f"AGO: **{omc_by_product.get('GASOIL',  0):,.0f} LT** | "
                 f"LPG: **{omc_by_product.get('LPG',     0):,.0f} LT**"
             )
-        status_b.update(label="✅ Step 2 done — OMC loadings fetched", state="complete")
+        status_b.update(label=f"✅ Step 2 done — {len(omc_df):,} records from {n_weeks} weekly chunks", state="complete")
 
     # ── Compute forecast ──────────────────────────────────────────────────────
     rows_out = []
