@@ -1037,7 +1037,7 @@ def show_bdc_balance():
     if 'bdc_records' not in st.session_state:
         st.session_state.bdc_records = []
  
-    if st.button("🔄 FETCH BDC BALANCE DATA", use_container_width=True):
+    if st.button("🔄 FETCH BDC BALANCE DATA", width='stretch'):
         with st.spinner("🔄 FETCHING DATA FROM NPA PORTAL..."):
             scraper = StockBalanceScraper()
          
@@ -1127,7 +1127,7 @@ def show_bdc_balance():
      
         col1, col2 = st.columns([2, 1])
         with col1:
-            st.dataframe(bdc_summary, use_container_width=True, hide_index=True)
+            st.dataframe(bdc_summary, width='stretch', hide_index=True)
         with col2:
             st.markdown("#### 📈 Key Metrics")
             st.metric("Total BDCs", f"{df['BDC'].nunique()}")
@@ -1154,7 +1154,7 @@ def show_bdc_balance():
         pivot_data['TOTAL'] = pivot_data[['GASOIL', 'LPG', 'PREMIUM']].sum(axis=1)
         pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
      
-        st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], use_container_width=True, hide_index=True)
+        st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], width='stretch', hide_index=True)
      
         st.markdown("---")
      
@@ -1185,7 +1185,7 @@ def show_bdc_balance():
      
         st.markdown(f"<h3>📋 FILTERED DATA: {search_value}</h3>", unsafe_allow_html=True)
         display = filtered[['Product', 'BDC', 'DEPOT', 'AVAILABLE BALANCE (LT\\KG)', 'ACTUAL BALANCE (LT\\KG)', 'Date']].sort_values(['Product', 'BDC', 'DEPOT'])
-        st.dataframe(display, use_container_width=True, height=400, hide_index=True)
+        st.dataframe(display, width='stretch', height=400, hide_index=True)
      
         st.markdown("---")
         st.markdown("<h3>📋 QUICK STATS</h3>", unsafe_allow_html=True)
@@ -1206,7 +1206,7 @@ def show_bdc_balance():
         path = scraper.save_to_excel(records)
         if path and os.path.exists(path):
             with open(path, 'rb') as f:
-                st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
     else:
         st.info("👆 Click the button above to fetch BDC balance data")
 def show_omc_loadings():
@@ -1231,7 +1231,7 @@ def show_omc_loadings():
     with col2:
         end_date = st.date_input("End Date", value=st.session_state.omc_end_date, key='omc_end')
  
-    if st.button("🔄 FETCH OMC LOADINGS DATA", use_container_width=True):
+    if st.button("🔄 FETCH OMC LOADINGS DATA", width='stretch'):
         with st.spinner("🔄 FETCHING DATA FROM NPA PORTAL..."):
             st.session_state.omc_start_date = start_date
             st.session_state.omc_end_date = end_date
@@ -1349,7 +1349,7 @@ def show_omc_loadings():
      
         col1, col2 = st.columns([2, 1])
         with col1:
-            st.dataframe(product_summary, use_container_width=True, hide_index=True)
+            st.dataframe(product_summary, width='stretch', hide_index=True)
         with col2:
             for _, row in product_summary.iterrows():
                 pct = (row['Total Volume (LT/KG)'] / product_summary['Total Volume (LT/KG)'].sum()) * 100
@@ -1366,7 +1366,7 @@ def show_omc_loadings():
         omc_summary.columns = ['OMC', 'Total Volume (LT/KG)', 'Orders', 'Products']
         omc_summary = omc_summary.sort_values('Total Volume (LT/KG)', ascending=False).head(10)
      
-        st.dataframe(omc_summary, use_container_width=True, hide_index=True)
+        st.dataframe(omc_summary, width='stretch', hide_index=True)
      
         st.markdown("---")
      
@@ -1380,7 +1380,7 @@ def show_omc_loadings():
         bdc_summary.columns = ['BDC', 'Total Volume (LT/KG)', 'Orders', 'OMCs', 'Products']
         bdc_summary = bdc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
      
-        st.dataframe(bdc_summary, use_container_width=True, hide_index=True)
+        st.dataframe(bdc_summary, width='stretch', hide_index=True)
      
         st.markdown("---")
      
@@ -1400,7 +1400,7 @@ def show_omc_loadings():
         pivot_data['TOTAL'] = pivot_data[['GASOIL', 'LPG', 'PREMIUM']].sum(axis=1)
         pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
      
-        st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], use_container_width=True, hide_index=True)
+        st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], width='stretch', hide_index=True)
      
         st.markdown("---")
      
@@ -1447,14 +1447,14 @@ def show_omc_loadings():
                 st.metric("Filtered Value", f"₵{(filtered['Quantity'] * filtered['Price']).sum():,.0f}")
      
         display = filtered[['Date', 'OMC', 'Truck', 'Quantity', 'Order Number', 'BDC', 'Depot', 'Price', 'Product']].sort_values(['Product', 'OMC', 'Date'])
-        st.dataframe(display, use_container_width=True, height=400, hide_index=True)
+        st.dataframe(display, width='stretch', height=400, hide_index=True)
      
         st.markdown("---")
         st.markdown("<h3>💾 EXPORT DATA</h3>", unsafe_allow_html=True)
         path = save_to_excel_multi(df)
         if path and os.path.exists(path):
             with open(path, 'rb') as f:
-                st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
     else:
         st.info("👆 Select dates and click the button above to fetch OMC loadings data")
 def show_daily_orders():
@@ -1479,7 +1479,7 @@ def show_daily_orders():
     with col2:
         end_date = st.date_input("End Date", value=st.session_state.daily_end_date, key='daily_end')
  
-    if st.button("🔄 FETCH DAILY ORDERS", use_container_width=True):
+    if st.button("🔄 FETCH DAILY ORDERS", width='stretch'):
         with st.spinner("🔄 FETCHING DAILY ORDERS FROM NPA PORTAL..."):
             st.session_state.daily_start_date = start_date
             st.session_state.daily_end_date = end_date
@@ -1674,7 +1674,7 @@ def show_daily_orders():
      
         col1, col2 = st.columns([2, 1])
         with col1:
-            st.dataframe(product_summary, use_container_width=True, hide_index=True)
+            st.dataframe(product_summary, width='stretch', hide_index=True)
         with col2:
             for _, row in product_summary.iterrows():
                 pct = (row['Total Volume (LT/KG)'] / product_summary['Total Volume (LT/KG)'].sum()) * 100
@@ -1692,7 +1692,7 @@ def show_daily_orders():
         bdc_summary.columns = ['BDC', 'Total Volume (LT/KG)', 'Orders', 'Products', 'Depots']
         bdc_summary = bdc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
      
-        st.dataframe(bdc_summary, use_container_width=True, hide_index=True)
+        st.dataframe(bdc_summary, width='stretch', hide_index=True)
      
         if 'OMC' in df.columns and df['OMC'].notna().any():
             st.markdown("<h3>🏢 OMC SUMMARY (MATCHED)</h3>", unsafe_allow_html=True)
@@ -1707,7 +1707,7 @@ def show_daily_orders():
             omc_summary.columns = ['OMC', 'Total Volume (LT/KG)', 'Orders', 'Products', 'BDCs']
             omc_summary = omc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
          
-            st.dataframe(omc_summary, use_container_width=True, hide_index=True)
+            st.dataframe(omc_summary, width='stretch', hide_index=True)
          
             st.markdown("---")
         st.markdown("---")
@@ -1725,7 +1725,7 @@ def show_daily_orders():
         pivot_data['TOTAL'] = pivot_data[product_cols].sum(axis=1)
         pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
      
-        st.dataframe(pivot_data, use_container_width=True, hide_index=True)
+        st.dataframe(pivot_data, width='stretch', hide_index=True)
      
         st.markdown("---")
      
@@ -1735,7 +1735,7 @@ def show_daily_orders():
             'Quantity': 'sum'
         }).reset_index()
         status_summary.columns = ['Status', 'Orders', 'Total Volume (LT/KG)']
-        st.dataframe(status_summary, use_container_width=True, hide_index=True)
+        st.dataframe(status_summary, width='stretch', hide_index=True)
      
         st.markdown("---")
      
@@ -1782,14 +1782,14 @@ def show_daily_orders():
                 st.metric("Filtered Value", f"₵{(filtered['Quantity'] * filtered['Price']).sum():,.0f}")
      
         display = filtered[['Date', 'OMC', 'Truck', 'Quantity', 'Order Number', 'BDC', 'Depot', 'Price', 'Product', 'Status']].sort_values(['Product', 'BDC', 'Date'])
-        st.dataframe(display, use_container_width=True, height=400, hide_index=True)
+        st.dataframe(display, width='stretch', height=400, hide_index=True)
      
         st.markdown("---")
         st.markdown("<h3>💾 EXPORT DATA</h3>", unsafe_allow_html=True)
         path = save_daily_orders_excel(df)
         if path and os.path.exists(path):
             with open(path, 'rb') as f:
-                st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+                st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
     else:
         st.info("👆 Select a date range and click the button above to fetch daily orders")
 def show_market_share():
@@ -1887,7 +1887,7 @@ def show_market_share():
                     'Market Share (%)': product_share
                 })
             stock_product_df = pd.DataFrame(product_stock_data)
-            st.dataframe(stock_product_df, use_container_width=True, hide_index=True)
+            st.dataframe(stock_product_df, width='stretch', hide_index=True)
             cols = st.columns(3)
             for idx, row in stock_product_df.iterrows():
                 with cols[idx]:
@@ -1997,7 +1997,7 @@ def show_market_share():
                     'Orders': bdc_orders
                 })
             sales_product_df = pd.DataFrame(product_sales_data)
-            st.dataframe(sales_product_df, use_container_width=True, hide_index=True)
+            st.dataframe(sales_product_df, width='stretch', hide_index=True)
             st.markdown("#### 🏆 Per-Product BDC Rankings (Top 5)")
             rank_cols = st.columns(3)
             for col_idx, product in enumerate(['PREMIUM', 'GASOIL', 'LPG']):
@@ -2173,10 +2173,10 @@ def show_market_share():
                     'Stock/Sales Ratio': f"{(bdc_stock / bdc_sales_vol):.2f}x" if bdc_sales_vol > 0 else "N/A"
                 })
             comparison_df = pd.DataFrame(comparison_data)
-            st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+            st.dataframe(comparison_df, width='stretch', hide_index=True)
             st.markdown("---")
             st.markdown("### 💾 EXPORT COMPLETE REPORT")
-            if st.button("📄 GENERATE EXCEL REPORT", use_container_width=True):
+            if st.button("📄 GENERATE EXCEL REPORT", width='stretch'):
                 output_dir = os.path.join(os.getcwd(), "market_share_reports")
                 os.makedirs(output_dir, exist_ok=True)
                 filename = f"market_share_{selected_bdc}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -2192,7 +2192,7 @@ def show_market_share():
                         f,
                         filename,
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
+                        width='stretch'
                     )
 def show_competitive_intel():
     st.markdown("<h2>🎯 COMPETITIVE INTELLIGENCE CENTER</h2>", unsafe_allow_html=True)
@@ -2236,7 +2236,7 @@ def show_competitive_intel():
             top_anomalies = volume_anomalies.nlargest(10, 'Quantity')[
                 ['Date', 'BDC', 'OMC', 'Product', 'Quantity', 'Order Number']
             ]
-            st.dataframe(top_anomalies, use_container_width=True, hide_index=True)
+            st.dataframe(top_anomalies, width='stretch', hide_index=True)
      
         st.markdown("---")
      
@@ -2258,7 +2258,7 @@ def show_competitive_intel():
                     'Total Anomalies': high_anom + low_anom
                 })
      
-        st.dataframe(pd.DataFrame(price_data), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(price_data), width='stretch', hide_index=True)
  
     with tab2:
         st.markdown("### 💰 PRICE INTELLIGENCE DASHBOARD")
@@ -2271,7 +2271,7 @@ def show_competitive_intel():
             lambda x: '🔴 Premium' if x > overall_mean * 1.1 else '🟢 Competitive'
         )
      
-        st.dataframe(price_stats.sort_values('Avg Price', ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(price_stats.sort_values('Avg Price', ascending=False), width='stretch', hide_index=True)
      
         st.markdown("---")
      
@@ -2291,7 +2291,7 @@ def show_competitive_intel():
                     'Gap': f"₵{(bdc_prices.max() - bdc_prices.min()):.2f}"
                 })
      
-        st.dataframe(pd.DataFrame(opportunities), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(opportunities), width='stretch', hide_index=True)
  
     with tab3:
         st.markdown("### ⭐ BDC PERFORMANCE LEADERBOARD")
@@ -2327,7 +2327,7 @@ def show_competitive_intel():
         scores_df.insert(0, 'Rank', range(1, len(scores_df) + 1))
         scores_df['Medal'] = scores_df['Rank'].apply(lambda x: '🥇' if x==1 else '🥈' if x==2 else '🥉' if x==3 else '')
      
-        st.dataframe(scores_df, use_container_width=True, hide_index=True)
+        st.dataframe(scores_df, width='stretch', hide_index=True)
      
         st.markdown("---")
      
@@ -2392,7 +2392,7 @@ def show_stock_transaction():
             start_date = st.date_input("Start Date:", value=datetime.now() - timedelta(days=30))
         with col4:
             end_date = st.date_input("End Date:", value=datetime.now())
-        if st.button("📊 FETCH TRANSACTION REPORT", use_container_width=True):
+        if st.button("📊 FETCH TRANSACTION REPORT", width='stretch'):
             with st.spinner("🔄 Fetching stock transaction data..."):
                 bdc_id = BDC_MAP[selected_bdc]
                 depot_id = DEPOT_MAP[selected_depot]
@@ -2468,7 +2468,7 @@ def show_stock_transaction():
                                    'Count': 'Count'})
                   .sort_values('Total Volume (LT)', ascending=False)
             )
-            st.dataframe(txn_summary, use_container_width=True, hide_index=True)
+            st.dataframe(txn_summary, width='stretch', hide_index=True)
             st.markdown("---")
             if sales > 0:
                 st.markdown("### 🏢 Top Customers (OMC Sales)")
@@ -2481,12 +2481,12 @@ def show_stock_transaction():
                     .reset_index()
                 )
                 customer_summary.columns = ['Customer', 'Volume Sold (LT)']
-                st.dataframe(customer_summary, use_container_width=True, hide_index=True)
+                st.dataframe(customer_summary, width='stretch', hide_index=True)
                 st.markdown("---")
             st.markdown("### 📄 Full Transaction History")
-            st.dataframe(df, use_container_width=True, hide_index=True, height=400)
+            st.dataframe(df, width='stretch', hide_index=True, height=400)
             st.markdown("---")
-            if st.button("💾 EXPORT TO EXCEL", use_container_width=True):
+            if st.button("💾 EXPORT TO EXCEL", width='stretch'):
                 output_dir = os.path.join(os.getcwd(), "stock_transactions")
                 os.makedirs(output_dir, exist_ok=True)
                 filename = (
@@ -2501,7 +2501,7 @@ def show_stock_transaction():
                     st.download_button(
                         "⬇️ DOWNLOAD", f, filename,
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
+                        width='stretch'
                     )
         else:
             st.info("👆 Select options and click the button above to fetch transaction data")
@@ -2587,7 +2587,7 @@ def show_stock_transaction():
                                f"{days_remaining:.1f} days" if days_remaining != float('inf') else "No depletion expected",
                                stockout_date, status]
                 })
-                st.dataframe(analysis_df, use_container_width=True, hide_index=True)
+                st.dataframe(analysis_df, width='stretch', hide_index=True)
                 st.markdown("---")
                 st.markdown("### 💡 RECOMMENDATIONS")
                 if days_remaining < 7:
@@ -2748,7 +2748,7 @@ def show_national_stockout():
 
     st.markdown("---")
 
-    if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", use_container_width=True):
+    if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", width='stretch'):
         _run_national_analysis(start_str, end_str, period_days)
 
     if st.session_state.get('ns_results'):
@@ -3003,7 +3003,7 @@ def _display_national_results(period_days_arg: int):
             'Status':                                    status,
         })
 
-    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
     st.markdown("---")
 
     # ── OMC Loadings breakdown by product ────────────────────────────────────
@@ -3070,7 +3070,7 @@ def _display_national_results(period_days_arg: int):
             'Days of Supply':                           f"{row['days_remaining']:.1f}" if row['days_remaining'] != float('inf') else "∞",
         })
 
-    st.dataframe(pd.DataFrame(flow_rows), use_container_width=True, hide_index=True)
+    st.dataframe(pd.DataFrame(flow_rows), width='stretch', hide_index=True)
     st.markdown("---")
 
     # ── BDC-level stock ───────────────────────────────────────────────────────
@@ -3079,12 +3079,12 @@ def _display_national_results(period_days_arg: int):
     for c in ['GASOIL', 'LPG', 'PREMIUM', 'TOTAL']:
         display_bdc[c] = display_bdc[c].apply(lambda x: f"{x:,.0f}")
     display_bdc['Market Share %'] = display_bdc['Market Share %'].apply(lambda x: f"{x:.2f}%")
-    st.dataframe(display_bdc, use_container_width=True, hide_index=True)
+    st.dataframe(display_bdc, width='stretch', hide_index=True)
     st.markdown("---")
 
     # ── Export ────────────────────────────────────────────────────────────────
     st.markdown("### 💾 EXPORT NATIONAL REPORT")
-    if st.button("📄 GENERATE EXCEL REPORT", use_container_width=True, key='ns_export'):
+    if st.button("📄 GENERATE EXCEL REPORT", width='stretch', key='ns_export'):
         out_dir = os.path.join(os.getcwd(), "national_stockout_reports")
         os.makedirs(out_dir, exist_ok=True)
         filename = f"national_stockout_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
@@ -3113,7 +3113,7 @@ def _display_national_results(period_days_arg: int):
             st.download_button(
                 "⬇️ DOWNLOAD NATIONAL REPORT", f, filename,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
+                width='stretch'
             )
 
 
@@ -3228,7 +3228,7 @@ def show_bdc_intelligence():
         with col1:
             if not has_balance:
                 st.warning("⚠️ BDC Balance Data Missing")
-                if st.button("🔄 FETCH BDC BALANCE", use_container_width=True, key='auto_fetch_balance'):
+                if st.button("🔄 FETCH BDC BALANCE", width='stretch', key='auto_fetch_balance'):
                     with st.spinner("🔄 Fetching BDC Balance Data..."):
                         scraper = StockBalanceScraper()
                      
@@ -3292,7 +3292,7 @@ def show_bdc_intelligence():
                 start_date = st.date_input("From", value=default_start, key='intel_start_date')
                 end_date = st.date_input("To", value=default_end, key='intel_end_date')
              
-                if st.button("🔄 FETCH OMC LOADINGS", use_container_width=True, key='auto_fetch_loadings'):
+                if st.button("🔄 FETCH OMC LOADINGS", width='stretch', key='auto_fetch_loadings'):
                     with st.spinner("🔄 Fetching OMC Loadings Data..."):
                         start_str = start_date.strftime("%m/%d/%Y")
                         end_str = end_date.strftime("%m/%d/%Y")
@@ -3411,7 +3411,7 @@ def show_bdc_intelligence():
                 st.markdown("#### 🏭 Stock by Depot")
                 depot_breakdown = bdc_balance.groupby(['DEPOT', 'Product'])[col_name].sum().reset_index()
                 depot_pivot = depot_breakdown.pivot(index='DEPOT', columns='Product', values=col_name).fillna(0)
-                st.dataframe(depot_pivot, use_container_width=True)
+                st.dataframe(depot_pivot, width='stretch')
         else:
             st.warning(f"⚠️ No stock balance data found for {selected_bdc}")
      
@@ -3438,7 +3438,7 @@ def show_bdc_intelligence():
                     'Quantity': ['sum', 'mean', 'count']
                 }).reset_index()
                 product_loadings.columns = ['Product', 'Total Volume', 'Avg Order Size', 'Order Count']
-                st.dataframe(product_loadings, use_container_width=True, hide_index=True)
+                st.dataframe(product_loadings, width='stretch', hide_index=True)
         else:
             st.warning(f"⚠️ No loading data found for {selected_bdc}")
  
@@ -3535,7 +3535,7 @@ def show_bdc_intelligence():
             st.markdown("---")
             st.markdown("#### 📋 Summary Table")
             pred_df = pd.DataFrame(predictions)
-            st.dataframe(pred_df, use_container_width=True, hide_index=True)
+            st.dataframe(pred_df, width='stretch', hide_index=True)
  
     with tab3:
         st.markdown("### 📉 CONSUMPTION ANALYSIS")
@@ -3564,7 +3564,7 @@ def show_bdc_intelligence():
          
             if not product_data.empty:
                 st.markdown(f"**{product}**")
-                st.line_chart(product_data.set_index('Date')['Volume'], use_container_width=True)
+                st.line_chart(product_data.set_index('Date')['Volume'], width='stretch')
      
         st.markdown("---")
         st.markdown("#### 📊 Consumption Statistics")
@@ -3578,7 +3578,7 @@ def show_bdc_intelligence():
             ('Std Dev', 'std')
         ]).reset_index()
      
-        st.dataframe(stats, use_container_width=True, hide_index=True)
+        st.dataframe(stats, width='stretch', hide_index=True)
      
         st.markdown("---")
         st.markdown("#### 🏢 Top OMCs Loading from this BDC")
@@ -3586,6 +3586,6 @@ def show_bdc_intelligence():
         top_omcs = ts_df.groupby('OMC')['Quantity'].sum().sort_values(ascending=False).head(10).reset_index()
         top_omcs.columns = ['OMC', 'Total Volume (LT)']
      
-        st.dataframe(top_omcs, use_container_width=True, hide_index=True)
+        st.dataframe(top_omcs, width='stretch', hide_index=True)
 if __name__ == "__main__":
     main()
