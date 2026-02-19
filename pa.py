@@ -2610,17 +2610,22 @@ def show_stock_transaction():
                 st.info("Make sure the BDC name and product match between Balance and Transaction data")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# NATIONAL STOCKOUT — HYBRID APPROACH
+# NATIONAL STOCKOUT — OMC LOADINGS ONLY (2 API CALLS)
 # ─────────────────────────────────────────────────────────────────────────────
-# Total Depletion = BDC→OMC Sales (OMC Loadings) + BDC→BDC Transfers (Custody
-# Transfer Out from Stock Transactions)
-# Stock         = BDC Balance (all BDCs, all products, current snapshot)
-# Days Supply   = National Stock ÷ Average Daily Total Depletion
+# Methodology:
+#   National Stock   = BDC Balance (all BDCs, current snapshot)         [1 call]
+#   National Depletion = OMC Loadings (all BDCs→OMC, released orders)  [1 call]
+#
+# Why NOT Custody Transfer Out:
+#   CTO is a BDC re-routing fuel internally from one BDC to another.
+#   The fuel does NOT leave the national system — it stays within Ghana's
+#   wholesale petroleum network. Only OMC Loadings represents fuel truly
+#   flowing out of the wholesale system to retail / end consumers.
+#
+# Days of Supply = National Stock ÷ (Total OMC Loadings ÷ period_days)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-import concurrent.futures
 import io
-import time
 import requests as _requests
 
 # ── Low-level helpers ─────────────────────────────────────────────────────────
@@ -2641,124 +2646,6 @@ def _fetch_pdf_bytes(url: str, params: dict, timeout: int = 45):
         return r.content if r.content[:4] == b'%PDF' else None
     except Exception:
         return None
-
-
-def _parse_stock_txn_bytes(pdf_bytes: bytes) -> list:
-    """
-    Parse a stock-transaction PDF (bytes) → list of row dicts.
-    Only 'Custody Transfer Out' rows are needed for national analysis,
-    but we return all rows so the per-BDC view still works.
-    """
-    DESCRIPTIONS = sorted([
-        'Balance b/fwd', 'Stock Take', 'Sale',
-        'Custody Transfer In', 'Custody Transfer Out', 'Product Outturn',
-    ], key=len, reverse=True)
-
-    SKIP_PREFIXES = (
-        'national petroleum authority', 'stock transaction report',
-        'bdc :', 'depot :', 'product :', 'printed by', 'printed on',
-        'date trans #', 'actual stock balance', 'stock commitments',
-        'available stock balance', 'last stock update', 'i.t.s from',
-    )
-
-    def _should_skip(line: str) -> bool:
-        lo = line.strip().lower()
-        if lo.startswith(SKIP_PREFIXES):
-            return True
-        if re.match(r'^\d{1,2}\s+\w+,\s+\d{4}', line.strip()):
-            return True
-        return False
-
-    def _parse_num(s: str):
-        s = s.strip()
-        neg = s.startswith('(') and s.endswith(')')
-        val_str = s.strip('()').replace(',', '')
-        try:
-            return -int(val_str) if neg else int(val_str)
-        except ValueError:
-            return None
-
-    def _parse_line(line: str):
-        line = line.strip()
-        if not re.match(r'^\d{2}/\d{2}/\d{4}\b', line):
-            return None
-        parts = line.split()
-        date = parts[0]
-        trans = parts[1] if len(parts) > 1 else ''
-        rest = line[len(date):].strip()[len(trans):].strip()
-        description = None
-        after_desc = rest
-        for desc in DESCRIPTIONS:
-            if rest.lower().startswith(desc.lower()):
-                description = desc
-                after_desc = rest[len(desc):].strip()
-                break
-        if description is None or description == 'Balance b/fwd':
-            return None
-        nums = re.findall(r'\([\d,]+\)|[\d,]+', after_desc)
-        if len(nums) < 2:
-            return None
-        volume = _parse_num(nums[-2])
-        balance = _parse_num(nums[-1])
-        trail = re.search(
-            re.escape(nums[-2]) + r'\s+' + re.escape(nums[-1]) + r'\s*$',
-            after_desc
-        )
-        account = after_desc[:trail.start()].strip() if trail else ' '.join(after_desc.split()[:-2])
-        return {
-            'Date': date, 'Trans #': trans, 'Description': description,
-            'Account': account,
-            'Volume': volume if volume is not None else 0,
-            'Balance': balance if balance is not None else 0,
-        }
-
-    records = []
-    try:
-        with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for page in pdf.pages:
-                text = page.extract_text()
-                if not text:
-                    continue
-                for raw in text.split('\n'):
-                    line = raw.strip()
-                    if not line or _should_skip(line):
-                        continue
-                    row = _parse_line(line)
-                    if row:
-                        records.append(row)
-    except Exception:
-        pass
-    return records
-
-
-def _fetch_custody_transfers_for_combo(
-    bdc_id: int, depot_id: int, product_id: int,
-    prod_key: str, start_str: str, end_str: str,
-    user_id: str, url: str
-) -> list:
-    """
-    Fetch stock-transaction PDF for one (BDC, depot, product) combo and
-    return only Custody Transfer Out rows, tagged with prod_key.
-    """
-    params = {
-        'lngProductId': product_id,
-        'lngBDCId':     bdc_id,
-        'lngDepotId':   depot_id,
-        'dtpStartDate': start_str,
-        'dtpEndDate':   end_str,
-        'lngUserId':    user_id,
-    }
-    pdf_bytes = _fetch_pdf_bytes(url, params)
-    if not pdf_bytes:
-        return []
-    rows = _parse_stock_txn_bytes(pdf_bytes)
-    # Keep only Custody Transfer Out
-    out = []
-    for r in rows:
-        if r.get('Description') == 'Custody Transfer Out':
-            r['_product_key'] = prod_key
-            out.append(r)
-    return out
 
 
 # ── OMC Loadings national fetch ───────────────────────────────────────────────
@@ -2795,15 +2682,14 @@ def _fetch_national_omc_loadings(start_str: str, end_str: str) -> pd.DataFrame:
 
 def show_national_stockout():
     """
-    National Stockout Forecast — Hybrid Approach
-    ─────────────────────────────────────────────
-    Total Depletion per product = 
-        BDC→OMC Sales   (from OMC Loadings, single API call, all BDCs)
-      + BDC→BDC Transfers (Custody Transfer Out from Stock Transactions, parallel)
+    National Stockout Forecast — OMC Loadings Only (2 API calls)
+    ─────────────────────────────────────────────────────────────
+    National Stock     = BDC Balance (all BDCs, current snapshot)
+    National Depletion = OMC Loadings (all BDCs → all OMCs, released orders)
+    Days of Supply     = Stock ÷ (OMC Loadings ÷ period_days)
 
-    Stock = BDC Balance (all BDCs, current snapshot, single API call)
-
-    Days of Supply = National Stock ÷ (Total Depletion ÷ period_days)
+    CTO (Custody Transfer Out) is excluded: it represents fuel moving between
+    BDCs internally and does NOT leave the national supply system.
     """
     st.markdown("<h2>🌍 NATIONAL STOCKOUT FORECAST</h2>", unsafe_allow_html=True)
 
@@ -2811,27 +2697,23 @@ def show_national_stockout():
     <div style='background:rgba(0,255,255,0.06); border:1.5px solid #00ffff;
                 border-radius:12px; padding:18px 22px; margin-bottom:16px;'>
         <p style='color:#00ffff; font-family:Orbitron,sans-serif; font-size:15px;
-                  font-weight:700; margin:0 0 10px;'>📐 METHODOLOGY</p>
+                  font-weight:700; margin:0 0 10px;'>📐 METHODOLOGY — 2 API CALLS ONLY</p>
         <table style='width:100%; font-family:Rajdhani,sans-serif; font-size:14px; border-collapse:collapse;'>
             <tr>
                 <td style='color:#ffaa00; padding:4px 8px; font-weight:700; white-space:nowrap;'>📦 National Stock</td>
-                <td style='color:#e0e0e0; padding:4px 8px;'>BDC Balance report — current stock snapshot across all BDCs &amp; depots</td>
+                <td style='color:#e0e0e0; padding:4px 8px;'>BDC Balance report — current stock snapshot across all BDCs &amp; depots <span style='color:#888;'>[Call 1]</span></td>
             </tr>
             <tr>
-                <td style='color:#00ff88; padding:4px 8px; font-weight:700; white-space:nowrap;'>🚚 BDC → OMC Sales</td>
-                <td style='color:#e0e0e0; padding:4px 8px;'>OMC Loadings report (single industry-wide call) — released orders to OMCs</td>
-            </tr>
-            <tr>
-                <td style='color:#ff00ff; padding:4px 8px; font-weight:700; white-space:nowrap;'>🔄 BDC → BDC Transfers</td>
-                <td style='color:#e0e0e0; padding:4px 8px;'>Custody Transfer Out from Stock Transactions — parallel fetch across all BDCs &amp; depots</td>
+                <td style='color:#00ff88; padding:4px 8px; font-weight:700; white-space:nowrap;'>🚚 National Depletion</td>
+                <td style='color:#e0e0e0; padding:4px 8px;'>OMC Loadings — all released orders from all BDCs to all OMCs <span style='color:#888;'>[Call 2]</span></td>
             </tr>
             <tr style='border-top:1px solid rgba(0,255,255,0.2);'>
-                <td style='color:#00ffff; padding:8px 8px 4px; font-weight:700; white-space:nowrap;'>⚡ Total Depletion</td>
-                <td style='color:#ffffff; padding:8px 8px 4px; font-weight:700;'>BDC→OMC + BDC→BDC = Complete picture of fuel leaving the system</td>
+                <td style='color:#00ffff; padding:8px 8px 4px; font-weight:700; white-space:nowrap;'>📅 Days of Supply</td>
+                <td style='color:#ffffff; padding:8px 8px 4px; font-weight:700;'>National Stock ÷ (OMC Loadings ÷ Period Days)</td>
             </tr>
             <tr>
-                <td style='color:#00ffff; padding:4px 8px; font-weight:700; white-space:nowrap;'>📅 Days of Supply</td>
-                <td style='color:#e0e0e0; padding:4px 8px;'>National Stock ÷ Average Daily Total Depletion</td>
+                <td style='color:#888; padding:4px 8px; font-size:12px; white-space:nowrap;'>❌ CTO excluded</td>
+                <td style='color:#888; padding:4px 8px; font-size:12px;'>Custody Transfer Out = internal BDC→BDC accounting only. Fuel stays in Ghana's national system, so it does not reduce supply.</td>
             </tr>
         </table>
     </div>
@@ -2856,16 +2738,12 @@ def show_national_stockout():
     end_str    = end_date.strftime("%m/%d/%Y")
     period_days = max((end_date - start_date).days, 1)
 
-    n_bdcs   = len(BDC_MAP)
-    n_depots = len(DEPOT_MAP)
-    n_prods  = 3
-    est_calls = n_bdcs * n_depots * n_prods
-
     st.info(
-        f"📊 **Estimated API calls:** {n_bdcs} BDCs × {n_depots} depots × {n_prods} products "
-        f"= **{est_calls:,} calls** for Custody Transfer Out "
-        f"+ 2 single calls (Balance + OMC Loadings). "
-        f"Expected time: ~{est_calls // 12 // 60 + 1}–{est_calls // 12 // 40 + 2} minutes."
+        "⚡ **Just 2 API calls.** "
+        "Step 1 fetches the current BDC Balance (national stock snapshot). "
+        "Step 2 fetches industry-wide OMC Loadings (all released orders — fuel that left the wholesale system). "
+        "CTO (Custody Transfer Out) is intentionally excluded: it is an internal BDC accounting entry "
+        "that moves fuel between BDC books but does NOT reduce the national supply."
     )
 
     st.markdown("---")
@@ -2881,15 +2759,17 @@ def show_national_stockout():
 
 def _run_national_analysis(start_str: str, end_str: str, period_days: int):
     cfg = NPA_CONFIG
+    col_bal = 'ACTUAL BALANCE (LT\\KG)'
+    DISPLAY = {'PREMIUM': 'PREMIUM (PMS)', 'GASOIL': 'GASOIL (AGO)', 'LPG': 'LPG'}
 
-    # ── STEP A: BDC Balance ───────────────────────────────────────────────────
-    with st.status("📡 Step 1 / 3 — Fetching national BDC stock balance…", expanded=True) as status_a:
+    # ── STEP 1: BDC Balance (current national stock snapshot) ─────────────────
+    with st.status("📡 Step 1 / 2 — Fetching national BDC stock balance…", expanded=True) as status_a:
         st.write("Connecting to NPA portal…")
         bal_params = {
-            'lngCompanyId':    cfg['COMPANY_ID'],
+            'lngCompanyId':     cfg['COMPANY_ID'],
             'strITSfromPersol': cfg['ITS_FROM_PERSOL'],
-            'strGroupBy':      'BDC',
-            'strGroupBy1':     'DEPOT',
+            'strGroupBy':       'BDC',
+            'strGroupBy1':      'DEPOT',
             'strQuery1': '', 'strQuery2': '', 'strQuery3': '', 'strQuery4': '',
             'strPicHeight': '1', 'szPicWeight': '1',
             'lngUserId':  cfg['USER_ID'],
@@ -2897,157 +2777,79 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int):
         }
         bal_bytes = _fetch_pdf_bytes(cfg['BDC_BALANCE_URL'], bal_params)
         if not bal_bytes:
-            st.error("❌ Could not fetch BDC Balance PDF.")
+            st.error("❌ Could not fetch BDC Balance PDF. Check network/credentials.")
             status_a.update(label="❌ Balance fetch failed", state="error")
             return
 
         scraper = StockBalanceScraper()
         bal_records = scraper.parse_pdf_file(io.BytesIO(bal_bytes))
         if not bal_records:
-            st.error("❌ No balance records parsed.")
+            st.error("❌ No balance records found in PDF.")
             status_a.update(label="❌ No balance records", state="error")
             return
 
         bal_df = pd.DataFrame(bal_records)
-        st.write(f"✅ Balance: {len(bal_df)} rows across {bal_df['BDC'].nunique()} BDCs")
-        status_a.update(label=f"✅ Step 1 done — {len(bal_df)} balance rows", state="running")
+        n_bdcs = bal_df['BDC'].nunique()
+        n_rows = len(bal_df)
 
-    # ── STEP B: OMC Loadings (BDC → OMC) ─────────────────────────────────────
-    with st.status("🚚 Step 2 / 3 — Fetching national OMC loadings (BDC → OMC sales)…", expanded=True) as status_b:
-        st.write("Fetching industry-wide OMC loadings…")
+        # Sum stock by product
+        balance_by_product = bal_df.groupby('Product')[col_bal].sum()
+        pms_stock  = balance_by_product.get('PREMIUM', 0)
+        ago_stock  = balance_by_product.get('GASOIL',  0)
+        lpg_stock  = balance_by_product.get('LPG',     0)
+
+        st.write(f"✅ {n_rows} balance rows across **{n_bdcs} BDCs**")
+        st.write(
+            f"📦 Current stock — "
+            f"PMS: **{pms_stock:,.0f} LT** | "
+            f"AGO: **{ago_stock:,.0f} LT** | "
+            f"LPG: **{lpg_stock:,.0f} LT**"
+        )
+        status_a.update(label=f"✅ Step 1 done — {n_bdcs} BDCs, stock parsed", state="running")
+
+    # ── STEP 2: OMC Loadings (national depletion — fuel leaving wholesale) ─────
+    with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings (BDC → OMC)…", expanded=True) as status_b:
+        st.write(
+            "Fetching industry-wide OMC loadings — "
+            "all BDCs, all OMCs, released orders only (status=4)…"
+        )
         omc_df = _fetch_national_omc_loadings(start_str, end_str)
 
         if omc_df.empty:
             st.warning(
-                "⚠️ No OMC loadings found for this period. "
-                "BDC→OMC sales will be 0; only BDC→BDC transfers will be counted."
+                "⚠️ No OMC loadings returned for this period. "
+                "Depletion will show as 0 — check date range or API access."
             )
-            omc_by_product = pd.Series({'PREMIUM': 0.0, 'GASOIL': 0.0, 'LPG': 0.0}, name='omc_sales')
+            omc_by_product = pd.Series({'PREMIUM': 0.0, 'GASOIL': 0.0, 'LPG': 0.0})
         else:
-            # OMC Loadings uses PREMIUM / GASOIL / LPG already
             omc_by_product = (
                 omc_df[omc_df['Product'].isin(['PREMIUM', 'GASOIL', 'LPG'])]
                 .groupby('Product')['Quantity']
                 .sum()
-                .rename('omc_sales')
             )
-            st.write(f"✅ OMC loadings: {len(omc_df):,} rows | "
-                     f"PREMIUM={omc_by_product.get('PREMIUM', 0):,.0f}  "
-                     f"GASOIL={omc_by_product.get('GASOIL', 0):,.0f}  "
-                     f"LPG={omc_by_product.get('LPG', 0):,.0f}")
-
-        status_b.update(label=f"✅ Step 2 done — OMC loadings fetched", state="running")
-
-    # ── STEP C: Custody Transfer Out (BDC → BDC) ─────────────────────────────
-    # Map: prod_key → (balance product name, product_id)
-    PROD_MAP = {
-        "PMS":    ("PREMIUM", int(STOCK_PRODUCT_MAP["PMS"])),
-        "Gasoil": ("GASOIL",  int(STOCK_PRODUCT_MAP["Gasoil"])),
-        "LPG":    ("LPG",     int(STOCK_PRODUCT_MAP["LPG"])),
-    }
-
-    all_bdc_ids   = list(BDC_MAP.values())
-    all_depot_ids = list(DEPOT_MAP.values())
-    jobs = []
-    for prod_key, (_, prod_id) in PROD_MAP.items():
-        for bdc_id in all_bdc_ids:
-            for depot_id in all_depot_ids:
-                jobs.append((bdc_id, depot_id, prod_id, prod_key))
-
-    total_jobs = len(jobs)
-
-    st.markdown(f"### 🔄 Step 3 / 3 — Fetching Custody Transfer Out transactions")
-    st.caption(
-        f"{len(all_bdc_ids)} BDCs × {len(all_depot_ids)} depots × 3 products "
-        f"= **{total_jobs:,} API calls** (parallel)"
-    )
-
-    progress_bar  = st.progress(0, text="Starting parallel fetch…")
-    status_text   = st.empty()
-
-    cto_rows: list = []
-    completed = errors = nodata = 0
-
-    txn_url = cfg['STOCK_TRANSACTION_URL']
-    user_id = cfg['USER_ID']
-
-    def _job(args):
-        bdc_id, depot_id, prod_id, prod_key = args
-        return _fetch_custody_transfers_for_combo(
-            bdc_id, depot_id, prod_id, prod_key,
-            start_str, end_str, user_id, txn_url
-        )
-
-    MAX_WORKERS = 15
-    with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        future_to_job = {executor.submit(_job, j): j for j in jobs}
-        for future in concurrent.futures.as_completed(future_to_job):
-            completed += 1
-            try:
-                rows = future.result()
-                if rows:
-                    cto_rows.extend(rows)
-                else:
-                    nodata += 1
-            except Exception:
-                errors += 1
-
-            pct = completed / total_jobs
-            progress_bar.progress(
-                pct,
-                text=f"Fetched {completed}/{total_jobs} "
-                     f"({len(cto_rows)} CTO rows, {errors} errors)"
+            st.write(
+                f"✅ {len(omc_df):,} loading records | "
+                f"PMS: **{omc_by_product.get('PREMIUM', 0):,.0f} LT** | "
+                f"AGO: **{omc_by_product.get('GASOIL',  0):,.0f} LT** | "
+                f"LPG: **{omc_by_product.get('LPG',     0):,.0f} LT**"
             )
-            if completed % 50 == 0 or completed == total_jobs:
-                status_text.info(
-                    f"🔄 {completed}/{total_jobs} calls | "
-                    f"🔄 CTO rows: {len(cto_rows)} | "
-                    f"⬜ Empty: {nodata} | ❌ Errors: {errors}"
-                )
+        status_b.update(label="✅ Step 2 done — OMC loadings fetched", state="complete")
 
-    progress_bar.progress(1.0, text="✅ All API calls complete")
-
-    cto_df = pd.DataFrame(cto_rows) if cto_rows else pd.DataFrame(
-        columns=['Date', 'Trans #', 'Description', 'Account', 'Volume', 'Balance', '_product_key']
-    )
-
-    # Map prod_key → balance product name for aggregation
-    KEY_TO_BAL = {k: v[0] for k, v in PROD_MAP.items()}   # PMS→PREMIUM, Gasoil→GASOIL, LPG→LPG
-
-    if not cto_df.empty:
-        cto_df['bal_product'] = cto_df['_product_key'].map(KEY_TO_BAL)
-        cto_by_product = cto_df.groupby('bal_product')['Volume'].sum().rename('cto_sales')
-    else:
-        cto_by_product = pd.Series({'PREMIUM': 0.0, 'GASOIL': 0.0, 'LPG': 0.0}, name='cto_sales')
-
-    # ── STEP D: Combine & compute ─────────────────────────────────────────────
-    col_bal = 'ACTUAL BALANCE (LT\\KG)'
-    balance_by_product = (
-        bal_df.groupby('Product')[col_bal]
-        .sum()
-        .rename('total_balance')
-    )
-
-    products = ['PREMIUM', 'GASOIL', 'LPG']
-    DISPLAY = {'PREMIUM': 'PREMIUM (PMS)', 'GASOIL': 'GASOIL (AGO)', 'LPG': 'LPG'}
-
+    # ── Compute forecast ──────────────────────────────────────────────────────
     rows_out = []
-    for prod in products:
-        bal   = float(balance_by_product.get(prod, 0))
-        omc   = float(omc_by_product.get(prod, 0))
-        cto   = float(cto_by_product.get(prod, 0))
-        total = omc + cto
-        daily = total / period_days if period_days > 0 else 0
-        days  = (bal / daily) if daily > 0 else float('inf')
+    for prod in ['PREMIUM', 'GASOIL', 'LPG']:
+        stock      = float(balance_by_product.get(prod, 0))
+        depletion  = float(omc_by_product.get(prod, 0))
+        daily_rate = depletion / period_days if period_days > 0 else 0
+        days       = (stock / daily_rate) if daily_rate > 0 else float('inf')
         rows_out.append({
-            'product':        prod,
-            'display_name':   DISPLAY[prod],
-            'total_balance':  bal,
-            'omc_sales':      omc,
-            'cto_sales':      cto,
-            'total_depletion': total,
-            'daily_rate':     daily,
-            'days_remaining': days,
+            'product':         prod,
+            'display_name':    DISPLAY[prod],
+            'total_balance':   stock,
+            'omc_sales':       depletion,
+            'total_depletion': depletion,
+            'daily_rate':      daily_rate,
+            'days_remaining':  days,
         })
 
     forecast_df = pd.DataFrame(rows_out)
@@ -3066,22 +2868,20 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int):
     nat_total = bdc_pivot['TOTAL'].sum()
     bdc_pivot['Market Share %'] = (bdc_pivot['TOTAL'] / nat_total * 100).round(2)
 
-    # ── Cache ─────────────────────────────────────────────────────────────────
+    # ── Cache results ─────────────────────────────────────────────────────────
     st.session_state.ns_results = {
-        'forecast_df':   forecast_df,
-        'bal_df':        bal_df,
-        'omc_df':        omc_df,
-        'cto_df':        cto_df,
-        'bdc_pivot':     bdc_pivot,
-        'period_days':   period_days,
-        'start_str':     start_str,
-        'end_str':       end_str,
-        'n_bdcs_balance': bal_df['BDC'].nunique(),
-        'n_omc_rows':    len(omc_df),
-        'n_cto_rows':    len(cto_df),
+        'forecast_df':    forecast_df,
+        'bal_df':         bal_df,
+        'omc_df':         omc_df,
+        'bdc_pivot':      bdc_pivot,
+        'period_days':    period_days,
+        'start_str':      start_str,
+        'end_str':        end_str,
+        'n_bdcs_balance': n_bdcs,
+        'n_omc_rows':     len(omc_df),
     }
 
-    st.success("✅ Analysis complete! Scroll down to see results.")
+    st.success("✅ Done! 2 API calls completed. Scroll down to see the forecast.")
     st.rerun()
 
 
@@ -3092,7 +2892,6 @@ def _display_national_results(period_days_arg: int):
     forecast_df  = res['forecast_df']
     bal_df       = res['bal_df']
     omc_df       = res['omc_df']
-    cto_df       = res['cto_df']
     bdc_pivot    = res['bdc_pivot']
     period_days  = res['period_days']
     start_str    = res['start_str']
@@ -3105,9 +2904,9 @@ def _display_national_results(period_days_arg: int):
         unsafe_allow_html=True
     )
     st.caption(
-        f"Balance: {res['n_bdcs_balance']} BDCs | "
-        f"OMC Loadings: {res['n_omc_rows']:,} rows | "
-        f"BDC→BDC Transfers: {res['n_cto_rows']:,} rows"
+        f"Balance: **{res['n_bdcs_balance']} BDCs** | "
+        f"OMC Loadings: **{res['n_omc_rows']:,} records** | "
+        f"Depletion source: OMC Loadings only (CTO excluded — internal BDC transfers)"
     )
     st.markdown("---")
 
@@ -3195,35 +2994,34 @@ def _display_national_results(period_days_arg: int):
             if days != float('inf') else "N/A"
         )
         summary_rows.append({
-            'Product':                        row['display_name'],
-            'National Stock (LT/KG)':         f"{row['total_balance']:,.0f}",
-            f'OMC Sales ({period_days}d, LT)': f"{row['omc_sales']:,.0f}",
-            f'BDC Transfers ({period_days}d, LT)': f"{row['cto_sales']:,.0f}",
-            f'Total Depletion ({period_days}d, LT)': f"{row['total_depletion']:,.0f}",
-            'Avg Daily Depletion (LT/day)':   f"{row['daily_rate']:,.0f}",
-            'Days of Supply':                 f"{days:.1f}" if days != float('inf') else "∞",
-            'Projected Empty':                stockout,
-            'Status':                         status,
+            'Product':                                    row['display_name'],
+            'National Stock (LT/KG)':                    f"{row['total_balance']:,.0f}",
+            f'OMC Loadings ({period_days}d, LT)':        f"{row['omc_sales']:,.0f}",
+            'Avg Daily Depletion (LT/day)':              f"{row['daily_rate']:,.0f}",
+            'Days of Supply':                            f"{days:.1f}" if days != float('inf') else "∞",
+            'Projected Empty':                           stockout,
+            'Status':                                    status,
         })
 
     st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
     st.markdown("---")
 
-    # ── Depletion breakdown chart ──────────────────────────────────────────────
-    st.markdown("### 🔍 DEPLETION BREAKDOWN: BDC→OMC vs BDC→BDC Transfers")
+    # ── OMC Loadings breakdown by product ────────────────────────────────────
+    st.markdown("### 📦 OMC LOADINGS BREAKDOWN BY PRODUCT")
     st.caption(
-        "**BDC→OMC Sales** = OMC Loadings (released orders) | "
-        "**BDC→BDC Transfers** = Custody Transfer Out from Stock Transactions"
+        "**OMC Loadings** = all released orders (status=4) from all BDCs to all OMCs. "
+        "This is the only outflow that leaves the national wholesale system and reaches consumers."
     )
 
     bd_cols = st.columns(3)
+    COLORS  = {'PREMIUM': '#00ffff', 'GASOIL': '#ffaa00', 'LPG': '#00ff88'}
+    ICONS   = {'PREMIUM': '⛽', 'GASOIL': '🚛', 'LPG': '🔵'}
+    total_nat_depletion = forecast_df['omc_sales'].sum()
+
     for col, (_, row) in zip(bd_cols, forecast_df.iterrows()):
-        prod      = row['product']
-        omc_v     = row['omc_sales']
-        cto_v     = row['cto_sales']
-        total_v   = row['total_depletion']
-        omc_pct   = (omc_v / total_v * 100) if total_v > 0 else 0
-        cto_pct   = (cto_v / total_v * 100) if total_v > 0 else 0
+        prod     = row['product']
+        omc_v    = row['omc_sales']
+        nat_pct  = (omc_v / total_nat_depletion * 100) if total_nat_depletion > 0 else 0
 
         with col:
             st.markdown(f"""
@@ -3234,24 +3032,20 @@ def _display_national_results(period_days_arg: int):
                              margin-bottom:14px;'>{ICONS.get(prod,"🛢️")} {row["display_name"]}</div>
                 <table style='width:100%; font-family:Rajdhani,sans-serif; font-size:13px; border-collapse:collapse;'>
                     <tr>
-                        <td style='color:#888; padding:4px 0;'>🚚 BDC→OMC Sales</td>
+                        <td style='color:#888; padding:4px 0;'>🚚 OMC Loadings</td>
                         <td style='color:#00ff88; text-align:right; font-weight:700;'>{omc_v:,.0f} LT</td>
-                        <td style='color:#00ff88; text-align:right; width:50px;'>{omc_pct:.1f}%</td>
                     </tr>
                     <tr>
-                        <td style='color:#888; padding:4px 0;'>🔄 BDC→BDC Transfers</td>
-                        <td style='color:#ff00ff; text-align:right; font-weight:700;'>{cto_v:,.0f} LT</td>
-                        <td style='color:#ff00ff; text-align:right; width:50px;'>{cto_pct:.1f}%</td>
+                        <td style='color:#888; padding:4px 0;'>📊 Share of total</td>
+                        <td style='color:#00ff88; text-align:right; font-weight:700;'>{nat_pct:.1f}%</td>
                     </tr>
                     <tr style='border-top:1px solid rgba(255,255,255,0.15);'>
-                        <td style='color:#ffffff; padding:6px 0 2px; font-weight:700;'>⚡ Total Depletion</td>
-                        <td style='color:#00ffff; text-align:right; font-weight:700;'>{total_v:,.0f} LT</td>
-                        <td style='color:#00ffff; text-align:right;'>100%</td>
+                        <td style='color:#ffffff; padding:6px 0 2px; font-weight:700;'>📅 Daily avg</td>
+                        <td style='color:#00ffff; text-align:right; font-weight:700;'>{row["daily_rate"]:,.0f} LT/day</td>
                     </tr>
                     <tr>
-                        <td style='color:#888; padding:2px 0; font-size:12px;'>📅 Per Day (avg)</td>
-                        <td colspan='2' style='color:#e0e0e0; text-align:right;
-                            font-size:12px;'>{row["daily_rate"]:,.0f} LT/day</td>
+                        <td style='color:#888; padding:2px 0; font-size:12px;'>📦 Current stock</td>
+                        <td style='color:#e0e0e0; text-align:right; font-size:12px;'>{row["total_balance"]:,.0f} LT</td>
                     </tr>
                 </table>
             </div>
@@ -3259,24 +3053,21 @@ def _display_national_results(period_days_arg: int):
 
     st.markdown("---")
 
-    # ── Inflow vs Outflow (from CTO data + balance) ───────────────────────────
-    st.markdown("### ⚖️ NATIONAL INFLOW vs OUTFLOW")
+    # ── Outflow summary ───────────────────────────────────────────────────────
+    st.markdown("### ⚖️ NATIONAL OUTFLOW SUMMARY")
     st.caption(
-        "Inflow approximated from balance report inflow signals | "
-        "Outflow = Total Depletion (OMC Sales + CTO)"
+        "Outflow = OMC Loadings (fuel dispatched from BDCs to OMCs over the selected period). "
+        "Inflow data (vessel receipts) is not yet available in this report."
     )
 
     flow_rows = []
     for _, row in forecast_df.iterrows():
-        prod      = row['product']
-        outflow   = row['total_depletion']
-        # Approximate inflow from balance (we don't fetch inflow transactions,
-        # but the net can be inferred if we had prior balance — show what we have)
         flow_rows.append({
-            'Product':              row['display_name'],
-            f'Total Outflow ({period_days}d, LT)': f"{outflow:,.0f}",
-            'Avg Daily Outflow (LT/day)':          f"{row['daily_rate']:,.0f}",
-            'Note': '— inflow data requires receipts report',
+            'Product':                                   row['display_name'],
+            f'OMC Loadings ({period_days}d, LT)':       f"{row['omc_sales']:,.0f}",
+            'Daily Avg Outflow (LT/day)':               f"{row['daily_rate']:,.0f}",
+            'Current Stock (LT)':                       f"{row['total_balance']:,.0f}",
+            'Days of Supply':                           f"{row['days_remaining']:.1f}" if row['days_remaining'] != float('inf') else "∞",
         })
 
     st.dataframe(pd.DataFrame(flow_rows), use_container_width=True, hide_index=True)
@@ -3300,26 +3091,22 @@ def _display_national_results(period_days_arg: int):
         filepath = os.path.join(out_dir, filename)
 
         summary_export = pd.DataFrame([{
-            'Product':                   row['display_name'],
-            'National Stock (LT/KG)':    row['total_balance'],
-            f'OMC Sales ({period_days}d LT)': row['omc_sales'],
-            f'BDC Transfers ({period_days}d LT)': row['cto_sales'],
-            f'Total Depletion ({period_days}d LT)': row['total_depletion'],
-            'Avg Daily Depletion (LT)':  row['daily_rate'],
-            'Days of Supply':            row['days_remaining'] if row['days_remaining'] != float('inf') else 9999,
-            'Projected Empty':           (
+            'Product':                              row['display_name'],
+            'National Stock (LT/KG)':               row['total_balance'],
+            f'OMC Loadings ({period_days}d, LT)':   row['omc_sales'],
+            'Avg Daily Depletion (LT/day)':         row['daily_rate'],
+            'Days of Supply':                       row['days_remaining'] if row['days_remaining'] != float('inf') else 9999,
+            'Projected Empty':                      (
                 (datetime.now() + timedelta(days=row['days_remaining'])).strftime('%Y-%m-%d')
                 if row['days_remaining'] != float('inf') else 'N/A'
             ),
         } for _, row in forecast_df.iterrows()])
 
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-            summary_export.to_excel(writer,   sheet_name='Stockout Forecast',  index=False)
-            bdc_pivot.to_excel(writer,         sheet_name='Stock by BDC',       index=False)
+            summary_export.to_excel(writer, sheet_name='Stockout Forecast',  index=False)
+            bdc_pivot.to_excel(writer,       sheet_name='Stock by BDC',       index=False)
             if not omc_df.empty:
-                omc_df.to_excel(writer,        sheet_name='OMC Loadings',       index=False)
-            if not cto_df.empty:
-                cto_df.to_excel(writer,        sheet_name='BDC Transfers (CTO)', index=False)
+                omc_df.to_excel(writer,      sheet_name='OMC Loadings Detail', index=False)
 
         st.success(f"✅ Report saved: {filename}")
         with open(filepath, 'rb') as f:
