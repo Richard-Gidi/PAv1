@@ -346,167 +346,131 @@ st.set_page_config(
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;500;700&display=swap');
-
-    /* ── Background ── */
+ 
     .stApp {
-        background: linear-gradient(135deg, #0a0e27 0%, #1a1a2e 50%, #0f3460 100%);
-        background-attachment: fixed;
+        background: linear-gradient(-45deg, #0a0e27, #1a1a2e, #16213e, #0f3460);
+        background-size: 400% 400%;
+        animation: gradientShift 15s ease infinite;
     }
-
-    /* ── Typography ── */
+ 
+    @keyframes gradientShift {
+        0% { background-position: 0% 50%; }
+        50% { background-position: 100% 50%; }
+        100% { background-position: 0% 50%; }
+    }
+ 
     h1, h2, h3 {
         font-family: 'Orbitron', sans-serif !important;
         color: #00ffff !important;
-        text-shadow: 0 0 8px rgba(0,255,255,0.4);
-        margin-bottom: 0 !important;
+        text-shadow: 0 0 10px #00ffff, 0 0 20px #00ffff, 0 0 30px #00ffff;
+        animation: glow 2s ease-in-out infinite alternate;
     }
-    p, span, div, li {
+ 
+    @keyframes glow {
+        from { text-shadow: 0 0 5px #00ffff, 0 0 10px #00ffff, 0 0 15px #00ffff; }
+        to { text-shadow: 0 0 10px #00ffff, 0 0 20px #00ffff, 0 0 30px #00ffff, 0 0 40px #0ff; }
+    }
+ 
+    [data-testid="stSidebar"] {
+        background: linear-gradient(180deg, #0a0e27 0%, #16213e 100%);
+        border-right: 2px solid #00ffff;
+        box-shadow: 5px 0 15px rgba(0, 255, 255, 0.3);
+    }
+ 
+    [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {
+        color: #ff00ff !important;
+        text-shadow: 0 0 10px #ff00ff;
+    }
+ 
+    .stButton > button {
+        background: linear-gradient(45deg, #ff00ff, #00ffff);
+        color: white;
+        border: 2px solid #00ffff;
+        border-radius: 25px;
+        padding: 15px 30px;
+        font-family: 'Orbitron', sans-serif;
+        font-weight: 700;
+        font-size: 18px;
+        box-shadow: 0 0 20px rgba(0, 255, 255, 0.5);
+        transition: all 0.3s ease;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+    }
+ 
+    .stButton > button:hover {
+        transform: scale(1.05) translateY(-3px);
+        box-shadow: 0 0 30px rgba(0, 255, 255, 0.8), 0 0 40px rgba(255, 0, 255, 0.5);
+        background: linear-gradient(45deg, #00ffff, #ff00ff);
+    }
+ 
+    .dataframe {
+        background-color: rgba(10, 14, 39, 0.8) !important;
+        border: 2px solid #00ffff !important;
+        border-radius: 10px;
+        box-shadow: 0 0 20px rgba(0, 255, 255, 0.3);
+    }
+ 
+    .dataframe th {
+        background-color: #16213e !important;
+        color: #00ffff !important;
+        font-family: 'Orbitron', sans-serif;
+        text-transform: uppercase;
+        border: 1px solid #00ffff !important;
+    }
+ 
+    .dataframe td {
+        background-color: rgba(22, 33, 62, 0.6) !important;
+        color: #ffffff !important;
+        border: 1px solid rgba(0, 255, 255, 0.2) !important;
+    }
+ 
+    [data-testid="stMetricValue"] {
+        font-family: 'Orbitron', sans-serif;
+        font-size: 28px !important;
+        color: #00ffff !important;
+        text-shadow: 0 0 15px #00ffff;
+    }
+ 
+    .metric-card {
+        background: rgba(22,33,62,0.6);
+        padding: 20px;
+        border-radius: 15px;
+        border: 2px solid #00ffff;
+        text-align: center;
+    }
+ 
+    .metric-card h2 {
+        color: #ff00ff !important;
+        margin: 0;
+        font-size: 20px !important;
+    }
+ 
+    .metric-card h1 {
+        color: #00ffff !important;
+        margin: 10px 0;
+        font-size: 32px !important;
+        word-wrap: break-word;
+    }
+ 
+    [data-testid="stMetricLabel"] {
+        font-family: 'Rajdhani', sans-serif;
+        color: #ff00ff !important;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+    }
+ 
+    p, span, div {
         font-family: 'Rajdhani', sans-serif;
         color: #e0e0e0;
     }
-
-    /* ── Sidebar ── */
-    [data-testid="stSidebar"] {
-        background: linear-gradient(180deg, #080b1a 0%, #0f1630 100%);
-        border-right: 1px solid rgba(0,255,255,0.25);
-    }
-    [data-testid="stSidebar"] h1,
-    [data-testid="stSidebar"] h2,
-    [data-testid="stSidebar"] h3 {
-        color: #ff00ff !important;
-        text-shadow: 0 0 6px rgba(255,0,255,0.4);
-    }
-    /* Radio buttons in sidebar */
-    [data-testid="stSidebar"] label {
-        font-family: 'Rajdhani', sans-serif !important;
-        font-size: 14px !important;
-        color: #c0c8e0 !important;
-    }
-    [data-testid="stSidebar"] [data-testid="stRadio"] > div > label[data-checked="true"] {
-        color: #00ffff !important;
-        font-weight: 700 !important;
-    }
-
-    /* ── Buttons ── */
-    .stButton > button {
-        background: linear-gradient(135deg, #1a0533 0%, #0a1a3a 100%);
-        color: #00ffff;
-        border: 1px solid rgba(0,255,255,0.5);
-        border-radius: 8px;
-        padding: 10px 24px;
-        font-family: 'Orbitron', sans-serif;
-        font-weight: 700;
-        font-size: 13px;
-        letter-spacing: 1px;
-        transition: all 0.2s ease;
-        text-transform: uppercase;
-    }
-    .stButton > button:hover {
-        border-color: #00ffff;
-        color: #ffffff;
-        background: linear-gradient(135deg, #0a1a3a 0%, #001a2e 100%);
-        box-shadow: 0 0 12px rgba(0,255,255,0.3);
-        transform: translateY(-1px);
-    }
-
-    /* ── Metrics ── */
-    [data-testid="stMetricValue"] {
-        font-family: 'Orbitron', sans-serif;
-        font-size: 24px !important;
-        color: #00ffff !important;
-    }
-    [data-testid="stMetricLabel"] {
-        font-family: 'Rajdhani', sans-serif;
-        color: #888 !important;
-        font-size: 12px !important;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-    }
-    [data-testid="stMetricDelta"] {
-        font-family: 'Rajdhani', sans-serif;
-        font-size: 13px !important;
-    }
-
-    /* ── Cards ── */
-    .metric-card {
-        background: rgba(22,33,62,0.7);
-        padding: 18px 14px;
-        border-radius: 10px;
-        border: 1px solid rgba(0,255,255,0.25);
-        text-align: center;
-        transition: border-color 0.2s;
-    }
-    .metric-card:hover { border-color: rgba(0,255,255,0.6); }
-    .metric-card h2 {
-        color: #888 !important;
-        margin: 0 0 6px;
-        font-size: 11px !important;
-        letter-spacing: 1.5px;
-        text-transform: uppercase;
-        text-shadow: none !important;
-    }
-    .metric-card h1 {
-        color: #00ffff !important;
-        margin: 0;
-        font-size: 26px !important;
-        text-shadow: 0 0 8px rgba(0,255,255,0.3) !important;
-        word-wrap: break-word;
-    }
-
-    /* ── Tables ── */
-    .dataframe {
-        background-color: rgba(10,14,39,0.8) !important;
-        border: 1px solid rgba(0,255,255,0.2) !important;
-        border-radius: 8px;
-    }
-    .dataframe th {
-        background-color: rgba(22,33,62,0.95) !important;
-        color: #00ffff !important;
-        font-family: 'Rajdhani', sans-serif !important;
-        font-size: 12px !important;
-        text-transform: uppercase;
-        letter-spacing: 1px;
-        border-bottom: 1px solid rgba(0,255,255,0.2) !important;
-    }
-    .dataframe td {
-        background-color: rgba(15,20,50,0.6) !important;
-        color: #e0e0e0 !important;
-        font-size: 13px !important;
-        border-bottom: 1px solid rgba(255,255,255,0.04) !important;
-    }
-    .dataframe tr:hover td { background-color: rgba(0,255,255,0.05) !important; }
-
-    /* ── File uploader ── */
+ 
     [data-testid="stFileUploader"] {
-        border: 1px dashed rgba(0,255,255,0.4);
-        border-radius: 10px;
-        background: rgba(22,33,62,0.3);
-        padding: 16px;
+        border: 2px dashed #00ffff;
+        border-radius: 15px;
+        background: rgba(22, 33, 62, 0.3);
+        padding: 20px;
     }
-
-    /* ── Status/info boxes ── */
-    [data-testid="stAlert"] {
-        border-radius: 8px !important;
-        border-left-width: 3px !important;
-    }
-
-    /* ── Tabs ── */
-    [data-testid="stTabs"] [role="tab"] {
-        font-family: 'Rajdhani', sans-serif;
-        font-size: 14px;
-        font-weight: 600;
-        letter-spacing: 0.5px;
-    }
-
-    /* ── Expander ── */
-    [data-testid="stExpander"] {
-        border: 1px solid rgba(0,255,255,0.15) !important;
-        border-radius: 8px !important;
-        background: rgba(10,14,39,0.4) !important;
-    }
-
-    /* ── Divider ── */
-    hr { border-color: rgba(0,255,255,0.1) !important; }
 </style>
 """, unsafe_allow_html=True)
 # ==================== BDC BALANCE CLASS ====================
@@ -1019,1009 +983,1415 @@ def save_daily_orders_excel(df: pd.DataFrame, filename: str = None) -> str:
  
     return out_path
 # ==================== MAIN APP ====================
-def _page_header(icon: str, title: str, subtitle: str = ""):
-    """Render a compact, consistent page header."""
-    sub_html = f"<p style='color:#888; font-size:14px; margin:2px 0 0; font-family:Rajdhani,sans-serif;'>{subtitle}</p>" if subtitle else ""
-    st.markdown(f"""
-    <div style='border-bottom:1px solid rgba(0,255,255,0.2); padding-bottom:12px; margin-bottom:20px;'>
-        <h2 style='margin:0; font-size:24px;'>{icon} {title}</h2>
-        {sub_html}
-    </div>
-    """, unsafe_allow_html=True)
-
-def _data_status_badge(label: str, loaded: bool, detail: str = ""):
-    """Small coloured badge showing whether a dataset is loaded."""
-    if loaded:
-        color, dot, text = "#00ff88", "🟢", f"<b>{label}</b> {detail}"
-    else:
-        color, dot, text = "#888", "⚫", f"<span style='color:#888'>{label} — not loaded</span>"
-    st.markdown(f"<div style='font-size:13px; margin:2px 0;'>{dot} {text}</div>", unsafe_allow_html=True)
-
-def _no_data_prompt(msg: str, page: str):
-    """Standardised empty-state card."""
-    st.markdown(f"""
-    <div style='background:rgba(22,33,62,0.5); border:1px dashed rgba(0,255,255,0.3);
-                border-radius:12px; padding:32px; text-align:center; margin:20px 0;'>
-        <div style='font-size:40px; margin-bottom:12px;'>📭</div>
-        <div style='color:#e0e0e0; font-size:16px; margin-bottom:8px;'>{msg}</div>
-        <div style='color:#888; font-size:13px;'>Use the sidebar to navigate to <b style='color:#00ffff'>{page}</b> and fetch data first.</div>
-    </div>
-    """, unsafe_allow_html=True)
-
 def main():
-    # ── Compact top bar ───────────────────────────────────────────────────────
     st.markdown("""
-    <div style='display:flex; align-items:center; gap:16px; padding:12px 0 8px;
-                border-bottom:1px solid rgba(0,255,255,0.15); margin-bottom:16px;'>
-        <span style='font-family:Orbitron,sans-serif; font-size:22px; color:#00ffff;
-                      font-weight:900; letter-spacing:2px;'>⚡ NPA ENERGY ANALYTICS</span>
-        <span style='color:#ff00ff; font-size:13px; font-family:Rajdhani,sans-serif;
-                      letter-spacing:3px; padding-top:2px;'>FUEL THE FUTURE WITH DATA</span>
+    <div style='text-align: center; padding: 30px 0;'>
+        <h1 style='font-size: 72px; margin: 0;'>⚡ NPA ENERGY ANALYTICS ⚡</h1>
+        <p style='font-size: 24px; color: #ff00ff; font-family: "Orbitron", sans-serif; letter-spacing: 3px; margin-top: 10px;'>
+            FUEL THE FUTURE WITH DATA
+        </p>
     </div>
     """, unsafe_allow_html=True)
-
-    # ── Sidebar ───────────────────────────────────────────────────────────────
+ 
     with st.sidebar:
+        st.markdown("<h2 style='text-align: center;'>🎯 MISSION CONTROL</h2>", unsafe_allow_html=True)
+        choice = st.radio("SELECT YOUR DATA MISSION:", [
+            "🏦 BDC BALANCE",
+            "🚚 OMC LOADINGS",
+            "📅 DAILY ORDERS",
+            "📊 MARKET SHARE",
+            "🎯 COMPETITIVE INTEL",
+            "📈 STOCK TRANSACTION",
+            "🧠 BDC INTELLIGENCE",
+            "🌍 NATIONAL STOCKOUT",
+            "─────── NEW ───────",
+            "🔴 LIVE RUNWAY MONITOR",
+            "📉 HISTORICAL TRENDS",
+            "🗺️ DEPOT STRESS MAP",
+            "🔮 DEMAND FORECAST",
+            "⚠️ REORDER ALERTS",
+            "📆 WEEK-ON-WEEK",
+        ], index=0)
+        st.markdown("---")
         st.markdown("""
-        <div style='text-align:center; padding:14px 0 10px;'>
-            <span style='font-family:Orbitron,sans-serif; font-size:16px;
-                          color:#ff00ff; font-weight:700; letter-spacing:2px;'>MISSION CONTROL</span>
-        </div>
-        """, unsafe_allow_html=True)
-
-        # ── Data status panel ─────────────────────────────────────────────
-        has_balance  = bool(st.session_state.get('bdc_records'))
-        has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
-        has_daily    = not st.session_state.get('daily_df', pd.DataFrame()).empty
-        has_txn      = not st.session_state.get('stock_txn_df', pd.DataFrame()).empty
-        has_ns       = st.session_state.get('ns_results') is not None
-
-        bal_detail  = f"({len(st.session_state.bdc_records):,} rows)" if has_balance else ""
-        omc_detail  = f"({len(st.session_state.omc_df):,} rows)" if has_loadings else ""
-        daily_detail= f"({len(st.session_state.daily_df):,} rows)" if has_daily else ""
-
-        with st.expander("📦 Loaded Data", expanded=True):
-            _data_status_badge("BDC Balance",    has_balance,  bal_detail)
-            _data_status_badge("OMC Loadings",   has_loadings, omc_detail)
-            _data_status_badge("Daily Orders",   has_daily,    daily_detail)
-            _data_status_badge("Stock Txn",      has_txn)
-            _data_status_badge("Nat. Stockout",  has_ns)
-
-        st.markdown("---")
-        st.markdown("<p style='color:#888; font-size:11px; margin:0 0 4px; text-transform:uppercase; letter-spacing:1px;'>Core Reports</p>", unsafe_allow_html=True)
-        choice = st.radio("nav", [
-            "🏦 BDC Balance",
-            "🚚 OMC Loadings",
-            "📅 Daily Orders",
-            "📊 Market Share",
-            "🎯 Competitive Intel",
-            "📈 Stock Transaction",
-            "🧠 BDC Intelligence",
-            "🌍 National Stockout",
-        ], index=0, label_visibility="collapsed")
-
-        import os as _os
-        snap_count = len([f for f in _os.listdir(_os.path.join(_os.getcwd(), "national_snapshots"))
-                          if f.endswith('.json')]) if _os.path.exists(_os.path.join(_os.getcwd(), "national_snapshots")) else 0
-        snap_label = f" ({snap_count} snapshots)" if snap_count else ""
-        st.markdown(f"<p style='color:#ff00ff; font-size:11px; margin:8px 0 4px; text-transform:uppercase; letter-spacing:1px;'>Advanced Analytics{snap_label}</p>", unsafe_allow_html=True)
-        choice2 = st.radio("nav2", [
-            "— Select —",
-            "🔴 Live Runway Monitor",
-            "📉 Historical Trends",
-            "🗺️ Depot Stress Map",
-            "🔮 Demand Forecast",
-            "⚠️ Reorder Alerts",
-            "📆 Week-on-Week",
-        ], index=0, label_visibility="collapsed")
-
-        if choice2 != "— Select —":
-            choice = choice2
-
-        st.markdown("---")
-        st.markdown(f"""
-        <div style='font-size:12px; color:#888; text-align:center; padding:4px 0;'>
-            Last refreshed<br>
-            <span style='color:#00ffff;'>{datetime.now().strftime('%H:%M:%S')}</span>
+        <div style='text-align: center; padding: 20px; background: rgba(255, 0, 255, 0.1); border-radius: 10px; border: 2px solid #ff00ff;'>
+            <h3>⚙️ SYSTEM STATUS</h3>
+            <p style='color: #00ff88; font-size: 20px;'>🟢 OPERATIONAL</p>
         </div>
         """, unsafe_allow_html=True)
  
-    if choice == "🏦 BDC Balance":
+    if choice == "🏦 BDC BALANCE":
         show_bdc_balance()
-    elif choice == "🚚 OMC Loadings":
+    elif choice == "🚚 OMC LOADINGS":
         show_omc_loadings()
-    elif choice == "📅 Daily Orders":
+    elif choice == "📅 DAILY ORDERS":
         show_daily_orders()
-    elif choice == "📊 Market Share":
+    elif choice == "📊 MARKET SHARE":
         show_market_share()
-    elif choice == "🎯 Competitive Intel":
+    elif choice == "🎯 COMPETITIVE INTEL":
         show_competitive_intel()
-    elif choice == "📈 Stock Transaction":
+    elif choice == "📈 STOCK TRANSACTION":
         show_stock_transaction()
-    elif choice == "🧠 BDC Intelligence":
+    elif choice == "🧠 BDC INTELLIGENCE":
         show_bdc_intelligence()
-    elif choice == "🌍 National Stockout":
+    elif choice == "🌍 NATIONAL STOCKOUT":
         show_national_stockout()
-    elif choice == "🔴 Live Runway Monitor":
+    elif choice == "🔴 LIVE RUNWAY MONITOR":
         show_live_runway_monitor()
-    elif choice == "📉 Historical Trends":
+    elif choice == "📉 HISTORICAL TRENDS":
         show_historical_trends()
-    elif choice == "🗺️ Depot Stress Map":
+    elif choice == "🗺️ DEPOT STRESS MAP":
         show_depot_stress_map()
-    elif choice == "🔮 Demand Forecast":
+    elif choice == "🔮 DEMAND FORECAST":
         show_demand_forecast()
-    elif choice == "⚠️ Reorder Alerts":
+    elif choice == "⚠️ REORDER ALERTS":
         show_reorder_alerts()
-    elif choice == "📆 Week-on-Week":
+    elif choice == "📆 WEEK-ON-WEEK":
         show_week_on_week()
     else:
         st.info("Select a page from the sidebar.")
-def _fetch_bdc_balance_data():
-    """Shared helper — fetch BDC balance and store in session_state.bdc_records."""
-    import requests
-    cfg = NPA_CONFIG
-    params = {
-        'lngCompanyId': cfg['COMPANY_ID'], 'strITSfromPersol': cfg['ITS_FROM_PERSOL'],
-        'strGroupBy': 'BDC', 'strGroupBy1': 'DEPOT',
-        'strQuery1': '', 'strQuery2': '', 'strQuery3': '', 'strQuery4': '',
-        'strPicHeight': '1', 'szPicWeight': '1',
-        'lngUserId': cfg['USER_ID'], 'intAppId': cfg['APP_ID'],
-    }
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0', 'Accept': 'application/pdf'}
-        resp = requests.get(cfg['BDC_BALANCE_URL'], params=params, headers=headers, timeout=30)
-        resp.raise_for_status()
-        if resp.content[:4] != b'%PDF':
-            st.error("❌ Server did not return a PDF. Check credentials.")
-            return False
-        scraper = StockBalanceScraper()
-        records = scraper.parse_pdf_file(io.BytesIO(resp.content))
-        if not records:
-            st.error("❌ PDF received but no records found. The report may be empty for this period.")
-            return False
-        st.session_state.bdc_records = records
-        return True
-    except requests.exceptions.Timeout:
-        st.error("❌ Request timed out. The NPA portal may be slow — try again.")
-        return False
-    except requests.exceptions.RequestException as e:
-        st.error(f"❌ Network error: {e}")
-        return False
-    except Exception as e:
-        st.error(f"❌ Unexpected error: {e}")
-        return False
-
 def show_bdc_balance():
-    _page_header("🏦", "BDC Stock Balance", "Current fuel stock held by each BDC across all depots")
-
+    st.markdown("<h2>🏦 BDC STOCK BALANCE ANALYZER</h2>", unsafe_allow_html=True)
+    st.info("📊 Click the button below to fetch BDC Balance data")
+    st.markdown("---")
+ 
     if 'bdc_records' not in st.session_state:
         st.session_state.bdc_records = []
-
-    col_fetch, col_status = st.columns([2, 3])
-    with col_fetch:
-        if st.button("⚡ Fetch BDC Balance", key='bdc_fetch_btn'):
-            with st.spinner("Fetching from NPA portal…"):
-                if _fetch_bdc_balance_data():
-                    st.rerun()
-    with col_status:
-        if st.session_state.bdc_records:
-            df_tmp = pd.DataFrame(st.session_state.bdc_records)
-            st.caption(f"✅ {len(st.session_state.bdc_records):,} records · "
-                       f"{df_tmp['BDC'].nunique()} BDCs · {df_tmp['DEPOT'].nunique()} depots")
-
+ 
+    if st.button("🔄 FETCH BDC BALANCE DATA", width='stretch'):
+        with st.spinner("🔄 FETCHING DATA FROM NPA PORTAL..."):
+            scraper = StockBalanceScraper()
+         
+            url = NPA_CONFIG['BDC_BALANCE_URL']
+            params = {
+                'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
+                'strITSfromPersol': NPA_CONFIG['ITS_FROM_PERSOL'],
+                'strGroupBy': 'BDC',
+                'strGroupBy1': 'DEPOT',
+                'strQuery1': '',
+                'strQuery2': '',
+                'strQuery3': '',
+                'strQuery4': '',
+                'strPicHeight': '1',
+                'szPicWeight': '1',
+                'lngUserId': NPA_CONFIG['USER_ID'],
+                'intAppId': NPA_CONFIG['APP_ID']
+            }
+         
+            try:
+                import requests
+                import io
+             
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Connection': 'keep-alive',
+                }
+             
+                response = requests.get(url, params=params, headers=headers, timeout=30)
+                response.raise_for_status()
+             
+                if response.content[:4] == b'%PDF':
+                    st.success("✅ PDF received from server")
+                    pdf_file = io.BytesIO(response.content)
+                    st.session_state.bdc_records = scraper.parse_pdf_file(pdf_file)
+                 
+                    if not st.session_state.bdc_records:
+                        st.warning("⚠️ No records found in PDF.")
+                else:
+                    st.error("❌ Response is not a PDF.")
+                    st.session_state.bdc_records = []
+             
+            except requests.exceptions.RequestException as e:
+                st.error(f"❌ Network Error: {e}")
+                st.session_state.bdc_records = []
+            except Exception as e:
+                st.error(f"❌ Error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+                st.session_state.bdc_records = []
+ 
     records = st.session_state.bdc_records
-    if not records:
-        _no_data_prompt(
-            "No BDC Balance data loaded yet. Click 'Fetch BDC Balance' to pull the latest snapshot from the NPA portal.",
-            "🏦 BDC Balance"
-        )
-        return
-
-    df = pd.DataFrame(records)
-    col_actual = 'ACTUAL BALANCE (LT\\KG)'
-    col_avail  = 'AVAILABLE BALANCE (LT\\KG)'
-    summary = df.groupby('Product')[col_actual].sum()
-    grand_total = df[col_actual].sum()
-    PROD_COLORS = {'PREMIUM': '#00ffff', 'GASOIL': '#ffaa00', 'LPG': '#00ff88'}
-
-    # KPI row
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("BDCs",   df['BDC'].nunique())
-    c2.metric("Depots", df['DEPOT'].nunique())
-    for ci, prod, label in zip([c3,c4,c5], ['PREMIUM','GASOIL','LPG'], ['PMS','AGO','LPG']):
-        val = float(summary.get(prod, 0))
-        ci.metric(label, f"{val/1e6:.2f}M LT", help=f"{val:,.0f} LT")
-
-    st.divider()
-    tab_ov, tab_bdc, tab_filt, tab_exp = st.tabs(["📊 Overview", "🏢 By BDC", "🔍 Filter", "💾 Export"])
-
-    with tab_ov:
-        prod_data = df.groupby('Product')[col_actual].sum().reset_index()
-        prod_data.columns = ['Product', 'Balance']
-        prod_data = prod_data[prod_data['Product'].isin(['PREMIUM','GASOIL','LPG'])]
-
-        ch1, ch2 = st.columns(2)
-        with ch1:
-            fig = go.Figure(go.Pie(
-                labels=prod_data['Product'], values=prod_data['Balance'],
-                hole=0.45, marker=dict(colors=['#00ffff','#ffaa00','#00ff88']),
-                textinfo='label+percent', textfont=dict(size=13, color='white'),
-            ))
-            fig.update_layout(
-                title=dict(text='Product Mix', font=dict(color='#00ffff', family='Orbitron', size=14)),
-                paper_bgcolor='rgba(0,0,0,0)', showlegend=False, height=300,
-                margin=dict(t=40,b=10,l=10,r=10)
-            )
-            st.plotly_chart(fig, width='stretch')
-        with ch2:
-            st.markdown("**Stock by Product**")
-            for _, row in prod_data.sort_values('Balance', ascending=False).iterrows():
-                pct = row['Balance'] / grand_total * 100 if grand_total else 0
-                color = PROD_COLORS.get(row['Product'], '#fff')
+ 
+    if records:
+        df = pd.DataFrame(records)
+        st.success(f"✅ SUCCESSFULLY EXTRACTED {len(records)} RECORDS")
+        st.markdown("---")
+     
+        st.markdown("<h3>📊 ANALYTICS DASHBOARD</h3>", unsafe_allow_html=True)
+     
+        summary = df.groupby('Product')['ACTUAL BALANCE (LT\\KG)'].sum()
+        cols = st.columns(3)
+     
+        for idx, prod in enumerate(['GASOIL', 'LPG', 'PREMIUM']):
+            with cols[idx]:
+                val = summary.get(prod, 0)
                 st.markdown(f"""
-                <div style='display:flex; justify-content:space-between; padding:10px 14px;
-                             margin:4px 0; border-radius:8px; background:rgba(22,33,62,0.5);
-                             border-left:3px solid {color};'>
-                    <b style='color:{color};'>{row['Product']}</b>
-                    <span>{row['Balance']:,.0f} LT</span>
-                    <span style='color:#888;'>{pct:.1f}%</span>
-                </div>""", unsafe_allow_html=True)
-
-    with tab_bdc:
-        bdc_piv = df.pivot_table(
-            index='BDC', columns='Product', values=col_actual, aggfunc='sum', fill_value=0
+                <div class='metric-card'>
+                    <h2>{prod}</h2>
+                    <h1>{val:,.0f}</h1>
+                    <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG</p>
+                </div>
+                """, unsafe_allow_html=True)
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>🏢 BDC BREAKDOWN</h3>", unsafe_allow_html=True)
+        bdc_summary = df.groupby('BDC').agg({
+            'ACTUAL BALANCE (LT\\KG)': 'sum',
+            'DEPOT': 'nunique',
+            'Product': lambda x: x.nunique()
+        }).reset_index()
+        bdc_summary.columns = ['BDC', 'Total Balance (LT/KG)', 'Depots', 'Products']
+        bdc_summary = bdc_summary.sort_values('Total Balance (LT/KG)', ascending=False)
+     
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.dataframe(bdc_summary, width='stretch', hide_index=True)
+        with col2:
+            st.markdown("#### 📈 Key Metrics")
+            st.metric("Total BDCs", f"{df['BDC'].nunique()}")
+            st.metric("Total Depots", f"{df['DEPOT'].nunique()}")
+            col_name = 'ACTUAL BALANCE (LT\\KG)'
+            st.metric("Grand Total", f"{df[col_name].sum():,.0f} LT/KG")
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
+     
+        pivot_data = df.pivot_table(
+            index='BDC',
+            columns='Product',
+            values='ACTUAL BALANCE (LT\\KG)',
+            aggfunc='sum',
+            fill_value=0
         ).reset_index()
-        for p in ['GASOIL','LPG','PREMIUM']:
-            if p not in bdc_piv.columns: bdc_piv[p] = 0
-        bdc_piv['TOTAL'] = bdc_piv[['GASOIL','LPG','PREMIUM']].sum(axis=1)
-        bdc_piv = bdc_piv.sort_values('TOTAL', ascending=False)
-        bdc_piv['Share %'] = (bdc_piv['TOTAL'] / bdc_piv['TOTAL'].sum() * 100).round(1)
-        st.dataframe(bdc_piv[['BDC','PREMIUM','GASOIL','LPG','TOTAL','Share %']],
-                     width='stretch', hide_index=True, height=380)
-        st.divider()
-        top15 = bdc_piv.head(15)
-        fig2 = go.Figure()
-        for prod, col in [('PREMIUM','#00ffff'),('GASOIL','#ffaa00'),('LPG','#00ff88')]:
-            if prod in top15.columns:
-                fig2.add_trace(go.Bar(name=prod, x=top15['BDC'], y=top15[prod],
-                                      marker_color=col, opacity=0.85))
-        fig2.update_layout(
-            barmode='stack',
-            title=dict(text='Top 15 BDCs — Stock by Product', font=dict(color='#00ffff', family='Orbitron', size=13)),
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='#e0e0e0'), height=380, legend=dict(font=dict(color='white')),
-            xaxis=dict(tickangle=-35), yaxis=dict(title='LT', gridcolor='rgba(255,255,255,0.05)'),
-            margin=dict(t=40,b=90,l=10,r=10),
-        )
-        st.plotly_chart(fig2, width='stretch')
-
-    with tab_filt:
-        fc1, fc2, fc3 = st.columns(3)
-        f_prod = fc1.selectbox("Product", ['ALL'] + sorted(df['Product'].unique().tolist()), key='bdc_f_prod')
-        f_bdc  = fc2.selectbox("BDC",     ['ALL'] + sorted(df['BDC'].unique().tolist()),     key='bdc_f_bdc')
-        f_dep  = fc3.selectbox("Depot",   ['ALL'] + sorted(df['DEPOT'].unique().tolist()),   key='bdc_f_dep')
-        filtered = df.copy()
-        if f_prod != 'ALL': filtered = filtered[filtered['Product'] == f_prod]
-        if f_bdc  != 'ALL': filtered = filtered[filtered['BDC']     == f_bdc]
-        if f_dep  != 'ALL': filtered = filtered[filtered['DEPOT']   == f_dep]
-        m1,m2,m3,m4 = st.columns(4)
-        m1.metric("Rows",     f"{len(filtered):,}")
-        m2.metric("BDCs",     f"{filtered['BDC'].nunique()}")
-        m3.metric("Depots",   f"{filtered['DEPOT'].nunique()}")
-        m4.metric("Total LT", f"{filtered[col_actual].sum():,.0f}")
-        disp_cols = [c for c in ['Product','BDC','DEPOT',col_avail,col_actual,'Date'] if c in filtered.columns]
-        st.dataframe(filtered[disp_cols].sort_values(['Product','BDC','DEPOT']),
-                     width='stretch', hide_index=True, height=400)
-
-    with tab_exp:
-        scraper2 = StockBalanceScraper()
-        path = scraper2.save_to_excel(records)
-        if path and os.path.exists(path):
-            with open(path, 'rb') as fh:
-                st.download_button("⬇️ Download Excel", fh, os.path.basename(path),
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+     
+        for prod in ['GASOIL', 'LPG', 'PREMIUM']:
+            if prod not in pivot_data.columns:
+                pivot_data[prod] = 0
+     
+        pivot_data['TOTAL'] = pivot_data[['GASOIL', 'LPG', 'PREMIUM']].sum(axis=1)
+        pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
+     
+        st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], width='stretch', hide_index=True)
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
+     
+        col1, col2 = st.columns(2)
+     
+        with col1:
+            search_type = st.selectbox("Search By:", ["Product", "BDC", "Depot"], key='bdc_search_type')
+     
+        with col2:
+            if search_type == "Product":
+                search_value = st.selectbox("Select Product:", ['ALL'] + sorted(df['Product'].unique().tolist()), key='bdc_product_search')
+            elif search_type == "BDC":
+                search_value = st.selectbox("Select BDC:", ['ALL'] + sorted(df['BDC'].unique().tolist()), key='bdc_bdc_search')
+            else:
+                search_value = st.selectbox("Select Depot:", ['ALL'] + sorted(df['DEPOT'].unique().tolist()), key='bdc_depot_search')
+     
+        if search_value == 'ALL':
+            filtered = df
         else:
-            st.warning("Export not available.")
-
-
+            if search_type == "Product":
+                filtered = df[df['Product'] == search_value]
+            elif search_type == "BDC":
+                filtered = df[df['BDC'] == search_value]
+            else:
+                filtered = df[df['DEPOT'] == search_value]
+     
+        st.markdown(f"<h3>📋 FILTERED DATA: {search_value}</h3>", unsafe_allow_html=True)
+        display = filtered[['Product', 'BDC', 'DEPOT', 'AVAILABLE BALANCE (LT\\KG)', 'ACTUAL BALANCE (LT\\KG)', 'Date']].sort_values(['Product', 'BDC', 'DEPOT'])
+        st.dataframe(display, width='stretch', height=400, hide_index=True)
+     
+        st.markdown("---")
+        st.markdown("<h3>📋 QUICK STATS</h3>", unsafe_allow_html=True)
+        cols = st.columns(4)
+        col_actual = 'ACTUAL BALANCE (LT\\KG)'
+        with cols[0]:
+            st.metric("RECORDS", f"{len(filtered):,}")
+        with cols[1]:
+            st.metric("BDCs", f"{filtered['BDC'].nunique()}")
+        with cols[2]:
+            st.metric("DEPOTS", f"{filtered['DEPOT'].nunique()}")
+        with cols[3]:
+            st.metric("TOTAL BALANCE", f"{filtered[col_actual].sum():,.0f}")
+     
+        st.markdown("---")
+        st.markdown("<h3>💾 EXPORT DATA</h3>", unsafe_allow_html=True)
+        scraper = StockBalanceScraper()
+        path = scraper.save_to_excel(records)
+        if path and os.path.exists(path):
+            with open(path, 'rb') as f:
+                st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
+    else:
+        st.info("👆 Click the button above to fetch BDC balance data")
 def show_omc_loadings():
-    _page_header("🚚", "OMC Loadings", "Fuel orders dispatched from BDCs to OMCs (released orders only)")
-
+    st.markdown("<h2>🚚 OMC LOADINGS ANALYZER</h2>", unsafe_allow_html=True)
+    st.info("📊 Select date range and fetch OMC loadings data")
+    st.markdown("---")
+ 
     if 'omc_df' not in st.session_state:
         st.session_state.omc_df = pd.DataFrame()
-
-    # Fetch controls
-    fc1, fc2, fc3 = st.columns([2, 2, 2])
-    with fc1:
-        start_date = st.date_input("From", value=st.session_state.get('omc_start_date',
-                                   datetime.now() - timedelta(days=7)), key='omc_start')
-    with fc2:
-        end_date = st.date_input("To", value=st.session_state.get('omc_end_date',
-                                 datetime.now()), key='omc_end')
-    with fc3:
-        st.markdown("<div style='padding-top:26px'>", unsafe_allow_html=True)
-        fetch = st.button("⚡ Fetch OMC Loadings", key='omc_fetch_btn')
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    if fetch:
-        import requests
-        st.session_state.omc_start_date = start_date
-        st.session_state.omc_end_date   = end_date
-        start_str = start_date.strftime("%m/%d/%Y")
-        end_str   = end_date.strftime("%m/%d/%Y")
-        params = {
-            'lngCompanyId': NPA_CONFIG['COMPANY_ID'], 'szITSfromPersol': 'persol',
-            'strGroupBy': 'BDC', 'strGroupBy1': NPA_CONFIG['OMC_NAME'],
-            'strQuery1': ' and iorderstatus=4', 'strQuery2': start_str, 'strQuery3': end_str,
-            'strQuery4': '', 'strPicHeight': '', 'strPicWeight': '',
-            'intPeriodID': '4', 'iUserId': NPA_CONFIG['USER_ID'], 'iAppId': NPA_CONFIG['APP_ID'],
-        }
-        with st.spinner(f"Fetching {start_str} → {end_str}…"):
+    if 'omc_start_date' not in st.session_state:
+        st.session_state.omc_start_date = datetime.now() - timedelta(days=7)
+    if 'omc_end_date' not in st.session_state:
+        st.session_state.omc_end_date = datetime.now()
+ 
+    st.markdown("<h3>📅 SELECT DATE RANGE</h3>", unsafe_allow_html=True)
+    st.info("💡 Select a date range where you know there are orders. Try last week or last month for better results.")
+ 
+    col1, col2 = st.columns(2)
+ 
+    with col1:
+        start_date = st.date_input("Start Date", value=st.session_state.omc_start_date, key='omc_start')
+    with col2:
+        end_date = st.date_input("End Date", value=st.session_state.omc_end_date, key='omc_end')
+ 
+    if st.button("🔄 FETCH OMC LOADINGS DATA", width='stretch'):
+        with st.spinner("🔄 FETCHING DATA FROM NPA PORTAL..."):
+            st.session_state.omc_start_date = start_date
+            st.session_state.omc_end_date = end_date
+         
+            start_str = start_date.strftime("%m/%d/%Y")
+            end_str = end_date.strftime("%m/%d/%Y")
+         
+            st.info(f"🔍 Requesting orders from **{start_str}** to **{end_str}**")
+         
+            url = NPA_CONFIG['OMC_LOADINGS_URL']
+            params = {
+                'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
+                'szITSfromPersol': 'persol',
+                'strGroupBy': 'BDC',
+                'strGroupBy1': NPA_CONFIG['OMC_NAME'],
+                'strQuery1': ' and iorderstatus=4',
+                'strQuery2': start_str,
+                'strQuery3': end_str,
+                'strQuery4': '',
+                'strPicHeight': '',
+                'strPicWeight': '',
+                'intPeriodID': '4',
+                'iUserId': NPA_CONFIG['USER_ID'],
+                'iAppId': NPA_CONFIG['APP_ID']
+            }
+         
             try:
-                resp = requests.get(NPA_CONFIG['OMC_LOADINGS_URL'], params=params,
-                                    headers={'User-Agent':'Mozilla/5.0','Accept':'application/pdf'}, timeout=30)
-                resp.raise_for_status()
-                if resp.content[:4] != b'%PDF':
-                    st.error("❌ Server did not return a PDF.")
+                import requests
+                import io
+             
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Connection': 'keep-alive',
+                }
+             
+                response = requests.get(url, params=params, headers=headers, timeout=30)
+                response.raise_for_status()
+             
+                if response.content[:4] == b'%PDF':
+                    st.success("✅ PDF received from server")
+                    pdf_file = io.BytesIO(response.content)
+                    st.session_state.omc_df = extract_npa_data_from_pdf(pdf_file)
+                 
+                    if st.session_state.omc_df.empty:
+                        st.warning("⚠️ No order records found in the PDF for this date range.")
                 else:
-                    df_new = extract_npa_data_from_pdf(io.BytesIO(resp.content))
-                    if df_new.empty:
-                        st.warning("⚠️ No records found for this date range. Try a wider period.")
-                    else:
-                        st.session_state.omc_df = df_new
-                        st.rerun()
+                    st.error("❌ Response is not a PDF.")
+                    st.session_state.omc_df = pd.DataFrame()
+             
+            except requests.exceptions.RequestException as e:
+                st.error(f"❌ Network Error: {e}")
+                st.session_state.omc_df = pd.DataFrame()
             except Exception as e:
-                st.error(f"❌ {e}")
-
+                st.error(f"❌ Error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+                st.session_state.omc_df = pd.DataFrame()
+ 
     df = st.session_state.omc_df
-    if df.empty:
-        _no_data_prompt(
-            "No OMC Loadings data loaded. Select a date range above and click Fetch.",
-            "🚚 OMC Loadings"
-        )
-        return
-
-    start_d = st.session_state.get('omc_start_date', datetime.now()-timedelta(days=7))
-    end_d   = st.session_state.get('omc_end_date',   datetime.now())
-    period_days = max((end_d - start_d).days, 1)
-    total_vol   = df['Quantity'].sum()
-    total_val   = (df['Quantity'] * df['Price']).sum()
-
-    # KPI row
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Orders",         f"{len(df):,}")
-    k2.metric("Total Volume",   f"{total_vol/1e6:.2f}M LT")
-    k3.metric("Total Value",    f"₵{total_val/1e9:.2f}B")
-    k4.metric("OMCs",           f"{df['OMC'].nunique()}")
-    k5.metric("Avg/Day",        f"{total_vol/period_days:,.0f} LT")
-
-    st.caption(f"Period: {start_d.strftime('%d %b %Y')} → {end_d.strftime('%d %b %Y')} ({period_days} days)")
-    st.divider()
-
-    tab_prod, tab_omc, tab_bdc, tab_filter, tab_exp = st.tabs([
-        "📦 Products", "🏢 OMC Rankings", "🏦 By BDC", "🔍 Filter", "💾 Export"
-    ])
-
-    with tab_prod:
-        prod_df = df[df['Product'].isin(['PREMIUM','GASOIL','LPG'])]
-        by_prod = prod_df.groupby('Product').agg(
-            Volume=('Quantity','sum'), Orders=('Order Number','count'), OMCs=('OMC','nunique')
-        ).reset_index().sort_values('Volume', ascending=False)
-
-        ch1, ch2 = st.columns(2)
-        with ch1:
-            fig = go.Figure(go.Pie(
-                labels=by_prod['Product'], values=by_prod['Volume'],
-                hole=0.45, marker=dict(colors=['#00ffff','#ffaa00','#00ff88']),
-                textinfo='label+percent', textfont=dict(size=13, color='white'),
-            ))
-            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', showlegend=False, height=280,
-                              title=dict(text='Volume by Product', font=dict(color='#00ffff',family='Orbitron',size=13)),
-                              margin=dict(t=40,b=10,l=10,r=10))
-            st.plotly_chart(fig, width='stretch')
-        with ch2:
-            PROD_C = {'PREMIUM':'#00ffff','GASOIL':'#ffaa00','LPG':'#00ff88'}
-            for _, r in by_prod.iterrows():
-                c = PROD_C.get(r['Product'],'#fff')
-                daily = r['Volume'] / period_days
-                st.markdown(f"""
-                <div style='padding:12px 16px; margin:5px 0; border-radius:8px;
-                             background:rgba(22,33,62,0.5); border-left:3px solid {c};'>
-                    <b style='color:{c};'>{r['Product']}</b>
-                    <span style='float:right; color:#e0e0e0;'>{r['Volume']:,.0f} LT</span><br>
-                    <small style='color:#888;'>{r['Orders']:,} orders · {r['OMCs']} OMCs · {daily:,.0f} LT/day avg</small>
-                </div>""", unsafe_allow_html=True)
-
-        st.divider()
-        # Daily trend chart if date column is parseable
-        df_trend = df.copy()
-        df_trend['_dt'] = pd.to_datetime(df_trend['Date'], errors='coerce')
-        df_trend = df_trend.dropna(subset=['_dt'])
-        if not df_trend.empty:
-            daily_vol = df_trend.groupby([df_trend['_dt'].dt.date,'Product'])['Quantity'].sum().reset_index()
-            daily_vol.columns = ['Date','Product','Volume']
-            fig2 = go.Figure()
-            for prod, col in [('PREMIUM','#00ffff'),('GASOIL','#ffaa00'),('LPG','#00ff88')]:
-                d = daily_vol[daily_vol['Product']==prod]
-                if not d.empty:
-                    fig2.add_trace(go.Scatter(x=d['Date'], y=d['Volume'], name=prod,
-                                              line=dict(color=col, width=2), mode='lines+markers',
-                                              marker=dict(size=4)))
-            fig2.update_layout(
-                title=dict(text='Daily Loadings Volume', font=dict(color='#00ffff',family='Orbitron',size=13)),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#e0e0e0'), height=320, legend=dict(font=dict(color='white')),
-                xaxis=dict(gridcolor='rgba(255,255,255,0.04)'),
-                yaxis=dict(gridcolor='rgba(255,255,255,0.04)', title='LT'),
-                margin=dict(t=40,b=10,l=10,r=10),
-            )
-            st.plotly_chart(fig2, width='stretch')
-
-    with tab_omc:
-        omc_sum = df.groupby('OMC').agg(
-            Volume=('Quantity','sum'), Orders=('Order Number','count'), Products=('Product','nunique')
-        ).reset_index().sort_values('Volume', ascending=False)
-        omc_sum['Share %'] = (omc_sum['Volume'] / omc_sum['Volume'].sum() * 100).round(1)
-        omc_sum['Avg Order LT'] = (omc_sum['Volume'] / omc_sum['Orders']).round(0).astype(int)
-
-        top_n = st.slider("Show top N OMCs", 5, min(50, len(omc_sum)), 15, key='omc_topn')
-        st.dataframe(omc_sum.head(top_n), width='stretch', hide_index=True)
-
-        # Horizontal bar chart top 10
-        top10 = omc_sum.head(10)
-        fig3 = go.Figure(go.Bar(
-            x=top10['Volume'], y=top10['OMC'], orientation='h',
-            marker_color='rgba(0,255,255,0.6)', text=top10['Volume'].apply(lambda x: f"{x:,.0f}"),
-            textposition='outside',
-        ))
-        fig3.update_layout(
-            title=dict(text='Top 10 OMCs by Volume', font=dict(color='#00ffff',family='Orbitron',size=13)),
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='#e0e0e0'), height=360,
-            xaxis=dict(showgrid=False, showticklabels=False),
-            yaxis=dict(tickfont=dict(size=11)),
-            margin=dict(t=40,b=10,l=10,r=80),
-        )
-        st.plotly_chart(fig3, width='stretch')
-
-    with tab_bdc:
-        bdc_sum = df.groupby('BDC').agg(
-            Volume=('Quantity','sum'), Orders=('Order Number','count'),
-            OMCs=('OMC','nunique'), Products=('Product','nunique')
-        ).reset_index().sort_values('Volume', ascending=False)
-        bdc_sum['Share %'] = (bdc_sum['Volume'] / bdc_sum['Volume'].sum() * 100).round(1)
-        st.dataframe(bdc_sum, width='stretch', hide_index=True)
-
-        bdc_piv = df.pivot_table(index='BDC', columns='Product', values='Quantity',
-                                  aggfunc='sum', fill_value=0).reset_index()
-        for p in ['GASOIL','LPG','PREMIUM']:
-            if p not in bdc_piv.columns: bdc_piv[p] = 0
-        bdc_piv['TOTAL'] = bdc_piv[['GASOIL','LPG','PREMIUM']].sum(axis=1)
-        bdc_piv = bdc_piv.sort_values('TOTAL', ascending=False).head(15)
-        fig4 = go.Figure()
-        for prod, col in [('PREMIUM','#00ffff'),('GASOIL','#ffaa00'),('LPG','#00ff88')]:
-            if prod in bdc_piv.columns:
-                fig4.add_trace(go.Bar(name=prod, x=bdc_piv['BDC'], y=bdc_piv[prod],
-                                      marker_color=col, opacity=0.85))
-        fig4.update_layout(barmode='stack',
-            title=dict(text='Top 15 BDCs — Loadings by Product', font=dict(color='#00ffff',family='Orbitron',size=13)),
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='#e0e0e0'), height=360,
-            legend=dict(font=dict(color='white')),
-            xaxis=dict(tickangle=-35), yaxis=dict(title='LT', gridcolor='rgba(255,255,255,0.05)'),
-            margin=dict(t=40,b=90,l=10,r=10))
-        st.plotly_chart(fig4, width='stretch')
-
-    with tab_filter:
-        ff1, ff2, ff3, ff4 = st.columns(4)
-        f_prod = ff1.selectbox("Product", ['ALL'] + sorted(df['Product'].unique().tolist()), key='omc_f_prod')
-        f_omc  = ff2.selectbox("OMC",     ['ALL'] + sorted(df['OMC'].unique().tolist()),     key='omc_f_omc')
-        f_bdc  = ff3.selectbox("BDC",     ['ALL'] + sorted(df['BDC'].unique().tolist()),     key='omc_f_bdc')
-        f_dep  = ff4.selectbox("Depot",   ['ALL'] + sorted(df['Depot'].unique().tolist()),   key='omc_f_dep')
-        filtered = df.copy()
-        if f_prod != 'ALL': filtered = filtered[filtered['Product'] == f_prod]
-        if f_omc  != 'ALL': filtered = filtered[filtered['OMC']     == f_omc]
-        if f_bdc  != 'ALL': filtered = filtered[filtered['BDC']     == f_bdc]
-        if f_dep  != 'ALL': filtered = filtered[filtered['Depot']   == f_dep]
-        m1,m2,m3,m4 = st.columns(4)
-        m1.metric("Rows",    f"{len(filtered):,}")
-        m2.metric("Volume",  f"{filtered['Quantity'].sum():,.0f} LT")
-        m3.metric("OMCs",    f"{filtered['OMC'].nunique()}")
-        m4.metric("Value",   f"₵{(filtered['Quantity']*filtered['Price']).sum():,.0f}")
-        disp = [c for c in ['Date','OMC','Truck','Quantity','Order Number','BDC','Depot','Price','Product'] if c in filtered.columns]
-        st.dataframe(filtered[disp].sort_values(['Product','OMC','Date']),
-                     width='stretch', hide_index=True, height=400)
-
-    with tab_exp:
+ 
+    if not df.empty:
+        st.success(f"✅ EXTRACTED {len(df)} RECORDS")
+        st.markdown("---")
+     
+        st.info(f"📊 Showing {len(df)} records from {st.session_state.omc_start_date.strftime('%Y/%m/%d')} to {st.session_state.omc_end_date.strftime('%Y/%m/%d')}")
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>📊 ANALYTICS DASHBOARD</h3>", unsafe_allow_html=True)
+     
+        cols = st.columns(4)
+        with cols[0]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>TOTAL ORDERS</h2>
+                <h1>{len(df):,}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[1]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>VOLUME</h2>
+                <h1>{df['Quantity'].sum():,.0f}</h1>
+                <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[2]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>OMCs</h2>
+                <h1>{df['OMC'].nunique()}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[3]:
+            total_value = (df['Quantity'] * df['Price']).sum()
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>VALUE</h2>
+                <h1>₵{total_value:,.0f}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>📦 PRODUCT BREAKDOWN</h3>", unsafe_allow_html=True)
+        product_summary = df.groupby('Product').agg({
+            'Quantity': 'sum',
+            'Order Number': 'count',
+            'OMC': 'nunique'
+        }).reset_index()
+        product_summary.columns = ['Product', 'Total Volume (LT/KG)', 'Orders', 'OMCs']
+        product_summary = product_summary.sort_values('Total Volume (LT/KG)', ascending=False)
+     
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.dataframe(product_summary, width='stretch', hide_index=True)
+        with col2:
+            for _, row in product_summary.iterrows():
+                pct = (row['Total Volume (LT/KG)'] / product_summary['Total Volume (LT/KG)'].sum()) * 100
+                st.metric(row['Product'], f"{pct:.1f}%")
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>🏢 TOP OMCs BY VOLUME</h3>", unsafe_allow_html=True)
+        omc_summary = df.groupby('OMC').agg({
+            'Quantity': 'sum',
+            'Order Number': 'count',
+            'Product': lambda x: x.nunique()
+        }).reset_index()
+        omc_summary.columns = ['OMC', 'Total Volume (LT/KG)', 'Orders', 'Products']
+        omc_summary = omc_summary.sort_values('Total Volume (LT/KG)', ascending=False).head(10)
+     
+        st.dataframe(omc_summary, width='stretch', hide_index=True)
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>🏦 BDC PERFORMANCE</h3>", unsafe_allow_html=True)
+        bdc_summary = df.groupby('BDC').agg({
+            'Quantity': 'sum',
+            'Order Number': 'count',
+            'OMC': 'nunique',
+            'Product': lambda x: x.nunique()
+        }).reset_index()
+        bdc_summary.columns = ['BDC', 'Total Volume (LT/KG)', 'Orders', 'OMCs', 'Products']
+        bdc_summary = bdc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
+     
+        st.dataframe(bdc_summary, width='stretch', hide_index=True)
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
+        pivot_data = df.pivot_table(
+            index='BDC',
+            columns='Product',
+            values='Quantity',
+            aggfunc='sum',
+            fill_value=0
+        ).reset_index()
+     
+        for prod in ['GASOIL', 'LPG', 'PREMIUM']:
+            if prod not in pivot_data.columns:
+                pivot_data[prod] = 0
+     
+        pivot_data['TOTAL'] = pivot_data[['GASOIL', 'LPG', 'PREMIUM']].sum(axis=1)
+        pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
+     
+        st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], width='stretch', hide_index=True)
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
+     
+        col1, col2 = st.columns(2)
+     
+        with col1:
+            search_type = st.selectbox("Search By:", ["Product", "OMC", "BDC", "Depot"], key='omc_search_type')
+     
+        with col2:
+            if search_type == "Product":
+                search_value = st.selectbox("Select Product:", ['ALL'] + sorted(df['Product'].unique().tolist()), key='omc_product_search')
+            elif search_type == "OMC":
+                search_value = st.selectbox("Select OMC:", ['ALL'] + sorted(df['OMC'].unique().tolist()), key='omc_omc_search')
+            elif search_type == "BDC":
+                search_value = st.selectbox("Select BDC:", ['ALL'] + sorted(df['BDC'].unique().tolist()), key='omc_bdc_search')
+            else:
+                search_value = st.selectbox("Select Depot:", ['ALL'] + sorted(df['Depot'].unique().tolist()), key='omc_depot_search')
+     
+        if search_value == 'ALL':
+            filtered = df
+        else:
+            if search_type == "Product":
+                filtered = df[df['Product'] == search_value]
+            elif search_type == "OMC":
+                filtered = df[df['OMC'] == search_value]
+            elif search_type == "BDC":
+                filtered = df[df['BDC'] == search_value]
+            else:
+                filtered = df[df['Depot'] == search_value]
+     
+        st.markdown(f"<h3>📋 FILTERED DATA: {search_value}</h3>", unsafe_allow_html=True)
+     
+        if not filtered.empty:
+            cols = st.columns(4)
+            with cols[0]:
+                st.metric("Filtered Orders", f"{len(filtered):,}")
+            with cols[1]:
+                st.metric("Filtered Volume", f"{filtered['Quantity'].sum():,.0f} LT")
+            with cols[2]:
+                st.metric("Unique OMCs", f"{filtered['OMC'].nunique()}")
+            with cols[3]:
+                st.metric("Filtered Value", f"₵{(filtered['Quantity'] * filtered['Price']).sum():,.0f}")
+     
+        display = filtered[['Date', 'OMC', 'Truck', 'Quantity', 'Order Number', 'BDC', 'Depot', 'Price', 'Product']].sort_values(['Product', 'OMC', 'Date'])
+        st.dataframe(display, width='stretch', height=400, hide_index=True)
+     
+        st.markdown("---")
+        st.markdown("<h3>💾 EXPORT DATA</h3>", unsafe_allow_html=True)
         path = save_to_excel_multi(df)
         if path and os.path.exists(path):
-            with open(path, 'rb') as fh:
-                st.download_button("⬇️ Download Excel", fh, os.path.basename(path),
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-
+            with open(path, 'rb') as f:
+                st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
+    else:
+        st.info("👆 Select dates and click the button above to fetch OMC loadings data")
 def show_daily_orders():
-    _page_header("📅", "Daily Orders", "All orders placed on a given day — includes pending and released")
-
+    st.markdown("<h2>📅 DAILY ORDERS ANALYZER</h2>", unsafe_allow_html=True)
+    st.info("📊 Select a date range to fetch daily orders")
+    st.markdown("---")
+ 
     if 'daily_df' not in st.session_state:
         st.session_state.daily_df = pd.DataFrame()
-
-    fc1, fc2, fc3 = st.columns([2, 2, 2])
-    with fc1:
-        start_date = st.date_input("From", value=st.session_state.get('daily_start_date',
-                                   datetime.now() - timedelta(days=1)), key='daily_start')
-    with fc2:
-        end_date = st.date_input("To", value=st.session_state.get('daily_end_date',
-                                 datetime.now()), key='daily_end')
-    with fc3:
-        st.markdown("<div style='padding-top:26px'>", unsafe_allow_html=True)
-        fetch = st.button("⚡ Fetch Daily Orders", key='daily_fetch_btn')
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    if fetch:
-        import requests
-        st.session_state.daily_start_date = start_date
-        st.session_state.daily_end_date   = end_date
-        start_str = start_date.strftime("%m/%d/%Y")
-        end_str   = end_date.strftime("%m/%d/%Y")
-        params = {
-            'lngCompanyId': NPA_CONFIG['COMPANY_ID'], 'szITSfromPersol': 'persol',
-            'strGroupBy': 'DEPOT', 'strGroupBy1': '',
-            'strQuery1': '', 'strQuery2': start_str, 'strQuery3': end_str,
-            'strQuery4': '', 'strPicHeight': '1', 'strPicWeight': '1',
-            'intPeriodID': '-1', 'iUserId': NPA_CONFIG['USER_ID'], 'iAppId': NPA_CONFIG['APP_ID'],
-        }
-        with st.spinner(f"Fetching {start_str} → {end_str}…"):
+    if 'daily_start_date' not in st.session_state:
+        st.session_state.daily_start_date = datetime.now() - timedelta(days=1)
+    if 'daily_end_date' not in st.session_state:
+        st.session_state.daily_end_date = datetime.now()
+ 
+    st.markdown("<h3>📅 SELECT DATE RANGE</h3>", unsafe_allow_html=True)
+    st.info("💡 Select a date range for daily orders. Try yesterday or last few days for better results.")
+ 
+    col1, col2 = st.columns(2)
+ 
+    with col1:
+        start_date = st.date_input("Start Date", value=st.session_state.daily_start_date, key='daily_start')
+    with col2:
+        end_date = st.date_input("End Date", value=st.session_state.daily_end_date, key='daily_end')
+ 
+    if st.button("🔄 FETCH DAILY ORDERS", width='stretch'):
+        with st.spinner("🔄 FETCHING DAILY ORDERS FROM NPA PORTAL..."):
+            st.session_state.daily_start_date = start_date
+            st.session_state.daily_end_date = end_date
+         
+            start_str = start_date.strftime("%m/%d/%Y")
+            end_str = end_date.strftime("%m/%d/%Y")
+         
+            st.info(f"🔍 Requesting daily orders from **{start_str}** to **{end_str}**")
+         
+            url = NPA_CONFIG['DAILY_ORDERS_URL']
+            params = {
+                'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
+                'szITSfromPersol': 'persol',
+                'strGroupBy': 'DEPOT',
+                'strGroupBy1': '',
+                'strQuery1': '',
+                'strQuery2': start_str,
+                'strQuery3': end_str,
+                'strQuery4': '',
+                'strPicHeight': '1',
+                'strPicWeight': '1',
+                'intPeriodID': '-1',
+                'iUserId': NPA_CONFIG['USER_ID'],
+                'iAppId': NPA_CONFIG['APP_ID']
+            }
+         
             try:
-                resp = requests.get(NPA_CONFIG['DAILY_ORDERS_URL'], params=params,
-                                    headers={'User-Agent':'Mozilla/5.0','Accept':'application/pdf'}, timeout=30)
-                resp.raise_for_status()
-                if resp.content[:4] != b'%PDF':
-                    st.error("❌ Server did not return a PDF.")
+                import requests
+                import io
+             
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept': 'application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'en-US,en;q=0.5',
+                    'Connection': 'keep-alive',
+                }
+             
+                response = requests.get(url, params=params, headers=headers, timeout=30)
+                response.raise_for_status()
+             
+                if response.content[:4] == b'%PDF':
+                    st.success("✅ PDF received from server")
+                    pdf_file = io.BytesIO(response.content)
+                    st.session_state.daily_df = extract_daily_orders_from_pdf(pdf_file)
+                 
+                    if st.session_state.daily_df.empty:
+                        st.warning("⚠️ No daily orders found for this date.")
                 else:
-                    df_new = extract_daily_orders_from_pdf(io.BytesIO(resp.content))
-                    if df_new.empty:
-                        st.warning("⚠️ No orders found for this date range.")
-                    else:
-                        # OMC matching from session omc_df
-                        omc_ref = st.session_state.get('omc_df', pd.DataFrame())
-                        if not omc_ref.empty:
-                            exact_map = dict(zip(omc_ref['Order Number'], omc_ref['OMC']))
-                            df_new['OMC'] = df_new['Order Number'].map(exact_map)
-                        st.session_state.daily_df = df_new
-                        st.rerun()
+                    st.error("❌ Response is not a PDF.")
+                    st.session_state.daily_df = pd.DataFrame()
+             
+            except requests.exceptions.RequestException as e:
+                st.error(f"❌ Network Error: {e}")
+                st.session_state.daily_df = pd.DataFrame()
             except Exception as e:
-                st.error(f"❌ {e}")
-
+                st.error(f"❌ Error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
+                st.session_state.daily_df = pd.DataFrame()
+ 
     df = st.session_state.daily_df
-    if df.empty:
-        _no_data_prompt(
-            "No Daily Orders data loaded. Pick a date range and click Fetch.\n\n"
-            "Tip: also load OMC Loadings first — it enables automatic OMC name matching on daily order numbers.",
-            "📅 Daily Orders"
-        )
-        return
-
-    total_vol = df['Quantity'].sum()
-    total_val = (df['Quantity'] * df['Price']).sum()
-    has_omc   = 'OMC' in df.columns and df['OMC'].notna().any()
-
-    k1, k2, k3, k4, k5 = st.columns(5)
-    k1.metric("Orders",       f"{len(df):,}")
-    k2.metric("Volume",       f"{total_vol/1e6:.2f}M LT")
-    k3.metric("Value",        f"₵{total_val/1e9:.2f}B")
-    k4.metric("BDCs",         f"{df['BDC'].nunique()}")
-    if has_omc:
-        matched = df['OMC'].notna().sum()
-        k5.metric("OMC Matched", f"{matched:,}/{len(df):,}")
-
-    if not st.session_state.get('omc_df', pd.DataFrame()).empty and has_omc:
-        st.caption("✅ OMC names matched from OMC Loadings data via order number mapping")
-    elif st.session_state.get('omc_df', pd.DataFrame()).empty:
-        st.caption("💡 Load OMC Loadings data to enable automatic OMC name matching on these orders")
-
-    st.divider()
-    tabs = ["📦 Products", "🏦 By BDC", "📋 Order Status", "🔍 Filter", "💾 Export"]
-    if has_omc:
-        tabs.insert(2, "🏢 By OMC")
-    tab_list = st.tabs(tabs)
-    tab_idx = 0
-
-    with tab_list[tab_idx]:  # Products
-        by_prod = df.groupby('Product').agg(
-            Volume=('Quantity','sum'), Orders=('Order Number','count'), BDCs=('BDC','nunique')
-        ).reset_index().sort_values('Volume', ascending=False)
-        ch1, ch2 = st.columns(2)
-        with ch1:
-            fig = go.Figure(go.Pie(
-                labels=by_prod['Product'], values=by_prod['Volume'],
-                hole=0.45, marker=dict(colors=['#00ffff','#ffaa00','#00ff88','#ff00ff']),
-                textinfo='label+percent', textfont=dict(size=13, color='white'),
-            ))
-            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', showlegend=False, height=280,
-                              title=dict(text='Orders by Product', font=dict(color='#00ffff',family='Orbitron',size=13)),
-                              margin=dict(t=40,b=10,l=10,r=10))
-            st.plotly_chart(fig, width='stretch')
-        with ch2:
-            st.dataframe(by_prod, width='stretch', hide_index=True)
-    tab_idx += 1
-
-    if has_omc:
-        with tab_list[tab_idx]:  # OMC
-            omc_sum = df[df['OMC'].notna()].groupby('OMC').agg(
-                Volume=('Quantity','sum'), Orders=('Order Number','count')
-            ).reset_index().sort_values('Volume', ascending=False)
-            omc_sum['Share %'] = (omc_sum['Volume']/omc_sum['Volume'].sum()*100).round(1)
-            top_n = st.slider("Top N OMCs", 5, min(40,len(omc_sum)), 15, key='daily_topn')
-            st.dataframe(omc_sum.head(top_n), width='stretch', hide_index=True)
-        tab_idx += 1
-
-    with tab_list[tab_idx]:  # BDC
-        bdc_sum = df.groupby('BDC').agg(
-            Volume=('Quantity','sum'), Orders=('Order Number','count'), Products=('Product','nunique')
-        ).reset_index().sort_values('Volume', ascending=False)
-        st.dataframe(bdc_sum, width='stretch', hide_index=True)
-    tab_idx += 1
-
-    with tab_list[tab_idx]:  # Status
-        if 'Status' in df.columns:
-            stat_sum = df.groupby('Status').agg(
-                Orders=('Order Number','count'), Volume=('Quantity','sum')
-            ).reset_index()
-            fig_s = go.Figure(go.Bar(
-                x=stat_sum['Status'], y=stat_sum['Volume'],
-                marker_color='rgba(0,255,255,0.6)',
-                text=stat_sum['Volume'].apply(lambda x: f"{x:,.0f}"), textposition='outside',
-            ))
-            fig_s.update_layout(
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#e0e0e0'), height=320,
-                xaxis=dict(title='Status'), yaxis=dict(title='Volume (LT)', gridcolor='rgba(255,255,255,0.05)'),
-                margin=dict(t=10,b=10,l=10,r=10),
+ 
+    if not df.empty:
+        if not st.session_state.get('omc_df', pd.DataFrame()).empty:
+            loadings_df = st.session_state.omc_df
+         
+            import re
+         
+            def extract_order_prefix(order_num):
+                if pd.isna(order_num):
+                    return None
+                order_str = str(order_num).strip().upper()
+                match = re.match(r'^([A-Z]{2,})', order_str)
+                if match:
+                    return match.group(1)
+                return None
+         
+            loadings_df['Order_Prefix'] = loadings_df['Order Number'].apply(extract_order_prefix)
+         
+            prefix_to_omc = {}
+            for prefix in loadings_df['Order_Prefix'].dropna().unique():
+                prefix_orders = loadings_df[loadings_df['Order_Prefix'] == prefix]
+                most_common_omc = prefix_orders['OMC'].mode()
+                if len(most_common_omc) > 0:
+                    prefix_to_omc[prefix] = most_common_omc.iloc[0]
+         
+            order_to_omc_exact = loadings_df[['Order Number', 'OMC']].drop_duplicates()
+            order_to_omc_dict_exact = dict(zip(order_to_omc_exact['Order Number'], order_to_omc_exact['OMC']))
+         
+            df['Order_Prefix'] = df['Order Number'].apply(extract_order_prefix)
+         
+            df['OMC'] = df['Order Number'].map(order_to_omc_dict_exact)
+         
+            df['OMC'] = df.apply(
+                lambda row: prefix_to_omc.get(row['Order_Prefix']) if pd.isna(row['OMC']) and row['Order_Prefix'] else row['OMC'],
+                axis=1
             )
-            st.plotly_chart(fig_s, width='stretch')
-            st.dataframe(stat_sum, width='stretch', hide_index=True)
+         
+            df = df.drop(columns=['Order_Prefix'])
+         
+            matched_count = df['OMC'].notna().sum()
+            match_rate = (matched_count / len(df) * 100) if len(df) > 0 else 0
+         
+            exact_matches = df['Order Number'].isin(order_to_omc_dict_exact.keys()).sum()
+            prefix_matches = matched_count - exact_matches
+         
+            st.session_state.daily_df = df
+         
+            st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
+         
+            if matched_count > 0:
+                st.info(f"🔗 **INTELLIGENT OMC MATCHING:** Matched {matched_count} orders ({match_rate:.1f}%) - {exact_matches} exact, {prefix_matches} by prefix pattern!")
+             
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Total Orders", len(df))
+                with col2:
+                    st.metric("Matched", matched_count)
+                with col3:
+                    st.metric("Exact Match", exact_matches)
+                with col4:
+                    st.metric("Prefix Match", prefix_matches)
+             
+                if prefix_matches > 0:
+                    st.caption(f"📋 **Prefix Patterns Discovered:** {', '.join([f'{k}→{v}' for k, v in list(prefix_to_omc.items())[:10]])}")
+            else:
+                st.warning("⚠️ No order numbers matched. OMC names will be blank.")
         else:
-            st.info("Status column not available in this dataset.")
-    tab_idx += 1
-
-    with tab_list[tab_idx]:  # Filter
-        ff1, ff2, ff3 = st.columns(3)
-        f_prod = ff1.selectbox("Product", ['ALL']+sorted(df['Product'].unique().tolist()), key='daily_f_prod')
-        f_bdc  = ff2.selectbox("BDC",     ['ALL']+sorted(df['BDC'].unique().tolist()),     key='daily_f_bdc')
-        f_dep  = ff3.selectbox("Depot",   ['ALL']+sorted(df['Depot'].unique().tolist()) if 'Depot' in df.columns else ['ALL'], key='daily_f_dep')
-        filtered = df.copy()
-        if f_prod != 'ALL': filtered = filtered[filtered['Product']==f_prod]
-        if f_bdc  != 'ALL': filtered = filtered[filtered['BDC']==f_bdc]
-        if f_dep  != 'ALL' and 'Depot' in filtered.columns: filtered = filtered[filtered['Depot']==f_dep]
-        m1,m2,m3 = st.columns(3)
-        m1.metric("Rows",   f"{len(filtered):,}")
-        m2.metric("Volume", f"{filtered['Quantity'].sum():,.0f} LT")
-        m3.metric("Value",  f"₵{(filtered['Quantity']*filtered['Price']).sum():,.0f}")
-        disp = [c for c in ['Date','OMC','Truck','Quantity','Order Number','BDC','Depot','Price','Product','Status'] if c in filtered.columns]
-        st.dataframe(filtered[disp], width='stretch', hide_index=True, height=400)
-    tab_idx += 1
-
-    with tab_list[tab_idx]:  # Export
+            df['OMC'] = None
+            st.session_state.daily_df = df
+         
+            st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
+            st.warning("💡 **Tip:** Fetch OMC Loadings data first to automatically match order numbers with OMC names!")
+     
+        st.markdown("---")
+     
+        st.info(f"📊 Showing {len(df)} orders from {st.session_state.daily_start_date.strftime('%Y/%m/%d')} to {st.session_state.daily_end_date.strftime('%Y/%m/%d')}")
+        st.markdown("---")
+     
+        st.markdown("<h3>📊 DAILY ANALYTICS</h3>", unsafe_allow_html=True)
+     
+        cols = st.columns(5)
+        with cols[0]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>ORDERS</h2>
+                <h1>{len(df):,}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[1]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>VOLUME</h2>
+                <h1>{df['Quantity'].sum():,.0f}</h1>
+                <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG</p>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[2]:
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>BDCs</h2>
+                <h1>{df['BDC'].nunique()}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[3]:
+            omc_count = df['OMC'].nunique() if 'OMC' in df.columns and df['OMC'].notna().any() else 0
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>OMCs</h2>
+                <h1>{omc_count}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+        with cols[4]:
+            total_value = (df['Quantity'] * df['Price']).sum()
+            st.markdown(f"""
+            <div class='metric-card'>
+                <h2>VALUE</h2>
+                <h1>₵{total_value:,.0f}</h1>
+            </div>
+            """, unsafe_allow_html=True)
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>📦 PRODUCT SUMMARY</h3>", unsafe_allow_html=True)
+        product_summary = df.groupby('Product').agg({
+            'Quantity': 'sum',
+            'Order Number': 'count',
+            'BDC': 'nunique'
+        }).reset_index()
+        product_summary.columns = ['Product', 'Total Volume (LT/KG)', 'Orders', 'BDCs']
+        product_summary = product_summary.sort_values('Total Volume (LT/KG)', ascending=False)
+     
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.dataframe(product_summary, width='stretch', hide_index=True)
+        with col2:
+            for _, row in product_summary.iterrows():
+                pct = (row['Total Volume (LT/KG)'] / product_summary['Total Volume (LT/KG)'].sum()) * 100
+                st.metric(row['Product'], f"{pct:.1f}%")
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>🏦 BDC SUMMARY</h3>", unsafe_allow_html=True)
+        bdc_summary = df.groupby('BDC').agg({
+            'Quantity': 'sum',
+            'Order Number': 'count',
+            'Product': lambda x: x.nunique(),
+            'Depot': lambda x: x.nunique()
+        }).reset_index()
+        bdc_summary.columns = ['BDC', 'Total Volume (LT/KG)', 'Orders', 'Products', 'Depots']
+        bdc_summary = bdc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
+     
+        st.dataframe(bdc_summary, width='stretch', hide_index=True)
+     
+        if 'OMC' in df.columns and df['OMC'].notna().any():
+            st.markdown("<h3>🏢 OMC SUMMARY (MATCHED)</h3>", unsafe_allow_html=True)
+            st.info("📌 OMC names matched from OMC Loadings data using order numbers")
+         
+            omc_summary = df[df['OMC'].notna()].groupby('OMC').agg({
+                'Quantity': 'sum',
+                'Order Number': 'count',
+                'Product': lambda x: x.nunique(),
+                'BDC': lambda x: x.nunique()
+            }).reset_index()
+            omc_summary.columns = ['OMC', 'Total Volume (LT/KG)', 'Orders', 'Products', 'BDCs']
+            omc_summary = omc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
+         
+            st.dataframe(omc_summary, width='stretch', hide_index=True)
+         
+            st.markdown("---")
+        st.markdown("---")
+     
+        st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
+        pivot_data = df.pivot_table(
+            index='BDC',
+            columns='Product',
+            values='Quantity',
+            aggfunc='sum',
+            fill_value=0
+        ).reset_index()
+     
+        product_cols = [c for c in pivot_data.columns if c != 'BDC']
+        pivot_data['TOTAL'] = pivot_data[product_cols].sum(axis=1)
+        pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
+     
+        st.dataframe(pivot_data, width='stretch', hide_index=True)
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>📋 ORDER STATUS BREAKDOWN</h3>", unsafe_allow_html=True)
+        status_summary = df.groupby('Status').agg({
+            'Order Number': 'count',
+            'Quantity': 'sum'
+        }).reset_index()
+        status_summary.columns = ['Status', 'Orders', 'Total Volume (LT/KG)']
+        st.dataframe(status_summary, width='stretch', hide_index=True)
+     
+        st.markdown("---")
+     
+        st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
+     
+        col1, col2 = st.columns(2)
+     
+        with col1:
+            search_type = st.selectbox("Search By:", ["Product", "BDC", "Depot", "Status"], key='daily_search_type')
+     
+        with col2:
+            if search_type == "Product":
+                search_value = st.selectbox("Select Product:", ['ALL'] + sorted(df['Product'].unique().tolist()), key='daily_product_search')
+            elif search_type == "BDC":
+                search_value = st.selectbox("Select BDC:", ['ALL'] + sorted(df['BDC'].unique().tolist()), key='daily_bdc_search')
+            elif search_type == "Depot":
+                search_value = st.selectbox("Select Depot:", ['ALL'] + sorted(df['Depot'].unique().tolist()), key='daily_depot_search')
+            else:
+                search_value = st.selectbox("Select Status:", ['ALL'] + sorted(df['Status'].unique().tolist()), key='daily_status_search')
+     
+        if search_value == 'ALL':
+            filtered = df
+        else:
+            if search_type == "Product":
+                filtered = df[df['Product'] == search_value]
+            elif search_type == "BDC":
+                filtered = df[df['BDC'] == search_value]
+            elif search_type == "Depot":
+                filtered = df[df['Depot'] == search_value]
+            else:
+                filtered = df[df['Status'] == search_value]
+     
+        st.markdown(f"<h3>📋 FILTERED DATA: {search_value}</h3>", unsafe_allow_html=True)
+     
+        if not filtered.empty:
+            cols = st.columns(4)
+            with cols[0]:
+                st.metric("Filtered Orders", f"{len(filtered):,}")
+            with cols[1]:
+                st.metric("Filtered Volume", f"{filtered['Quantity'].sum():,.0f} LT")
+            with cols[2]:
+                st.metric("Unique BDCs", f"{filtered['BDC'].nunique()}")
+            with cols[3]:
+                st.metric("Filtered Value", f"₵{(filtered['Quantity'] * filtered['Price']).sum():,.0f}")
+     
+        display = filtered[['Date', 'OMC', 'Truck', 'Quantity', 'Order Number', 'BDC', 'Depot', 'Price', 'Product', 'Status']].sort_values(['Product', 'BDC', 'Date'])
+        st.dataframe(display, width='stretch', height=400, hide_index=True)
+     
+        st.markdown("---")
+        st.markdown("<h3>💾 EXPORT DATA</h3>", unsafe_allow_html=True)
         path = save_daily_orders_excel(df)
         if path and os.path.exists(path):
-            with open(path, 'rb') as fh:
-                st.download_button("⬇️ Download Excel", fh, os.path.basename(path),
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-
+            with open(path, 'rb') as f:
+                st.download_button("⬇️ DOWNLOAD EXCEL", f, os.path.basename(path), "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", width='stretch')
+    else:
+        st.info("👆 Select a date range and click the button above to fetch daily orders")
 def show_market_share():
-    _page_header("📊", "Market Share", "BDC positioning — stock share and sales volume ranked side by side")
-
-    has_balance  = bool(st.session_state.get('bdc_records'))
+    st.markdown("<h2>📊 BDC MARKET SHARE ANALYSIS</h2>", unsafe_allow_html=True)
+    st.info("🎯 Comprehensive market share analysis: Stock Balance + Sales Volume")
+    st.markdown("---")
+    has_balance = bool(st.session_state.get('bdc_records'))
     has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
-
-    if not has_balance and not has_loadings:
-        _no_data_prompt(
-            "Market Share needs BDC Balance and/or OMC Loadings data.\nFetch at least one dataset first.",
-            "🏦 BDC Balance or 🚚 OMC Loadings"
-        )
-        return
-
-    # Data availability chips
-    c1, c2, c3 = st.columns([2,2,2])
-    with c1:
+    st.markdown("### 📊 DATA AVAILABILITY")
+    col1, col2 = st.columns(2)
+    with col1:
         if has_balance:
-            st.success(f"✅ BDC Balance — {len(st.session_state.bdc_records):,} rows")
+            balance_df = pd.DataFrame(st.session_state.bdc_records)
+            st.success(f"✅ BDC Balance: {len(balance_df)} records")
         else:
-            st.warning("⚠️ BDC Balance not loaded")
-    with c2:
+            st.warning("⚠️ BDC Balance Data Not Loaded")
+    with col2:
         if has_loadings:
-            st.success(f"✅ OMC Loadings — {len(st.session_state.omc_df):,} rows")
+            loadings_df = st.session_state.omc_df
+            st.success(f"✅ OMC Loadings: {len(loadings_df)} records")
+            if 'omc_start_date' in st.session_state and 'omc_end_date' in st.session_state:
+                st.caption(f"Period: {st.session_state.omc_start_date.strftime('%Y/%m/%d')} to {st.session_state.omc_end_date.strftime('%Y/%m/%d')}")
         else:
-            st.warning("⚠️ OMC Loadings not loaded")
-
-    bal_df  = pd.DataFrame(st.session_state.bdc_records) if has_balance else pd.DataFrame()
-    load_df = st.session_state.omc_df if has_loadings else pd.DataFrame()
-    col_bal = 'ACTUAL BALANCE (LT\\KG)'
-
-    # BDC selector
-    all_bdcs = sorted(set(
-        (bal_df['BDC'].unique().tolist() if has_balance else []) +
-        (load_df['BDC'].unique().tolist() if has_loadings else [])
-    ))
-    selected_bdc = st.selectbox("🔍 Select a BDC to deep-dive:", all_bdcs, key='ms_bdc')
-    st.divider()
-
-    tab_stock, tab_sales, tab_combined = st.tabs(["📦 Stock Share", "🚚 Sales Share", "📊 Combined View"])
-
-    with tab_stock:
-        if not has_balance:
-            st.info("Load BDC Balance data to see stock share.")
-        else:
-            all_stock = bal_df.groupby('BDC')[col_bal].sum().sort_values(ascending=False)
-            total_stock = all_stock.sum()
-            bdc_stock   = float(all_stock.get(selected_bdc, 0))
-            share_pct   = bdc_stock / total_stock * 100 if total_stock > 0 else 0
-            rank        = list(all_stock.index).index(selected_bdc)+1 if selected_bdc in all_stock.index else 0
-
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Their Stock",    f"{bdc_stock:,.0f} LT")
-            k2.metric("Market Share",   f"{share_pct:.2f}%")
-            k3.metric("Rank",           f"#{rank} of {len(all_stock)}")
-
-            # Pie chart — top 10 + others
-            top10 = all_stock.head(10)
-            others_val = all_stock.iloc[10:].sum()
-            labels = list(top10.index) + (['Others'] if others_val > 0 else [])
-            values = list(top10.values) + ([others_val] if others_val > 0 else [])
-            colors = ['#ff00ff' if l == selected_bdc else f'rgba(0,255,255,{0.3+0.07*i})' for i,l in enumerate(labels)]
-            fig = go.Figure(go.Pie(labels=labels, values=values, hole=0.4,
-                                   marker=dict(colors=colors),
-                                   textinfo='label+percent', textfont=dict(size=12, color='white')))
-            fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', showlegend=False, height=360,
-                              title=dict(text=f'Stock Share — {selected_bdc} highlighted',
-                                         font=dict(color='#00ffff',family='Orbitron',size=13)),
-                              margin=dict(t=40,b=10,l=10,r=10))
-            st.plotly_chart(fig, width='stretch')
-
-            # Product breakdown for selected BDC
-            bdc_prods = bal_df[bal_df['BDC']==selected_bdc].groupby('Product')[col_bal].sum().reset_index()
-            if not bdc_prods.empty:
-                st.markdown(f"**{selected_bdc} — Stock by Product**")
-                st.dataframe(bdc_prods.rename(columns={col_bal:'Balance (LT)'}),
-                             width='stretch', hide_index=True)
-
-    with tab_sales:
-        if not has_loadings:
-            st.info("Load OMC Loadings data to see sales share.")
-        else:
-            all_sales = load_df.groupby('BDC')['Quantity'].sum().sort_values(ascending=False)
-            total_sales = all_sales.sum()
-            bdc_sales   = float(all_sales.get(selected_bdc, 0))
-            share_pct   = bdc_sales / total_sales * 100 if total_sales > 0 else 0
-            rank        = list(all_sales.index).index(selected_bdc)+1 if selected_bdc in all_sales.index else 0
-
-            k1, k2, k3 = st.columns(3)
-            k1.metric("Their Sales",  f"{bdc_sales:,.0f} LT")
-            k2.metric("Sales Share",  f"{share_pct:.2f}%")
-            k3.metric("Rank",         f"#{rank} of {len(all_sales)}")
-
-            top10s = all_sales.head(10)
-            others_v = all_sales.iloc[10:].sum()
-            labels2 = list(top10s.index) + (['Others'] if others_v > 0 else [])
-            values2 = list(top10s.values) + ([others_v] if others_v > 0 else [])
-            colors2 = ['#ff00ff' if l==selected_bdc else f'rgba(255,170,0,{0.3+0.07*i})' for i,l in enumerate(labels2)]
-            fig2 = go.Figure(go.Pie(labels=labels2, values=values2, hole=0.4,
-                                    marker=dict(colors=colors2),
-                                    textinfo='label+percent', textfont=dict(size=12, color='white')))
-            fig2.update_layout(paper_bgcolor='rgba(0,0,0,0)', showlegend=False, height=360,
-                               title=dict(text=f'Sales Share — {selected_bdc} highlighted',
-                                          font=dict(color='#ffaa00',family='Orbitron',size=13)),
-                               margin=dict(t=40,b=10,l=10,r=10))
-            st.plotly_chart(fig2, width='stretch')
-
-    with tab_combined:
-        if not has_balance or not has_loadings:
-            st.info("Combined view requires both BDC Balance and OMC Loadings data.")
-        else:
-            stock_series = bal_df.groupby('BDC')[col_bal].sum()
-            sales_series = load_df.groupby('BDC')['Quantity'].sum()
-            all_bdcs_set = sorted(set(stock_series.index) | set(sales_series.index))
-            comb = pd.DataFrame({
-                'BDC': all_bdcs_set,
-                'Stock (LT)': [float(stock_series.get(b,0)) for b in all_bdcs_set],
-                'Sales (LT)': [float(sales_series.get(b,0)) for b in all_bdcs_set],
-            })
-            comb['Stock Share %'] = (comb['Stock (LT)'] / comb['Stock (LT)'].sum() * 100).round(2)
-            comb['Sales Share %'] = (comb['Sales (LT)'] / comb['Sales (LT)'].sum() * 100).round(2)
-            comb['Stock/Sales Ratio'] = (comb['Stock (LT)'] / comb['Sales (LT)'].replace(0, float('nan'))).round(2)
-            comb = comb.sort_values('Sales (LT)', ascending=False)
-
-            st.dataframe(comb, width='stretch', hide_index=True)
-
-            # Scatter: stock share vs sales share
-            fig3 = go.Figure()
-            for _, row in comb.iterrows():
-                is_sel = row['BDC'] == selected_bdc
-                fig3.add_trace(go.Scatter(
-                    x=[row['Stock Share %']], y=[row['Sales Share %']],
-                    mode='markers+text', text=[row['BDC'][:15]],
-                    textposition='top center',
-                    textfont=dict(size=9, color='#ff00ff' if is_sel else '#888'),
-                    marker=dict(size=18 if is_sel else 10,
-                                color='#ff00ff' if is_sel else 'rgba(0,255,255,0.5)',
-                                line=dict(width=2, color='white') if is_sel else dict(width=0)),
-                    name=row['BDC'], showlegend=False,
-                ))
-            max_v = max(comb['Stock Share %'].max(), comb['Sales Share %'].max()) * 1.1
-            fig3.add_shape(type='line', x0=0, y0=0, x1=max_v, y1=max_v,
-                           line=dict(color='rgba(255,255,255,0.2)', dash='dot'))
-            fig3.update_layout(
-                title=dict(text='Stock Share vs Sales Share (diagonal = balanced)',
-                           font=dict(color='#00ffff',family='Orbitron',size=12)),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#e0e0e0'), height=420,
-                xaxis=dict(title='Stock Share %', gridcolor='rgba(255,255,255,0.05)'),
-                yaxis=dict(title='Sales Share %', gridcolor='rgba(255,255,255,0.05)'),
-                margin=dict(t=50,b=10,l=10,r=10),
-            )
-            st.plotly_chart(fig3, width='stretch')
-            st.caption("Points above the line: selling more than their stock share suggests. Below: sitting on more stock than they're moving.")
-
-
-def show_competitive_intel():
-    _page_header("🎯", "Competitive Intel", "Anomaly detection, price intelligence & BDC performance scoring")
-
-    has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
-    if not has_loadings:
-        _no_data_prompt("Competitive Intel requires OMC Loadings data.", "🚚 OMC Loadings")
+            st.warning("⚠️ OMC Loadings Data Not Loaded")
+    if not has_balance and not has_loadings:
+        st.error("❌ No data available for market share analysis")
+        st.info("Please fetch data from **BDC Balance** and/or **OMC Loadings** sections first.")
         return
-
-    df = st.session_state.omc_df
-
-    tab_anom, tab_price, tab_score = st.tabs([
-        "🚨 Anomaly Detection", "💰 Price Intelligence", "⭐ BDC Leaderboard"
-    ])
-
-    with tab_anom:
-        mean_vol = df['Quantity'].mean()
-        std_vol  = df['Quantity'].std()
-        threshold = mean_vol + 2 * std_vol
-        anomalies = df[df['Quantity'] > threshold]
-
-        k1, k2, k3, k4 = st.columns(4)
-        k1.metric("Avg Order Size", f"{mean_vol:,.0f} LT")
-        k2.metric("Threshold (2σ)", f"{threshold:,.0f} LT")
-        k3.metric("Anomalous Orders", f"{len(anomalies):,}")
-        k4.metric("Anomalous Volume", f"{anomalies['Quantity'].sum():,.0f} LT")
-
-        if anomalies.empty:
-            st.success("✅ No volume anomalies detected. All orders within 2 standard deviations.")
+    st.markdown("---")
+    st.markdown("### 🔍 SELECT BDC FOR ANALYSIS")
+    all_bdcs = set()
+    if has_balance:
+        all_bdcs.update(balance_df['BDC'].unique())
+    if has_loadings:
+        all_bdcs.update(loadings_df['BDC'].unique())
+    all_bdcs = sorted(list(all_bdcs))
+    if not all_bdcs:
+        st.error("❌ No BDCs found in data")
+        return
+    selected_bdc = st.selectbox("Choose BDC:", all_bdcs, key='market_share_bdc')
+    if not selected_bdc:
+        return
+    st.markdown("---")
+    st.markdown(f"## 📊 COMPREHENSIVE MARKET REPORT: {selected_bdc}")
+    st.markdown("---")
+    tab1, tab2, tab3 = st.tabs(["📦 Stock Balance", "🚚 Sales Volume", "📊 Combined Analysis"])
+    with tab1:
+        if not has_balance:
+            st.warning("⚠️ BDC Balance data not available. Please fetch it first.")
         else:
-            st.warning(f"🚨 {len(anomalies)} orders exceed the 2σ threshold of {threshold:,.0f} LT")
-            # Chart — distribution
-            fig = go.Figure()
-            fig.add_trace(go.Histogram(x=df['Quantity'], name='All Orders',
-                                       marker_color='rgba(0,255,255,0.4)', nbinsx=40))
-            fig.add_vline(x=threshold, line_color='#ff0000', line_dash='dash',
-                          annotation_text='2σ Threshold', annotation_font_color='#ff0000')
-            fig.add_vline(x=mean_vol, line_color='#00ff88', line_dash='dot',
-                          annotation_text='Mean', annotation_font_color='#00ff88')
-            fig.update_layout(
-                title=dict(text='Order Size Distribution', font=dict(color='#00ffff',family='Orbitron',size=13)),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#e0e0e0'), height=300, showlegend=False,
-                xaxis=dict(title='Order Size (LT)', gridcolor='rgba(255,255,255,0.04)'),
-                yaxis=dict(title='Count', gridcolor='rgba(255,255,255,0.04)'),
-                margin=dict(t=40,b=10,l=10,r=10))
-            st.plotly_chart(fig, width='stretch')
-            disp = [c for c in ['Date','BDC','OMC','Product','Quantity','Order Number'] if c in anomalies.columns]
-            st.dataframe(anomalies.nlargest(20,'Quantity')[disp], width='stretch', hide_index=True)
-
-        st.divider()
-        st.markdown("**Price Anomalies by Product**")
-        price_rows = []
-        for prod in ['PREMIUM','GASOIL','LPG']:
-            pdf = df[df['Product']==prod]
-            if len(pdf) > 1:
-                pm, ps = pdf['Price'].mean(), pdf['Price'].std()
-                hi = len(pdf[pdf['Price'] > pm + 2*ps])
-                lo = len(pdf[pdf['Price'] < pm - 2*ps])
-                price_rows.append({'Product':prod,'Avg Price':f"₵{pm:.2f}",
-                                   'High Price Anomalies':hi,'Low Price Anomalies':lo,'Total':hi+lo})
-        if price_rows:
-            st.dataframe(pd.DataFrame(price_rows), width='stretch', hide_index=True)
-
-    with tab_price:
-        price_stats = df.groupby(['BDC','Product'])['Price'].agg(
-            Avg='mean', Min='min', Max='max', Std='std'
-        ).reset_index()
-        overall_mean = df['Price'].mean()
-        price_stats['vs Market'] = price_stats['Avg'].apply(
-            lambda x: '🔴 Above' if x > overall_mean*1.05 else '🟢 Below' if x < overall_mean*0.95 else '🟡 Par'
-        )
-        price_stats['Avg'] = price_stats['Avg'].apply(lambda x: f"₵{x:.2f}")
-        price_stats['Min'] = price_stats['Min'].apply(lambda x: f"₵{x:.2f}")
-        price_stats['Max'] = price_stats['Max'].apply(lambda x: f"₵{x:.2f}")
-        price_stats['Std'] = price_stats['Std'].apply(lambda x: f"₵{x:.2f}" if pd.notna(x) else "—")
-
-        prod_filter = st.selectbox("Filter Product", ['ALL','PREMIUM','GASOIL','LPG'], key='ci_price_prod')
-        show_ps = price_stats if prod_filter=='ALL' else price_stats[price_stats['Product']==prod_filter]
-        st.dataframe(show_ps.sort_values('Avg', ascending=False), width='stretch', hide_index=True)
-
-        st.divider()
-        st.markdown("**Price Range by BDC (box plot)**")
-        for prod in ['PREMIUM','GASOIL','LPG']:
-            subset = df[df['Product']==prod]
-            if not subset.empty:
-                bdcs_sorted = subset.groupby('BDC')['Price'].mean().sort_values(ascending=False).index[:12]
-                subset_top = subset[subset['BDC'].isin(bdcs_sorted)]
-                fig_box = go.Figure()
-                for bdc in bdcs_sorted:
-                    bdc_prices = subset_top[subset_top['BDC']==bdc]['Price']
-                    fig_box.add_trace(go.Box(y=bdc_prices, name=bdc, boxpoints=False,
-                                             marker_color='rgba(0,255,255,0.6)'))
-                fig_box.update_layout(
-                    title=dict(text=f'{prod} — Price Range by BDC', font=dict(color='#00ffff',family='Orbitron',size=12)),
-                    paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                    font=dict(color='#e0e0e0'), height=280, showlegend=False,
-                    yaxis=dict(title='Price (₵)', gridcolor='rgba(255,255,255,0.04)'),
-                    margin=dict(t=40,b=60,l=10,r=10), xaxis=dict(tickangle=-30))
-                st.plotly_chart(fig_box, width='stretch')
-
-    with tab_score:
-        bdc_vols   = df.groupby('BDC')['Quantity'].sum()
-        bdc_orders = df.groupby('BDC').size()
-        bdc_prods  = df.groupby('BDC')['Product'].nunique()
-
-        scores = []
-        for bdc in df['BDC'].unique():
-            vol_s   = (bdc_vols[bdc] / bdc_vols.max()) * 40
-            ord_s   = (bdc_orders[bdc] / bdc_orders.max()) * 30
-            div_s   = (bdc_prods[bdc] / 3) * 30
-            total   = vol_s + ord_s + div_s
-            grade   = 'A+' if total>=90 else 'A' if total>=80 else 'B' if total>=70 else 'C' if total>=60 else 'D'
-            scores.append({'BDC':bdc,'Vol Score':round(vol_s,1),'Order Score':round(ord_s,1),
-                           'Diversity Score':round(div_s,1),'Total':round(total,1),'Grade':grade})
-
-        scores_df = pd.DataFrame(scores).sort_values('Total', ascending=False).reset_index(drop=True)
-        scores_df.insert(0,'Rank', range(1, len(scores_df)+1))
-
-        # Top 3 podium
-        medals = ['🥇','🥈','🥉']
-        medal_colors = ['#FFD700','#C0C0C0','#CD7F32']
-        podium_cols = st.columns(3)
-        for i, (_, row) in enumerate(scores_df.head(3).iterrows()):
-            with podium_cols[i]:
+            st.markdown("### 📦 STOCK BALANCE MARKET SHARE")
+            balance_col = 'ACTUAL BALANCE (LT\\KG)'
+            bdc_balance_data = balance_df[balance_df['BDC'] == selected_bdc]
+            total_market_stock = balance_df[balance_col].sum()
+            bdc_total_stock = bdc_balance_data[balance_col].sum()
+            bdc_stock_share = (bdc_total_stock / total_market_stock * 100) if total_market_stock > 0 else 0
+            all_bdc_stocks = balance_df.groupby('BDC')[balance_col].sum().sort_values(ascending=False)
+            stock_rank = list(all_bdc_stocks.index).index(selected_bdc) + 1 if selected_bdc in all_bdc_stocks.index else 0
+            cols = st.columns(3)
+            with cols[0]:
                 st.markdown(f"""
-                <div style='background:rgba(22,33,62,0.7); padding:18px 12px; border-radius:12px;
-                             border:2px solid {medal_colors[i]}; text-align:center;'>
-                    <div style='font-size:36px;'>{medals[i]}</div>
-                    <div style='color:#00ffff; font-weight:700; font-size:13px; margin:6px 0;'>{row['BDC']}</div>
-                    <div style='color:{medal_colors[i]}; font-size:28px; font-weight:900;'>{row['Total']:.0f}</div>
-                    <div style='color:#888; font-size:12px;'>Grade {row['Grade']}</div>
-                </div>""", unsafe_allow_html=True)
-
-        st.divider()
-
-        # Full leaderboard with bar chart
-        fig_lb = go.Figure(go.Bar(
-            x=scores_df['Total'], y=scores_df['BDC'], orientation='h',
-            marker=dict(
-                color=scores_df['Total'],
-                colorscale=[[0,'rgba(0,80,120,0.6)'],[0.5,'rgba(0,200,200,0.7)'],[1,'rgba(255,0,255,0.8)']],
-                showscale=False,
-            ),
-            text=scores_df['Grade'], textposition='outside',
-        ))
-        fig_lb.update_layout(
-            title=dict(text='BDC Performance Scores', font=dict(color='#00ffff',family='Orbitron',size=13)),
-            paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-            font=dict(color='#e0e0e0'), height=max(320, len(scores_df)*22),
-            xaxis=dict(range=[0,105], showgrid=False, showticklabels=False),
-            yaxis=dict(tickfont=dict(size=11)),
-            margin=dict(t=40,b=10,l=10,r=60),
+                <div class='metric-card'>
+                    <h2>TOTAL STOCK</h2>
+                    <h1>{bdc_total_stock:,.0f}</h1>
+                    <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with cols[1]:
+                st.markdown(f"""
+                <div class='metric-card'>
+                    <h2>MARKET SHARE</h2>
+                    <h1>{bdc_stock_share:.2f}%</h1>
+                    <p style='color: #888; font-size: 14px; margin: 0;'>of Total Stock</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with cols[2]:
+                st.markdown(f"""
+                <div class='metric-card'>
+                    <h2>STOCK RANK</h2>
+                    <h1>#{stock_rank}</h1>
+                    <p style='color: #888; font-size: 14px; margin: 0;'>out of {len(all_bdc_stocks)}</p>
+                </div>
+                """, unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown("#### 📦 Stock by Product (PMS, AGO, LPG)")
+            product_stock_data = []
+            for product in ['PREMIUM', 'GASOIL', 'LPG']:
+                market_product_stock = balance_df[balance_df['Product'] == product][balance_col].sum()
+                bdc_product_stock = bdc_balance_data[bdc_balance_data['Product'] == product][balance_col].sum()
+                product_share = (bdc_product_stock / market_product_stock * 100) if market_product_stock > 0 else 0
+                product_stock_data.append({
+                    'Product': product,
+                    'BDC Stock (LT/KG)': bdc_product_stock,
+                    'Market Total (LT/KG)': market_product_stock,
+                    'Market Share (%)': product_share
+                })
+            stock_product_df = pd.DataFrame(product_stock_data)
+            st.dataframe(stock_product_df, width='stretch', hide_index=True)
+            cols = st.columns(3)
+            for idx, row in stock_product_df.iterrows():
+                with cols[idx]:
+                    st.markdown(f"""
+                    <div style='background: rgba(22,33,62,0.6); padding: 15px; border-radius: 10px;
+                                border: 2px solid #00ffff; margin: 5px 0;'>
+                        <h3 style='color: #ff00ff; margin: 0;'>{row['Product']}</h3>
+                        <div style='margin-top: 10px;'>
+                            <p style='color: #888; margin: 5px 0; font-size: 14px;'>BDC Stock</p>
+                            <p style='color: #00ffff; margin: 0; font-size: 20px; font-weight: bold;'>
+                                {row['BDC Stock (LT/KG)']:,.0f} LT
+                            </p>
+                        </div>
+                        <div style='margin-top: 10px;'>
+                            <p style='color: #888; margin: 5px 0; font-size: 14px;'>Market Share</p>
+                            <p style='color: #00ff88; margin: 0; font-size: 24px; font-weight: bold;'>
+                                {row['Market Share (%)']:.2f}%
+                            </p>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+    with tab2:
+        if not has_loadings:
+            st.warning("⚠️ OMC Loadings data not available. Please fetch it first.")
+        else:
+            st.markdown("### 🚚 SALES VOLUME MARKET SHARE")
+            if 'omc_start_date' in st.session_state and 'omc_end_date' in st.session_state:
+                st.info(f"📅 Analysis Period: {st.session_state.omc_start_date.strftime('%Y/%m/%d')} to {st.session_state.omc_end_date.strftime('%Y/%m/%d')}")
+            sales_col = 'Quantity'
+            bdc_sales_data = loadings_df[loadings_df['BDC'] == selected_bdc]
+            total_market_sales = loadings_df[sales_col].sum()
+            bdc_total_sales = bdc_sales_data[sales_col].sum()
+            bdc_sales_share = (bdc_total_sales / total_market_sales * 100) if total_market_sales > 0 else 0
+            all_bdc_sales = loadings_df.groupby('BDC')[sales_col].sum().sort_values(ascending=False)
+            sales_rank = list(all_bdc_sales.index).index(selected_bdc) + 1 if selected_bdc in all_bdc_sales.index else 0
+            total_bdc_count = len(all_bdc_sales)
+            bdc_revenue = (bdc_sales_data[sales_col] * bdc_sales_data['Price']).sum()
+            cols = st.columns(4)
+            with cols[0]:
+                st.markdown(f"""
+                <div class='metric-card'>
+                    <h2>TOTAL SALES</h2>
+                    <h1>{bdc_total_sales:,.0f}</h1>
+                    <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG Sold</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with cols[1]:
+                st.markdown(f"""
+                <div class='metric-card'>
+                    <h2>MARKET SHARE</h2>
+                    <h1>{bdc_sales_share:.2f}%</h1>
+                    <p style='color: #888; font-size: 14px; margin: 0;'>of Total Sales</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with cols[2]:
+                st.markdown(f"""
+                <div class='metric-card'>
+                    <h2>OVERALL RANK</h2>
+                    <h1>#{sales_rank}</h1>
+                    <p style='color: #888; font-size: 14px; margin: 0;'>out of {total_bdc_count} BDCs</p>
+                </div>
+                """, unsafe_allow_html=True)
+            with cols[3]:
+                st.markdown(f"""
+                <div class='metric-card'>
+                    <h2>REVENUE</h2>
+                    <h1>₵{bdc_revenue/1000000:,.1f}M</h1>
+                    <p style='color: #888; font-size: 14px; margin: 0;'>Total Value</p>
+                </div>
+                """, unsafe_allow_html=True)
+            st.markdown("---")
+            product_rank_lookup = {}
+            for product in ['PREMIUM', 'GASOIL', 'LPG']:
+                prod_bdc_sales = (
+                    loadings_df[loadings_df['Product'] == product]
+                    .groupby('BDC')[sales_col]
+                    .sum()
+                    .sort_values(ascending=False)
+                )
+                if selected_bdc in prod_bdc_sales.index:
+                    rank = list(prod_bdc_sales.index).index(selected_bdc) + 1
+                else:
+                    rank = None
+                product_rank_lookup[product] = {
+                    'rank': rank,
+                    'total': len(prod_bdc_sales)
+                }
+            st.markdown("#### 🚚 Sales by Product (PMS, AGO, LPG)")
+            product_sales_data = []
+            for product in ['PREMIUM', 'GASOIL', 'LPG']:
+                market_product_sales = loadings_df[loadings_df['Product'] == product][sales_col].sum()
+                bdc_product_sales = bdc_sales_data[bdc_sales_data['Product'] == product][sales_col].sum()
+                product_share = (bdc_product_sales / market_product_sales * 100) if market_product_sales > 0 else 0
+                bdc_orders = len(bdc_sales_data[bdc_sales_data['Product'] == product])
+                rank_info = product_rank_lookup[product]
+                rank_str = (
+                    f"#{rank_info['rank']} / {rank_info['total']}"
+                    if rank_info['rank'] is not None
+                    else f"N/A / {rank_info['total']}"
+                )
+                product_sales_data.append({
+                    'Product': product,
+                    'BDC Sales (LT/KG)': bdc_product_sales,
+                    'Market Total (LT/KG)': market_product_sales,
+                    'Market Share (%)': round(product_share, 2),
+                    'Rank (by Product)': rank_str,
+                    'Orders': bdc_orders
+                })
+            sales_product_df = pd.DataFrame(product_sales_data)
+            st.dataframe(sales_product_df, width='stretch', hide_index=True)
+            st.markdown("#### 🏆 Per-Product BDC Rankings (Top 5)")
+            rank_cols = st.columns(3)
+            for col_idx, product in enumerate(['PREMIUM', 'GASOIL', 'LPG']):
+                with rank_cols[col_idx]:
+                    prod_bdc_sales = (
+                        loadings_df[loadings_df['Product'] == product]
+                        .groupby('BDC')[sales_col]
+                        .sum()
+                        .sort_values(ascending=False)
+                        .head(5)
+                        .reset_index()
+                    )
+                    prod_bdc_sales.columns = ['BDC', 'Volume (LT)']
+                    prod_bdc_sales.insert(0, 'Rank', range(1, len(prod_bdc_sales) + 1))
+                    rows_html = ""
+                    for _, r in prod_bdc_sales.iterrows():
+                        is_selected = (r['BDC'] == selected_bdc)
+                        row_color = "#ff00ff" if is_selected else "#e0e0e0"
+                        bg_color = "rgba(255,0,255,0.15)" if is_selected else "transparent"
+                        medal = {1: "🥇", 2: "🥈", 3: "🥉"}.get(int(r['Rank']), "")
+                        rows_html += f"""
+                        <tr style='background:{bg_color};'>
+                            <td style='color:{row_color}; padding:6px 8px; font-weight:{"bold" if is_selected else "normal"};'>
+                                {medal} #{int(r['Rank'])}
+                            </td>
+                            <td style='color:{row_color}; padding:6px 8px; font-weight:{"bold" if is_selected else "normal"};
+                                       max-width:140px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;'
+                                title='{r["BDC"]}'>
+                                {r['BDC'][:18] + "…" if len(r['BDC']) > 18 else r['BDC']}
+                            </td>
+                            <td style='color:{row_color}; padding:6px 8px; text-align:right; font-weight:{"bold" if is_selected else "normal"};'>
+                                {r['Volume (LT)']:,.0f}
+                            </td>
+                        </tr>"""
+                    rank_info = product_rank_lookup[product]
+                    selected_not_in_top5 = selected_bdc not in prod_bdc_sales['BDC'].values
+                    if selected_not_in_top5 and rank_info['rank'] is not None:
+                        bdc_vol = bdc_sales_data[bdc_sales_data['Product'] == product][sales_col].sum()
+                        rows_html += f"""
+                        <tr>
+                            <td colspan='3' style='color:#888; padding:4px 8px; font-size:12px;'>⋯ {rank_info['rank'] - 5} more BDCs ⋯</td>
+                        </tr>
+                        <tr style='background:rgba(255,0,255,0.15);'>
+                            <td style='color:#ff00ff; padding:6px 8px; font-weight:bold;'>#{rank_info['rank']}</td>
+                            <td style='color:#ff00ff; padding:6px 8px; font-weight:bold;'
+                                title='{selected_bdc}'>
+                                {selected_bdc[:18] + "…" if len(selected_bdc) > 18 else selected_bdc}
+                            </td>
+                            <td style='color:#ff00ff; padding:6px 8px; text-align:right; font-weight:bold;'>
+                                {bdc_vol:,.0f}
+                            </td>
+                        </tr>"""
+                    st.markdown(f"""
+                    <div style='background:rgba(22,33,62,0.6); border-radius:10px;
+                                border:2px solid #00ffff; padding:12px; margin-bottom:8px;'>
+                        <p style='color:#00ffff; font-family:Orbitron,sans-serif; font-size:14px;
+                                  margin:0 0 8px 0; font-weight:bold; text-align:center;'>{product}</p>
+                        <table style='width:100%; border-collapse:collapse; font-family:Rajdhani,sans-serif; font-size:13px;'>
+                            <thead>
+                                <tr style='border-bottom:1px solid rgba(0,255,255,0.3);'>
+                                    <th style='color:#888; padding:4px 8px; text-align:left;'>Rank</th>
+                                    <th style='color:#888; padding:4px 8px; text-align:left;'>BDC</th>
+                                    <th style='color:#888; padding:4px 8px; text-align:right;'>Volume (LT)</th>
+                                </tr>
+                            </thead>
+                            <tbody>{rows_html}</tbody>
+                        </table>
+                    </div>
+                    """, unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown("#### 📊 Product Detail Cards")
+            cols = st.columns(3)
+            for idx, row in enumerate(product_sales_data):
+                rank_info = product_rank_lookup[row['Product']]
+                rank_display = (
+                    f"#{rank_info['rank']} of {rank_info['total']}"
+                    if rank_info['rank'] is not None
+                    else "No sales"
+                )
+                with cols[idx]:
+                    st.markdown(f"""
+                    <div style='background: rgba(22,33,62,0.6); padding: 15px; border-radius: 10px;
+                                border: 2px solid #ff00ff; margin: 5px 0;'>
+                        <h3 style='color: #00ffff; margin: 0;'>{row['Product']}</h3>
+                        <div style='margin-top: 10px;'>
+                            <p style='color: #888; margin: 5px 0; font-size: 14px;'>BDC Sales</p>
+                            <p style='color: #00ffff; margin: 0; font-size: 20px; font-weight: bold;'>
+                                {row['BDC Sales (LT/KG)']:,.0f} LT
+                            </p>
+                        </div>
+                        <div style='margin-top: 10px;'>
+                            <p style='color: #888; margin: 5px 0; font-size: 14px;'>Market Share</p>
+                            <p style='color: #00ff88; margin: 0; font-size: 24px; font-weight: bold;'>
+                                {row['Market Share (%)']:.2f}%
+                            </p>
+                        </div>
+                        <div style='margin-top: 10px;'>
+                            <p style='color: #888; margin: 5px 0; font-size: 14px;'>Rank (this product)</p>
+                            <p style='color: #ffaa00; margin: 0; font-size: 20px; font-weight: bold;'>
+                                {rank_display}
+                            </p>
+                        </div>
+                        <div style='margin-top: 10px;'>
+                            <p style='color: #888; margin: 5px 0; font-size: 14px;'>Orders</p>
+                            <p style='color: #ffffff; margin: 0; font-size: 16px;'>
+                                {row['Orders']:,}
+                            </p>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+    with tab3:
+        st.markdown("### 📊 STOCK vs SALES COMPARISON")
+        if not has_balance or not has_loadings:
+            st.warning("⚠️ Both BDC Balance and OMC Loadings data required for combined analysis")
+            st.info("Please fetch both datasets to see the complete picture.")
+        else:
+            st.markdown("#### 🎯 Performance Overview")
+            cols = st.columns(2)
+            with cols[0]:
+                st.markdown(f"""
+                <div style='background: rgba(22,33,62,0.6); padding: 20px; border-radius: 15px;
+                            border: 2px solid #00ffff;'>
+                    <h3 style='color: #00ffff; margin: 0;'>📦 STOCK POSITION</h3>
+                    <p style='color: #ffffff; margin: 10px 0; font-size: 28px; font-weight: bold;'>
+                        {bdc_total_stock:,.0f} LT
+                    </p>
+                    <p style='color: #00ff88; margin: 5px 0; font-size: 20px;'>
+                        {bdc_stock_share:.2f}% Market Share
+                    </p>
+                    <p style='color: #888; margin: 5px 0;'>
+                        Rank #{stock_rank} in Stock
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+            with cols[1]:
+                st.markdown(f"""
+                <div style='background: rgba(22,33,62,0.6); padding: 20px; border-radius: 15px;
+                            border: 2px solid #ff00ff;'>
+                    <h3 style='color: #ff00ff; margin: 0;'>🚚 SALES VOLUME</h3>
+                    <p style='color: #ffffff; margin: 10px 0; font-size: 28px; font-weight: bold;'>
+                        {bdc_total_sales:,.0f} LT
+                    </p>
+                    <p style='color: #00ff88; margin: 5px 0; font-size: 20px;'>
+                        {bdc_sales_share:.2f}% Market Share
+                    </p>
+                    <p style='color: #888; margin: 5px 0;'>
+                        Rank #{sales_rank} in Sales
+                    </p>
+                </div>
+                """, unsafe_allow_html=True)
+            st.markdown("---")
+            st.markdown("#### 📊 Stock vs Sales by Product")
+            comparison_data = []
+            for product in ['PREMIUM', 'GASOIL', 'LPG']:
+                bdc_stock = stock_product_df[stock_product_df['Product'] == product]['BDC Stock (LT/KG)'].values[0] if len(stock_product_df) > 0 else 0
+                stock_share = stock_product_df[stock_product_df['Product'] == product]['Market Share (%)'].values[0] if len(stock_product_df) > 0 else 0
+                bdc_sales_row = next((r for r in product_sales_data if r['Product'] == product), {})
+                bdc_sales_vol = bdc_sales_row.get('BDC Sales (LT/KG)', 0)
+                sales_share = bdc_sales_row.get('Market Share (%)', 0)
+                rank_info = product_rank_lookup[product]
+                rank_str = (
+                    f"#{rank_info['rank']} / {rank_info['total']}"
+                    if rank_info['rank'] is not None
+                    else f"N/A / {rank_info['total']}"
+                )
+                comparison_data.append({
+                    'Product': product,
+                    'Stock (LT)': bdc_stock,
+                    'Stock Share (%)': stock_share,
+                    'Sales (LT)': bdc_sales_vol,
+                    'Sales Share (%)': sales_share,
+                    'Sales Rank (Product)': rank_str,
+                    'Stock/Sales Ratio': f"{(bdc_stock / bdc_sales_vol):.2f}x" if bdc_sales_vol > 0 else "N/A"
+                })
+            comparison_df = pd.DataFrame(comparison_data)
+            st.dataframe(comparison_df, width='stretch', hide_index=True)
+            st.markdown("---")
+            st.markdown("### 💾 EXPORT COMPLETE REPORT")
+            if st.button("📄 GENERATE EXCEL REPORT", width='stretch'):
+                output_dir = os.path.join(os.getcwd(), "market_share_reports")
+                os.makedirs(output_dir, exist_ok=True)
+                filename = f"market_share_{selected_bdc}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                filepath = os.path.join(output_dir, filename)
+                with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                    stock_product_df.to_excel(writer, sheet_name='Stock Analysis', index=False)
+                    pd.DataFrame(product_sales_data).to_excel(writer, sheet_name='Sales Analysis', index=False)
+                    comparison_df.to_excel(writer, sheet_name='Stock vs Sales', index=False)
+                st.success(f"✅ Report generated: {filename}")
+                with open(filepath, 'rb') as f:
+                    st.download_button(
+                        "⬇️ DOWNLOAD REPORT",
+                        f,
+                        filename,
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        width='stretch'
+                    )
+def show_competitive_intel():
+    st.markdown("<h2>🎯 COMPETITIVE INTELLIGENCE CENTER</h2>", unsafe_allow_html=True)
+    st.info("🔥 Advanced analytics: Anomaly Detection, Price Intelligence, Performance Scoring & Trend Forecasting")
+    st.markdown("---")
+ 
+    has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
+ 
+    if not has_loadings:
+        st.warning("⚠️ OMC Loadings data required for competitive intelligence")
+        st.info("Please fetch OMC Loadings data first to unlock these features!")
+        return
+ 
+    loadings_df = st.session_state.omc_df
+ 
+    tab1, tab2, tab3 = st.tabs([
+        "🚨 Anomaly Detection",
+        "💰 Price Intelligence",
+        "⭐ Performance Score & Rankings"
+    ])
+ 
+    with tab1:
+        st.markdown("### 🚨 ANOMALY DETECTION ENGINE")
+        st.caption("Automatically detect unusual patterns in orders and pricing")
+     
+        mean_vol = loadings_df['Quantity'].mean()
+        std_vol = loadings_df['Quantity'].std()
+        anomaly_threshold = mean_vol + (2 * std_vol)
+        volume_anomalies = loadings_df[loadings_df['Quantity'] > anomaly_threshold]
+     
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Volume Anomalies", len(volume_anomalies))
+        with col2:
+            st.metric("Anomalous Volume", f"{volume_anomalies['Quantity'].sum():,.0f} LT")
+        with col3:
+            st.metric("Threshold", f"{anomaly_threshold:,.0f} LT")
+     
+        if not volume_anomalies.empty:
+            st.warning(f"🚨 {len(volume_anomalies)} abnormally large orders detected!")
+            top_anomalies = volume_anomalies.nlargest(10, 'Quantity')[
+                ['Date', 'BDC', 'OMC', 'Product', 'Quantity', 'Order Number']
+            ]
+            st.dataframe(top_anomalies, width='stretch', hide_index=True)
+     
+        st.markdown("---")
+     
+        st.markdown("#### 💰 Price Anomalies by Product")
+        price_data = []
+        for product in ['PREMIUM', 'GASOIL', 'LPG']:
+            pdf = loadings_df[loadings_df['Product'] == product]
+            if len(pdf) > 0:
+                pmean = pdf['Price'].mean()
+                pstd = pdf['Price'].std()
+                high_anom = len(pdf[pdf['Price'] > pmean + (2 * pstd)])
+                low_anom = len(pdf[pdf['Price'] < pmean - (2 * pstd)])
+             
+                price_data.append({
+                    'Product': product,
+                    'Avg Price': f"₵{pmean:.2f}",
+                    'High Price Anomalies': high_anom,
+                    'Low Price Anomalies': low_anom,
+                    'Total Anomalies': high_anom + low_anom
+                })
+     
+        st.dataframe(pd.DataFrame(price_data), width='stretch', hide_index=True)
+ 
+    with tab2:
+        st.markdown("### 💰 PRICE INTELLIGENCE DASHBOARD")
+     
+        price_stats = loadings_df.groupby(['BDC', 'Product'])['Price'].agg(['mean', 'min', 'max']).reset_index()
+        price_stats.columns = ['BDC', 'Product', 'Avg Price', 'Min Price', 'Max Price']
+     
+        overall_mean = loadings_df['Price'].mean()
+        price_stats['Tier'] = price_stats['Avg Price'].apply(
+            lambda x: '🔴 Premium' if x > overall_mean * 1.1 else '🟢 Competitive'
         )
-        st.plotly_chart(fig_lb, width='stretch')
+     
+        st.dataframe(price_stats.sort_values('Avg Price', ascending=False), width='stretch', hide_index=True)
+     
+        st.markdown("---")
+     
+        st.markdown("#### 💡 Best Pricing Opportunities")
+        opportunities = []
+        for product in ['PREMIUM', 'GASOIL', 'LPG']:
+            pdf = loadings_df[loadings_df['Product'] == product]
+            if len(pdf) > 0:
+                bdc_prices = pdf.groupby('BDC')['Price'].mean()
+                min_bdc = bdc_prices.idxmin()
+                max_bdc = bdc_prices.idxmax()
+             
+                opportunities.append({
+                    'Product': product,
+                    'Lowest': f"{min_bdc} (₵{bdc_prices.min():.2f})",
+                    'Highest': f"{max_bdc} (₵{bdc_prices.max():.2f})",
+                    'Gap': f"₵{(bdc_prices.max() - bdc_prices.min()):.2f}"
+                })
+     
+        st.dataframe(pd.DataFrame(opportunities), width='stretch', hide_index=True)
+ 
+    with tab3:
+        st.markdown("### ⭐ BDC PERFORMANCE LEADERBOARD")
+     
+        scores = []
+        for bdc in loadings_df['BDC'].unique():
+            bdc_df = loadings_df[loadings_df['BDC'] == bdc]
+         
+            vol = bdc_df['Quantity'].sum()
+            max_vol = loadings_df.groupby('BDC')['Quantity'].sum().max()
+            vol_score = (vol / max_vol) * 40
+         
+            orders = len(bdc_df)
+            max_orders = loadings_df.groupby('BDC').size().max()
+            order_score = (orders / max_orders) * 30
+         
+            products = bdc_df['Product'].nunique()
+            diversity_score = (products / 3) * 30
+         
+            total = vol_score + order_score + diversity_score
+            grade = 'A+' if total >= 90 else 'A' if total >= 80 else 'B' if total >= 70 else 'C' if total >= 60 else 'D'
+         
+            scores.append({
+                'BDC': bdc,
+                'Volume Score': round(vol_score, 1),
+                'Orders Score': round(order_score, 1),
+                'Diversity Score': round(diversity_score, 1),
+                'Total Score': round(total, 1),
+                'Grade': grade
+            })
+     
+        scores_df = pd.DataFrame(scores).sort_values('Total Score', ascending=False)
+        scores_df.insert(0, 'Rank', range(1, len(scores_df) + 1))
+        scores_df['Medal'] = scores_df['Rank'].apply(lambda x: '🥇' if x==1 else '🥈' if x==2 else '🥉' if x==3 else '')
+     
         st.dataframe(scores_df, width='stretch', hide_index=True)
-
-
+     
+        st.markdown("---")
+     
+        st.markdown("#### 🏆 TOP 3 CHAMPIONS")
+        cols = st.columns(3)
+        for idx, (_, row) in enumerate(scores_df.head(3).iterrows()):
+            with cols[idx]:
+                border_color = "#FFD700" if idx==0 else "#C0C0C0" if idx==1 else "#CD7F32"
+                st.markdown(f"""
+                <div style='background: rgba(22,33,62,0.6); padding: 20px; border-radius: 15px;
+                            border: 3px solid {border_color}; text-align: center;'>
+                    <p style='font-size: 48px; margin: 0;'>{row['Medal']}</p>
+                    <h3 style='color: #00ffff; margin: 10px 0;'>{row['BDC']}</h3>
+                    <p style='color: #00ff88; font-size: 32px; margin: 10px 0;'>{row['Total Score']:.1f}</p>
+                    <p style='color: #ffffff; font-size: 24px; margin: 5px 0;'>Grade: {row['Grade']}</p>
+                </div>
+                """, unsafe_allow_html=True)
+     
+        st.markdown("---")
+     
+        st.markdown("#### 🔍 Check Any BDC")
+        selected = st.selectbox("Select BDC:", scores_df['BDC'].unique())
+     
+        if selected:
+            bdc_score = scores_df[scores_df['BDC'] == selected].iloc[0]
+         
+            st.markdown(f"""
+            <div style='background: rgba(22,33,62,0.6); padding: 30px; border-radius: 15px;
+                        border: 2px solid #00ffff; text-align: center; margin: 20px 0;'>
+                <h2 style='color: #ff00ff; margin: 0;'>{selected}</h2>
+                <p style='color: #ffffff; font-size: 64px; margin: 20px 0;'>{bdc_score['Total Score']:.1f}/100</p>
+                <p style='color: #00ff88; font-size: 36px; margin: 10px 0;'>Grade: {bdc_score['Grade']}</p>
+                <p style='color: #888; margin: 10px 0;'>Rank #{int(bdc_score['Rank'])} of {len(scores_df)}</p>
+            </div>
+            """, unsafe_allow_html=True)
+         
+            cols = st.columns(3)
+            with cols[0]:
+                st.metric("Volume Score", f"{bdc_score['Volume Score']:.1f}/40")
+            with cols[1]:
+                st.metric("Orders Score", f"{bdc_score['Orders Score']:.1f}/30")
+            with cols[2]:
+                st.metric("Diversity Score", f"{bdc_score['Diversity Score']:.1f}/30")
 def show_stock_transaction():
     st.markdown("<h2>📈 STOCK TRANSACTION ANALYZER</h2>", unsafe_allow_html=True)
     st.info("🔥 Track BDC transactions: Inflows, Outflows, Sales & Intelligent Stockout Forecasting")
@@ -2386,36 +2756,65 @@ def show_national_stockout():
     """
     st.markdown("<h2>🌍 NATIONAL STOCKOUT FORECAST</h2>", unsafe_allow_html=True)
 
-    # ── Date range + fetch ────────────────────────────────────────────────────
-    has_results = st.session_state.get('ns_results') is not None
+    st.markdown("""
+    <div style='background:rgba(0,255,255,0.06); border:1.5px solid #00ffff;
+                border-radius:12px; padding:18px 22px; margin-bottom:16px;'>
+        <p style='color:#00ffff; font-family:Orbitron,sans-serif; font-size:15px;
+                  font-weight:700; margin:0 0 10px;'>📐 METHODOLOGY — 2 API CALLS ONLY</p>
+        <table style='width:100%; font-family:Rajdhani,sans-serif; font-size:14px; border-collapse:collapse;'>
+            <tr>
+                <td style='color:#ffaa00; padding:4px 8px; font-weight:700; white-space:nowrap;'>📦 National Stock</td>
+                <td style='color:#e0e0e0; padding:4px 8px;'>BDC Balance report — current stock snapshot across all BDCs &amp; depots <span style='color:#888;'>[Call 1]</span></td>
+            </tr>
+            <tr>
+                <td style='color:#00ff88; padding:4px 8px; font-weight:700; white-space:nowrap;'>🚚 National Depletion</td>
+                <td style='color:#e0e0e0; padding:4px 8px;'>OMC Loadings — all released orders from all BDCs to all OMCs <span style='color:#888;'>[Call 2]</span></td>
+            </tr>
+            <tr style='border-top:1px solid rgba(0,255,255,0.2);'>
+                <td style='color:#00ffff; padding:8px 8px 4px; font-weight:700; white-space:nowrap;'>📅 Days of Supply</td>
+                <td style='color:#ffffff; padding:8px 8px 4px; font-weight:700;'>National Stock ÷ (OMC Loadings ÷ Period Days)</td>
+            </tr>
+            <tr>
+                <td style='color:#888; padding:4px 8px; font-size:12px; white-space:nowrap;'>❌ CTO excluded</td>
+                <td style='color:#888; padding:4px 8px; font-size:12px;'>Custody Transfer Out = internal BDC→BDC accounting only. Fuel stays in Ghana's national system, so it does not reduce supply.</td>
+            </tr>
+        </table>
+    </div>
+    """, unsafe_allow_html=True)
 
-    col1, col2, col3 = st.columns([2, 2, 2])
+    st.markdown("---")
+
+    # ── Date range ────────────────────────────────────────────────────────────
+    st.markdown("### 📅 SELECT ANALYSIS PERIOD")
+    st.caption(
+        "The period is used to compute the average daily depletion rate. "
+        "30 days gives a stable estimate; shorter windows capture recent trends."
+    )
+
+    col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input("From", value=datetime.now() - timedelta(days=30), key='ns_start')
     with col2:
         end_date   = st.date_input("To",   value=datetime.now(),                       key='ns_end')
-    with col3:
-        st.markdown("<div style='padding-top:26px'>", unsafe_allow_html=True)
-        fetch_btn = st.button("⚡ Fetch & Analyse", key='ns_fetch')
-        st.markdown("</div>", unsafe_allow_html=True)
 
     start_str  = start_date.strftime("%m/%d/%Y")
     end_str    = end_date.strftime("%m/%d/%Y")
     period_days = max((end_date - start_date).days, 1)
 
-    with st.expander("📐 How this works (methodology)", expanded=not has_results):
-        st.markdown("""
-**2 API calls only:**
-- **Call 1 — BDC Balance**: current stock snapshot across all BDCs & depots
-- **Call 2 — OMC Loadings**: all released fuel orders from all BDCs to all OMCs for the selected period
-- **Days of Supply** = National Stock ÷ (OMC Loadings ÷ Period Days)
-- **CTO excluded**: Custody Transfer Out moves fuel between BDC books internally — it does not reduce Ghana's national supply, so it is not counted as depletion.
-        """)
+    st.info(
+        "⚡ **Just 2 API calls.** "
+        "Step 1 fetches the current BDC Balance (national stock snapshot). "
+        "Step 2 fetches industry-wide OMC Loadings (all released orders — fuel that left the wholesale system). "
+        "CTO (Custody Transfer Out) is intentionally excluded: it is an internal BDC accounting entry "
+        "that moves fuel between BDC books but does NOT reduce the national supply."
+    )
 
-    if fetch_btn:
+    st.markdown("---")
+
+    if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", width='stretch'):
         _run_national_analysis(start_str, end_str, period_days)
 
-    if has_results:
+    if st.session_state.get('ns_results'):
         _display_national_results(period_days)
 
 
@@ -2890,142 +3289,443 @@ def _parse_stock_transaction_pdf(pdf_file) -> list:
 
 
 def show_bdc_intelligence():
-    _page_header("🧠", "BDC Intelligence", "Per-BDC stockout forecast: cross stock balance with loading rate")
-
-    has_balance  = bool(st.session_state.get('bdc_records'))
+    st.markdown("<h2>🧠 BDC INTELLIGENCE CENTER</h2>", unsafe_allow_html=True)
+    st.info("🎯 Predictive analytics combining stock balance and loading patterns")
+    st.markdown("---")
+ 
+    has_balance = bool(st.session_state.get('bdc_records'))
     has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
-
+ 
     if not has_balance or not has_loadings:
-        st.markdown("**Required data:**")
-        c1, c2 = st.columns(2)
-        with c1:
-            if has_balance: st.success(f"✅ BDC Balance ({len(st.session_state.bdc_records):,} rows)")
+        st.markdown("### 🔄 AUTO-FETCH DATA")
+        st.info("BDC Intelligence needs both Stock Balance and OMC Loadings data. Let's fetch them automatically!")
+     
+        col1, col2 = st.columns(2)
+     
+        with col1:
+            if not has_balance:
+                st.warning("⚠️ BDC Balance Data Missing")
+                if st.button("🔄 FETCH BDC BALANCE", width='stretch', key='auto_fetch_balance'):
+                    with st.spinner("🔄 Fetching BDC Balance Data..."):
+                        scraper = StockBalanceScraper()
+                     
+                        url = NPA_CONFIG['BDC_BALANCE_URL']
+                        params = {
+                            'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
+                            'strITSfromPersol': NPA_CONFIG['ITS_FROM_PERSOL'],
+                            'strGroupBy': 'BDC',
+                            'strGroupBy1': 'DEPOT',
+                            'strQuery1': '',
+                            'strQuery2': '',
+                            'strQuery3': '',
+                            'strQuery4': '',
+                            'strPicHeight': '1',
+                            'szPicWeight': '1',
+                            'lngUserId': NPA_CONFIG['USER_ID'],
+                            'intAppId': NPA_CONFIG['APP_ID']
+                        }
+                     
+                        try:
+                            import requests
+                            import io
+                         
+                            headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                                'Accept': 'application/pdf,text/html,application/xhtml+xml',
+                                'Accept-Language': 'en-US,en;q=0.5',
+                                'Connection': 'keep-alive',
+                            }
+                         
+                            response = requests.get(url, params=params, headers=headers, timeout=30)
+                            response.raise_for_status()
+                         
+                            if response.content[:4] == b'%PDF':
+                                pdf_file = io.BytesIO(response.content)
+                                st.session_state.bdc_records = scraper.parse_pdf_file(pdf_file)
+                             
+                                if st.session_state.bdc_records:
+                                    st.success(f"✅ Fetched {len(st.session_state.bdc_records)} BDC Balance records!")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ No records found in PDF")
+                            else:
+                                st.error("❌ Invalid response from server")
+                             
+                        except Exception as e:
+                            st.error(f"❌ Error fetching BDC Balance: {e}")
             else:
-                st.warning("⚠️ BDC Balance not loaded")
-                if st.button("⚡ Fetch BDC Balance now", key='intel_fetch_bal'):
-                    with st.spinner("Fetching…"):
-                        if _fetch_bdc_balance_data(): st.rerun()
-        with c2:
-            if has_loadings: st.success(f"✅ OMC Loadings ({len(st.session_state.omc_df):,} rows)")
-            else: st.warning("⚠️ OMC Loadings not loaded — go to 🚚 OMC Loadings to fetch")
+                st.success("✅ BDC Balance Data Loaded")
+                st.caption(f"{len(st.session_state.bdc_records)} records available")
+     
+        with col2:
+            if not has_loadings:
+                st.warning("⚠️ OMC Loadings Data Missing")
+             
+                st.markdown("**Select Date Range:**")
+                from datetime import timedelta
+                default_start = datetime.now() - timedelta(days=30)
+                default_end = datetime.now()
+             
+                start_date = st.date_input("From", value=default_start, key='intel_start_date')
+                end_date = st.date_input("To", value=default_end, key='intel_end_date')
+             
+                if st.button("🔄 FETCH OMC LOADINGS", width='stretch', key='auto_fetch_loadings'):
+                    with st.spinner("🔄 Fetching OMC Loadings Data..."):
+                        start_str = start_date.strftime("%m/%d/%Y")
+                        end_str = end_date.strftime("%m/%d/%Y")
+                     
+                        url = NPA_CONFIG['OMC_LOADINGS_URL']
+                        params = {
+                            'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
+                            'szITSfromPersol': 'persol',
+                            'strGroupBy': 'BDC',
+                            'strGroupBy1': NPA_CONFIG['OMC_NAME'],
+                            'strQuery1': ' and iorderstatus=4',
+                            'strQuery2': start_str,
+                            'strQuery3': end_str,
+                            'strQuery4': '',
+                            'strPicHeight': '',
+                            'strPicWeight': '',
+                            'intPeriodID': '4',
+                            'iUserId': NPA_CONFIG['USER_ID'],
+                            'iAppId': NPA_CONFIG['APP_ID']
+                        }
+                     
+                        try:
+                            import requests
+                            import io
+                         
+                            headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                                'Accept': 'application/pdf,text/html,application/xhtml+xml',
+                                'Accept-Language': 'en-US,en;q=0.5',
+                                'Connection': 'keep-alive',
+                            }
+                         
+                            response = requests.get(url, params=params, headers=headers, timeout=30)
+                            response.raise_for_status()
+                         
+                            if response.content[:4] == b'%PDF':
+                                pdf_file = io.BytesIO(response.content)
+                                st.session_state.omc_df = extract_npa_data_from_pdf(pdf_file)
+                             
+                                if not st.session_state.omc_df.empty:
+                                    st.success(f"✅ Fetched {len(st.session_state.omc_df)} OMC Loading records!")
+                                    st.rerun()
+                                else:
+                                    st.error("❌ No records found in PDF")
+                            else:
+                                st.error("❌ Invalid response from server")
+                             
+                        except Exception as e:
+                            st.error(f"❌ Error fetching OMC Loadings: {e}")
+            else:
+                st.success("✅ OMC Loadings Data Loaded")
+                st.caption(f"{len(st.session_state.omc_df)} records available")
+     
+        st.markdown("---")
+     
+        if not (bool(st.session_state.get('bdc_records')) and not st.session_state.get('omc_df', pd.DataFrame()).empty):
+            st.info("👆 Click the buttons above to fetch the required data automatically!")
+            return
+ 
+    balance_df = pd.DataFrame(st.session_state.bdc_records)
+    loadings_df = st.session_state.omc_df
+ 
+    st.markdown("### ✅ Data Ready")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.success(f"✅ BDC Balance: {len(balance_df)} records")
+    with col2:
+        st.success(f"✅ OMC Loadings: {len(loadings_df)} records")
+ 
+    st.markdown("---")
+ 
+    available_bdcs = set()
+    available_bdcs.update(balance_df['BDC'].unique())
+    available_bdcs.update(loadings_df['BDC'].unique())
+    available_bdcs = sorted(list(available_bdcs))
+ 
+    if not available_bdcs:
+        st.warning("⚠️ No BDCs found in the data")
         return
-
-    bal_df  = pd.DataFrame(st.session_state.bdc_records)
-    load_df = st.session_state.omc_df.copy()
-    col_bal = 'ACTUAL BALANCE (LT\\KG)'
-
-    load_df['Date'] = pd.to_datetime(load_df['Date'], errors='coerce')
-    load_df = load_df.dropna(subset=['Date'])
-    if load_df.empty:
-        st.error("❌ OMC Loadings data has no valid dates. Re-fetch the data.")
+ 
+    st.markdown("### 🔍 SELECT BDC FOR ANALYSIS")
+    selected_bdc = st.selectbox("Choose BDC:", available_bdcs, key='intel_bdc_select')
+ 
+    if not selected_bdc:
         return
-
-    period_days = max((load_df['Date'].max() - load_df['Date'].min()).days, 1)
-    omc_range = f"{load_df['Date'].min().strftime('%d %b')} – {load_df['Date'].max().strftime('%d %b %Y')} ({period_days}d)"
-
-    # BDC selector
-    all_bdcs = sorted(set(bal_df['BDC'].unique()) | set(load_df['BDC'].unique() if 'BDC' in load_df.columns else []))
-    selected_bdc = st.selectbox("Select BDC to analyse:", all_bdcs, key='intel_bdc_sel')
-    st.caption(f"OMC Loadings period: {omc_range}")
-    st.divider()
-
-    # Compute for selected BDC
-    bdc_stock  = bal_df[bal_df['BDC']==selected_bdc]
-    bdc_loads  = load_df[(load_df.get('BDC','')  == selected_bdc) if 'BDC' in load_df.columns else load_df.index==False]
-
-    stock_by_prod = bdc_stock.groupby('Product')[col_bal].sum() if not bdc_stock.empty else pd.Series()
-    sales_by_prod = bdc_loads.groupby('Product')['Quantity'].sum() if not bdc_loads.empty else pd.Series()
-
-    tab_fore, tab_trend, tab_cust = st.tabs(["🔮 Stockout Forecast", "📈 Loading Trend", "🏢 Top Customers"])
-
-    with tab_fore:
-        PROD_C = {'PREMIUM':'#00ffff','GASOIL':'#ffaa00','LPG':'#00ff88'}
-        PROD_NAMES = {'PREMIUM':'PMS','GASOIL':'AGO','LPG':'LPG'}
-        forecasts = []
-        cols3 = st.columns(3)
-        for ci, prod in enumerate(['PREMIUM','GASOIL','LPG']):
-            stock = float(stock_by_prod.get(prod, 0))
-            dep   = float(sales_by_prod.get(prod, 0))
-            daily = dep / period_days if period_days > 0 else 0
-            days  = stock / daily if daily > 0 else float('inf')
-            color = PROD_C[prod]
-            if days == float('inf'): status, border = '⚫ No Sales Data', '#888'
-            elif days < 5:           status, border = '🔴 CRITICAL',      '#ff0000'
-            elif days < 10:          status, border = '🟡 WARNING',       '#ffaa00'
-            elif days < 20:          status, border = '🟠 MONITOR',       '#ff6600'
-            else:                    status, border = '🟢 HEALTHY',       '#00ff88'
-            empty_dt = (datetime.now()+timedelta(days=days)).strftime('%d %b') if days!=float('inf') else 'N/A'
-            forecasts.append({'Product':prod,'Stock':stock,'Daily Rate':daily,'Days':days,'Status':status})
-            with cols3[ci]:
+ 
+    st.markdown("---")
+    st.markdown(f"## 📈 INTELLIGENCE REPORT: {selected_bdc}")
+    st.markdown("---")
+ 
+    tab1, tab2, tab3 = st.tabs(["📊 Overview", "⏱️ Stockout Prediction", "📉 Consumption Analysis"])
+ 
+    with tab1:
+        st.markdown("### 📊 CURRENT STATUS")
+     
+        bdc_balance = balance_df[balance_df['BDC'] == selected_bdc]
+     
+        if not bdc_balance.empty:
+                col1, col2, col3 = st.columns(3)
+             
+                col_name = 'ACTUAL BALANCE (LT\\KG)'
+                product_stocks = bdc_balance.groupby('Product')[col_name].sum()
+             
+                for idx, (product, stock) in enumerate(product_stocks.items()):
+                    with [col1, col2, col3][idx % 3]:
+                        st.markdown(f"""
+                        <div class='metric-card'>
+                            <h2>{product}</h2>
+                            <h1>{stock:,.0f}</h1>
+                            <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG in Stock</p>
+                        </div>
+                        """, unsafe_allow_html=True)
+             
+                st.markdown("---")
+             
+                st.markdown("#### 🏭 Stock by Depot")
+                depot_breakdown = bdc_balance.groupby(['DEPOT', 'Product'])[col_name].sum().reset_index()
+                depot_pivot = depot_breakdown.pivot(index='DEPOT', columns='Product', values=col_name).fillna(0)
+                st.dataframe(depot_pivot, width='stretch')
+        else:
+            st.warning(f"⚠️ No stock balance data found for {selected_bdc}")
+     
+        st.markdown("---")
+        st.markdown("### 🚚 LOADING ACTIVITY")
+     
+        bdc_loadings = loadings_df[loadings_df['BDC'] == selected_bdc]
+     
+        if not bdc_loadings.empty:
+                cols = st.columns(4)
+             
+                with cols[0]:
+                    st.metric("Total Orders", f"{len(bdc_loadings):,}")
+                with cols[1]:
+                    st.metric("Total Volume", f"{bdc_loadings['Quantity'].sum():,.0f} LT")
+                with cols[2]:
+                    st.metric("Unique OMCs", f"{bdc_loadings['OMC'].nunique()}")
+                with cols[3]:
+                    avg_order = bdc_loadings['Quantity'].mean()
+                    st.metric("Avg Order Size", f"{avg_order:,.0f} LT")
+             
+                st.markdown("#### 📦 Loading by Product")
+                product_loadings = bdc_loadings.groupby('Product').agg({
+                    'Quantity': ['sum', 'mean', 'count']
+                }).reset_index()
+                product_loadings.columns = ['Product', 'Total Volume', 'Avg Order Size', 'Order Count']
+                st.dataframe(product_loadings, width='stretch', hide_index=True)
+        else:
+            st.warning(f"⚠️ No loading data found for {selected_bdc}")
+ 
+    with tab2:
+        st.markdown("### ⏱️ STOCKOUT PREDICTION")
+     
+        bdc_balance = balance_df[balance_df['BDC'] == selected_bdc]
+        bdc_loadings = loadings_df[loadings_df['BDC'] == selected_bdc]
+     
+        if bdc_balance.empty:
+            st.warning(f"⚠️ No balance data for {selected_bdc}")
+            return
+     
+        if bdc_loadings.empty:
+            st.warning(f"⚠️ No loading data for {selected_bdc}")
+            return
+     
+        loadings_df_copy = bdc_loadings.copy()
+        loadings_df_copy['Date'] = pd.to_datetime(loadings_df_copy['Date'], errors='coerce')
+        loadings_df_copy = loadings_df_copy.dropna(subset=['Date'])
+     
+        if loadings_df_copy.empty:
+            st.warning("⚠️ No valid date information in loading data")
+            return
+     
+        date_range = (loadings_df_copy['Date'].max() - loadings_df_copy['Date'].min()).days
+        if date_range == 0:
+            date_range = 1
+     
+        daily_consumption = loadings_df_copy.groupby('Product')['Quantity'].sum() / date_range
+     
+        col_name = 'ACTUAL BALANCE (LT\\KG)'
+        current_stock = bdc_balance.groupby('Product')[col_name].sum()
+     
+        st.markdown("#### 📅 Estimated Days Until Stockout")
+     
+        predictions = []
+        for product in current_stock.index:
+            stock = current_stock[product]
+            daily_rate = daily_consumption.get(product, 0)
+         
+            if daily_rate > 0:
+                days_remaining = stock / daily_rate
+             
+                if days_remaining < 7:
+                    status = "🔴 CRITICAL"
+                    color = "#ff0000"
+                elif days_remaining < 14:
+                    status = "🟡 WARNING"
+                    color = "#ffaa00"
+                else:
+                    status = "🟢 HEALTHY"
+                    color = "#00ff88"
+             
+                predictions.append({
+                    'Product': product,
+                    'Current Stock (LT)': f"{stock:,.0f}",
+                    'Daily Consumption (LT)': f"{daily_rate:,.0f}",
+                    'Days Remaining': f"{days_remaining:.1f}",
+                    'Status': status
+                })
+             
                 st.markdown(f"""
-                <div style='background:rgba(10,14,39,0.85); padding:20px 14px; border-radius:14px;
-                             border:2px solid {border}; text-align:center;'>
-                    <div style='color:{color}; font-weight:700; font-size:14px; letter-spacing:1px;'>{PROD_NAMES[prod]}</div>
-                    <div style='font-size:52px; font-weight:900; color:{border}; line-height:1.1; margin:8px 0;'>
-                        {'∞' if days==float('inf') else f'{days:.1f}'}</div>
-                    <div style='color:#888; font-size:11px;'>days of supply</div>
-                    <div style='color:{border}; font-size:12px; font-weight:700; margin:6px 0;'>{status}</div>
-                    <div style='border-top:1px solid rgba(255,255,255,0.08); margin-top:10px; padding-top:8px; font-size:11px;'>
-                        <div style='color:#888;'>📦 {stock:,.0f} LT stock</div>
-                        <div style='color:#888;'>📉 {daily:,.0f} LT/day</div>
-                        <div style='color:{border}; font-weight:700;'>🗓️ Est. empty: {empty_dt}</div>
+                <div style='background: rgba(22,33,62,0.6); padding: 20px; border-radius: 10px;
+                            border: 2px solid {color}; margin: 10px 0;'>
+                    <h3 style='color: {color}; margin: 0;'>{product}</h3>
+                    <div style='display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; margin-top: 15px;'>
+                        <div>
+                            <p style='color: #888; margin: 0; font-size: 14px;'>Current Stock</p>
+                            <p style='color: #00ffff; margin: 5px 0; font-size: 24px; font-weight: bold;'>{stock:,.0f} LT</p>
+                        </div>
+                        <div>
+                            <p style='color: #888; margin: 0; font-size: 14px;'>Daily Usage</p>
+                            <p style='color: #ff00ff; margin: 5px 0; font-size: 24px; font-weight: bold;'>{daily_rate:,.0f} LT</p>
+                        </div>
+                        <div>
+                            <p style='color: #888; margin: 0; font-size: 14px;'>Days Remaining</p>
+                            <p style='color: {color}; margin: 5px 0; font-size: 32px; font-weight: bold;'>{days_remaining:.1f}</p>
+                        </div>
                     </div>
-                </div>""", unsafe_allow_html=True)
+                    <p style='margin-top: 15px; color: {color}; font-size: 18px; font-weight: bold;'>{status}</p>
+                </div>
+                """, unsafe_allow_html=True)
+            else:
+                predictions.append({
+                    'Product': product,
+                    'Current Stock (LT)': f"{stock:,.0f}",
+                    'Daily Consumption (LT)': "N/A",
+                    'Days Remaining': "∞",
+                    'Status': "ℹ️ NO DATA"
+                })
+     
+        if predictions:
+            st.markdown("---")
+            st.markdown("#### 📋 Summary Table")
+            pred_df = pd.DataFrame(predictions)
+            st.dataframe(pred_df, width='stretch', hide_index=True)
+ 
+    with tab3:
+        st.markdown("### 📉 CONSUMPTION ANALYSIS")
+     
+        bdc_loadings = loadings_df[loadings_df['BDC'] == selected_bdc]
+     
+        if bdc_loadings.empty:
+            st.warning(f"⚠️ No loading data for {selected_bdc}")
+            return
+     
+        ts_df = bdc_loadings.copy()
+        ts_df['Date'] = pd.to_datetime(ts_df['Date'], errors='coerce')
+        ts_df = ts_df.dropna(subset=['Date'])
+     
+        if ts_df.empty:
+            st.warning("⚠️ No valid dates in loading data")
+            return
+     
+        daily_by_product = ts_df.groupby([ts_df['Date'].dt.date, 'Product'])['Quantity'].sum().reset_index()
+        daily_by_product.columns = ['Date', 'Product', 'Volume']
+     
+        st.markdown("#### 📈 Daily Consumption Trend")
+     
+        for product in daily_by_product['Product'].unique():
+            product_data = daily_by_product[daily_by_product['Product'] == product]
+         
+            if not product_data.empty:
+                st.markdown(f"**{product}**")
+                st.line_chart(product_data.set_index('Date')['Volume'], width='stretch')
+     
+        st.markdown("---")
+        st.markdown("#### 📊 Consumption Statistics")
+     
+        stats = ts_df.groupby('Product')['Quantity'].agg([
+            ('Total', 'sum'),
+            ('Average', 'mean'),
+            ('Median', 'median'),
+            ('Min', 'min'),
+            ('Max', 'max'),
+            ('Std Dev', 'std')
+        ]).reset_index()
+     
+        st.dataframe(stats, width='stretch', hide_index=True)
+     
+        st.markdown("---")
+        st.markdown("#### 🏢 Top OMCs Loading from this BDC")
+     
+        top_omcs = ts_df.groupby('OMC')['Quantity'].sum().sort_values(ascending=False).head(10).reset_index()
+        top_omcs.columns = ['OMC', 'Total Volume (LT)']
+     
+        st.dataframe(top_omcs, width='stretch', hide_index=True)
 
-        st.divider()
-        fore_df = pd.DataFrame(forecasts)
-        fore_df['Stock'] = fore_df['Stock'].apply(lambda x: f"{x:,.0f}")
-        fore_df['Daily Rate'] = fore_df['Daily Rate'].apply(lambda x: f"{x:,.0f} LT/day")
-        fore_df['Days'] = fore_df['Days'].apply(lambda x: f"{x:.1f}" if x!=float('inf') else "∞")
-        st.dataframe(fore_df, width='stretch', hide_index=True)
 
-    with tab_trend:
-        if bdc_loads.empty:
-            st.info(f"No loadings recorded for {selected_bdc} in this period.")
-        else:
-            daily_t = bdc_loads.groupby([bdc_loads['Date'].dt.date,'Product'])['Quantity'].sum().reset_index()
-            daily_t.columns = ['Date','Product','Volume']
-            fig = go.Figure()
-            for prod, col in [('PREMIUM','#00ffff'),('GASOIL','#ffaa00'),('LPG','#00ff88')]:
-                d = daily_t[daily_t['Product']==prod]
-                if not d.empty:
-                    fig.add_trace(go.Scatter(x=d['Date'], y=d['Volume'], name=prod,
-                                             line=dict(color=col, width=2), mode='lines+markers',
-                                             marker=dict(size=5)))
-            fig.update_layout(
-                title=dict(text=f'{selected_bdc} — Daily Loadings', font=dict(color='#00ffff',family='Orbitron',size=13)),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#e0e0e0'), height=360, legend=dict(font=dict(color='white')),
-                xaxis=dict(gridcolor='rgba(255,255,255,0.04)'),
-                yaxis=dict(title='LT', gridcolor='rgba(255,255,255,0.04)'),
-                margin=dict(t=40,b=10,l=10,r=10))
-            st.plotly_chart(fig, width='stretch')
+# ═══════════════════════════════════════════════════════════════════════════════
+# HISTORY ENGINE — persists national snapshots to disk on every fetch
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    with tab_cust:
-        if bdc_loads.empty or 'OMC' not in bdc_loads.columns:
-            st.info(f"No OMC customer data for {selected_bdc} in this period.")
-        else:
-            top_omc = bdc_loads.groupby('OMC')['Quantity'].sum().sort_values(ascending=False).head(15).reset_index()
-            top_omc.columns = ['OMC','Volume (LT)']
-            top_omc['Share %'] = (top_omc['Volume (LT)'] / top_omc['Volume (LT)'].sum() * 100).round(1)
-            fig2 = go.Figure(go.Bar(
-                x=top_omc['Volume (LT)'], y=top_omc['OMC'], orientation='h',
-                marker_color='rgba(255,0,255,0.6)',
-                text=top_omc['Volume (LT)'].apply(lambda x:f"{x:,.0f}"), textposition='outside',
-            ))
-            fig2.update_layout(
-                title=dict(text=f'Top OMC Customers of {selected_bdc}', font=dict(color='#ff00ff',family='Orbitron',size=12)),
-                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)',
-                font=dict(color='#e0e0e0'), height=max(280, len(top_omc)*28),
-                xaxis=dict(showgrid=False, showticklabels=False),
-                yaxis=dict(tickfont=dict(size=11)),
-                margin=dict(t=40,b=10,l=10,r=80))
-            st.plotly_chart(fig2, width='stretch')
-            st.dataframe(top_omc, width='stretch', hide_index=True)
+SNAPSHOT_DIR = os.path.join(os.getcwd(), "national_snapshots")
 
+def _save_national_snapshot(forecast_df: pd.DataFrame, period_label: str):
+    """Persist a national stockout result row to the snapshot archive."""
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+    snap = {
+        'ts': datetime.now().isoformat(),
+        'period': period_label,
+        'rows': forecast_df[['product','total_balance','omc_sales','daily_rate','days_remaining']].to_dict('records')
+    }
+    fname = f"snap_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(os.path.join(SNAPSHOT_DIR, fname), 'w') as f:
+        json.dump(snap, f)
+
+def _load_all_snapshots() -> pd.DataFrame:
+    """Load every saved snapshot into a tidy DataFrame."""
+    if not os.path.exists(SNAPSHOT_DIR):
+        return pd.DataFrame()
+    rows = []
+    for fname in sorted(os.listdir(SNAPSHOT_DIR)):
+        if not fname.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(SNAPSHOT_DIR, fname)) as f:
+                snap = json.load(f)
+            ts = pd.to_datetime(snap['ts'])
+            for r in snap['rows']:
+                rows.append({
+                    'timestamp': ts,
+                    'period': snap.get('period', ''),
+                    'product': r['product'],
+                    'total_balance': r['total_balance'],
+                    'omc_sales': r['omc_sales'],
+                    'daily_rate': r['daily_rate'],
+                    'days_remaining': r['days_remaining'],
+                })
+        except Exception:
+            continue
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. 🔴 LIVE RUNWAY MONITOR
+# ═══════════════════════════════════════════════════════════════════════════════
 
 def show_live_runway_monitor():
-    _page_header("🔴", "Live Runway Monitor", "Real-time national supply runway — alerts on critical levels, auto-saves history")
+    st.markdown("<h2>🔴 LIVE RUNWAY MONITOR</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Auto-refreshes every 60 minutes. Alerts when any product drops below threshold.
+    Always shows the latest national supply runway at a glance.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
 
     # ── Alert thresholds ──────────────────────────────────────────────────────
     with st.expander("⚙️ Configure Alert Thresholds", expanded=False):
@@ -3051,9 +3751,9 @@ def show_live_runway_monitor():
     with col_a:
         auto_refresh = st.checkbox("🔄 Auto-refresh every 60 minutes", value=False)
     with col_b:
-        period_days_lr = st.number_input("Lookback days", value=30, min_value=1, max_value=90, key='lr_period', help='How many past days to use for the depletion rate calculation. 30 days is a stable estimate.')
+        period_days_lr = st.number_input("Lookback days", value=30, min_value=1, max_value=90, key='lr_period')
     with col_c:
-        fetch_now = st.button("⚡ Fetch Now", key='lr_fetch')
+        fetch_now = st.button("⚡ FETCH NOW", key='lr_fetch', width='content')
 
     # ── Fetch logic ───────────────────────────────────────────────────────────
     should_fetch = fetch_now
@@ -3133,7 +3833,6 @@ def show_live_runway_monitor():
 
     cols = st.columns(3)
     any_critical = any_warning = False
-    hist = _load_all_snapshots()   # load once outside the loop
 
     for col, (_, row) in zip(cols, forecast_df.iterrows()):
         prod  = row['product']
@@ -3158,6 +3857,7 @@ def show_live_runway_monitor():
         empty_dt = (datetime.now() + timedelta(days=days)).strftime('%d %b %Y') if days != float('inf') else "N/A"
 
         delta_html = ""
+        hist = _load_all_snapshots()
         if not hist.empty:
             prev = hist[hist['product'] == prod].sort_values('timestamp')
             if len(prev) >= 2:
@@ -3201,8 +3901,7 @@ def show_live_runway_monitor():
 
     if auto_refresh:
         import time
-        next_t = (datetime.now() + timedelta(hours=1)).strftime('%H:%M')
-        st.caption(f"🔄 Auto-refresh active — next update at {next_t}. Keep this tab open.")
+        st.caption("Auto-refresh active. Page will refresh in 60 minutes.")
         time.sleep(3600)
         st.rerun()
 
@@ -3212,15 +3911,23 @@ def show_live_runway_monitor():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def show_historical_trends():
-    _page_header("📉", "Historical Trends", "Charts saved snapshots over time — see if supply runway is shrinking or growing")
+    st.markdown("<h2>📉 HISTORICAL TRENDS</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Every time you run National Stockout or Live Runway Monitor, a snapshot is saved.
+    This page plots those snapshots over time — showing whether Ghana's fuel runway is
+    shrinking or growing.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
 
     hist = _load_all_snapshots()
 
     if hist.empty:
-        _no_data_prompt(
-            "No snapshot history yet. Run 🔴 Live Runway Monitor or 🌍 National Stockout "
-            "a few times — each fetch auto-saves a timestamped snapshot that appears here.",
-            "🔴 Live Runway Monitor"
+        st.info(
+            "📭 No snapshot history yet.\n\n"
+            "Run **🔴 Live Runway Monitor** or **🌍 National Stockout** a few times "
+            "and come back — each run saves a timestamped snapshot automatically."
         )
         return
 
@@ -3333,22 +4040,11 @@ def show_historical_trends():
         'daily_rate':'Daily Rate (LT/day)','days_remaining':'Days of Supply'
     }), width='stretch', hide_index=True)
 
-    col_clr1, col_clr2 = st.columns([3, 1])
-    with col_clr2:
-        if st.button("🗑️ Clear Snapshots", key='clear_snaps'):
-            st.session_state['_confirm_clear'] = True
-    if st.session_state.get('_confirm_clear'):
-        st.warning("Are you sure? This will delete all saved history.")
-        cy, cn = st.columns(2)
-        if cy.button("✅ Yes, clear all", key='clear_confirm_yes'):
-            import shutil
-            shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)
-            st.session_state.pop('_confirm_clear', None)
-            st.success("All snapshots cleared.")
-            st.rerun()
-        if cn.button("❌ Cancel", key='clear_confirm_no'):
-            st.session_state.pop('_confirm_clear', None)
-            st.rerun()
+    if st.button("🗑️ Clear All Snapshots", key='clear_snaps'):
+        import shutil
+        shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)
+        st.success("Snapshots cleared.")
+        st.rerun()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3379,14 +4075,21 @@ def _guess_coords(depot_name: str):
     return None
 
 def show_depot_stress_map():
-    _page_header("🗺️", "Depot Stress Map", "Geographic stock view — see which physical depots are critically low across Ghana")
+    st.markdown("<h2>🗺️ DEPOT STRESS MAP</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Geographic view of Ghana's fuel depot stock levels. Instantly see which physical
+    locations are critically low — even when the national total looks fine.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
 
     # ── Data source ───────────────────────────────────────────────────────────
     has_balance = bool(st.session_state.get('bdc_records'))
 
     if not has_balance:
-        _no_data_prompt("BDC Balance data is required to populate the depot map.", "🏦 BDC Balance")
-        if st.button("⚡ Fetch BDC Balance Now", key='dsm_fetch'):
+        st.info("📡 Fetching BDC Balance data (needed for depot-level stock)…")
+        if st.button("⚡ FETCH BDC BALANCE", key='dsm_fetch'):
             cfg = NPA_CONFIG
             with st.spinner("Fetching…"):
                 bal_params = {
@@ -3533,14 +4236,18 @@ def show_depot_stress_map():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def show_demand_forecast():
-    _page_header("🔮", "Demand Forecast", "Weighted moving-average projection of future OMC demand by product and company")
+    st.markdown("<h2>🔮 DEMAND FORECAST</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Uses OMC Loadings history to project future demand per OMC and nationally.
+    Based on weighted moving average — more recent weeks count more.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
 
     has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
     if not has_loadings:
-        _no_data_prompt(
-            "OMC Loadings data is required to generate a forecast.",
-            "🚚 OMC Loadings"
-        )
+        st.warning("⚠️ OMC Loadings data required. Fetch it from 🚚 OMC LOADINGS first.")
         return
 
     df = st.session_state.omc_df.copy()
@@ -3551,14 +4258,9 @@ def show_demand_forecast():
         st.warning("⚠️ No valid date rows in OMC Loadings.")
         return
 
-    date_range = f"{df['Date'].min().strftime('%d %b %Y')} → {df['Date'].max().strftime('%d %b %Y')}"
-    st.caption(
-        f"📊 Using {len(df):,} OMC loading records · {date_range} · "
-        f"{df['OMC'].nunique()} OMCs · {df['Product'].nunique()} products"
-    )
     col1, col2 = st.columns(2)
     with col1:
-        forecast_weeks = st.slider("Forecast horizon (weeks)", 1, 12, 4, key='df_weeks', help='How many weeks ahead to project demand. Longer horizons are less certain.')
+        forecast_weeks = st.slider("Forecast horizon (weeks)", 1, 12, 4, key='df_weeks')
     with col2:
         view_mode = st.radio("View", ["National by Product", "By OMC"], horizontal=True, key='df_view')
 
@@ -3713,20 +4415,23 @@ def show_demand_forecast():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def show_reorder_alerts():
-    _page_header("⚠️", "Reorder Alerts", "Per-BDC days-of-supply with exact reorder quantities — needs BDC Balance + OMC Loadings")
+    st.markdown("<h2>⚠️ REORDER ALERTS</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Per-BDC stockout forecast. Combines each BDC's current stock with their
+    OMC loading rate to give individual days-of-supply and reorder recommendations.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
 
     has_balance  = bool(st.session_state.get('bdc_records'))
     has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
 
+    if not has_balance:
+        st.warning("⚠️ BDC Balance required — fetch from 🏦 BDC BALANCE first.")
+    if not has_loadings:
+        st.warning("⚠️ OMC Loadings required — fetch from 🚚 OMC LOADINGS first.")
     if not has_balance or not has_loadings:
-        missing = []
-        if not has_balance:  missing.append("🏦 BDC Balance")
-        if not has_loadings: missing.append("🚚 OMC Loadings")
-        _no_data_prompt(
-            f"This page needs: {' and '.join(missing)}.",
-            " and ".join(missing)
-        )
-        st.caption("Fetch the required data from the sidebar pages, then come back here.")
         return
 
     bal_df  = pd.DataFrame(st.session_state.bdc_records)
@@ -3746,10 +4451,6 @@ def show_reorder_alerts():
     omc_df['Date'] = pd.to_datetime(omc_df['Date'], errors='coerce')
     omc_df = omc_df.dropna(subset=['Date'])
     period_days_ra = max((omc_df['Date'].max() - omc_df['Date'].min()).days, 1) if not omc_df.empty else 30
-    st.caption(
-        f"Using BDC Balance ({len(bal_df):,} rows, {bal_df['BDC'].nunique()} BDCs) · "
-        f"OMC Loadings ({len(omc_df):,} rows, {period_days_ra}-day period)"
-    )
 
     # BDC stock by product
     bdc_stock = bal_df.groupby(['BDC','Product'])[col_bal].sum().reset_index()
@@ -3849,17 +4550,16 @@ def show_reorder_alerts():
     )
 
     st.markdown("---")
-    # Write to buffer directly so download_button always visible
-    import io as _io
-    out_buf = _io.BytesIO()
-    merged.to_excel(out_buf, index=False, engine='openpyxl')
-    out_buf.seek(0)
-    fname = f"reorder_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    st.download_button(
-        "💾 Export Reorder Report (Excel)", out_buf, fname,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key='ra_dl'
-    )
+    if st.button("💾 EXPORT REORDER REPORT", key='ra_export'):
+        out_dir = os.path.join(os.getcwd(), "reorder_reports")
+        os.makedirs(out_dir, exist_ok=True)
+        fname = f"reorder_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        fpath = os.path.join(out_dir, fname)
+        merged.to_excel(fpath, index=False)
+        with open(fpath, 'rb') as f:
+            st.download_button("⬇️ DOWNLOAD", f, fname,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key='ra_dl')
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -3867,7 +4567,15 @@ def show_reorder_alerts():
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def show_week_on_week():
-    _page_header("📆", "Week-on-Week Comparison", "Compare any two date ranges — volumes, BDC movers, top OMC gainers & decliners")
+    st.markdown("<h2>📆 WEEK-ON-WEEK COMPARISON</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Fetch two date ranges and compare side-by-side: which BDCs loaded more,
+    which OMCs dropped off, which products shifted. The delta view that answers
+    every operations meeting question instantly.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
 
     st.markdown("### 📅 SELECT TWO PERIODS TO COMPARE")
     col1, col2 = st.columns(2)
@@ -3880,7 +4588,7 @@ def show_week_on_week():
         b_start = st.date_input("B: From", value=datetime.now() - timedelta(days=7), key='wow_b_start')
         b_end   = st.date_input("B: To",   value=datetime.now(),                      key='wow_b_end')
 
-    if st.button("⚡ Fetch & Compare Periods", key='wow_fetch'):
+    if st.button("⚡ FETCH & COMPARE", key='wow_fetch', width='content'):
         a_days = max((a_end - a_start).days, 1)
         b_days = max((b_end - b_start).days, 1)
 
@@ -3899,11 +4607,7 @@ def show_week_on_week():
         st.rerun()
 
     if not st.session_state.get('wow_a'):
-        st.info(
-            "👆 Select two periods above and click **Fetch & Compare**. "
-            "**Tip:** Period A is typically 'last week' and Period B is 'this week'. "
-            "The comparison shows which direction things are moving."
-        )
+        st.info("👆 Select two periods and click **FETCH & COMPARE**.")
         return
 
     wa = st.session_state.wow_a
@@ -4047,21 +4751,21 @@ def show_week_on_week():
             st.markdown(f"**{r['OMC'][:30]}** — {r['Delta (LT)']:+,.0f} LT ({r['Change %']:+.1f}%)")
 
     st.markdown("---")
-    import io as _io
-    out_buf2 = _io.BytesIO()
-    with pd.ExcelWriter(out_buf2, engine='openpyxl') as writer:
-        pd.DataFrame(prod_rows).to_excel(writer, sheet_name='Product Summary', index=False)
-        bdc_cmp.to_excel(writer, sheet_name='BDC Comparison', index=False)
-        omc_cmp.to_excel(writer, sheet_name='OMC Comparison', index=False)
-        if not df_a.empty: df_a.to_excel(writer, sheet_name='Period A Raw', index=False)
-        if not df_b.empty: df_b.to_excel(writer, sheet_name='Period B Raw', index=False)
-    out_buf2.seek(0)
-    fname2 = f"wow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    st.download_button(
-        "💾 Export Comparison (Excel)", out_buf2, fname2,
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key='wow_dl'
-    )
+    if st.button("💾 EXPORT COMPARISON", key='wow_export'):
+        out_dir = os.path.join(os.getcwd(), "wow_reports")
+        os.makedirs(out_dir, exist_ok=True)
+        fname = f"wow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        fpath = os.path.join(out_dir, fname)
+        with pd.ExcelWriter(fpath, engine='openpyxl') as writer:
+            pd.DataFrame(prod_rows).to_excel(writer, sheet_name='Product Summary', index=False)
+            bdc_cmp.to_excel(writer,  sheet_name='BDC Comparison', index=False)
+            omc_cmp.to_excel(writer,  sheet_name='OMC Comparison', index=False)
+            if not df_a.empty: df_a.to_excel(writer, sheet_name='Period A Raw', index=False)
+            if not df_b.empty: df_b.to_excel(writer, sheet_name='Period B Raw', index=False)
+        with open(fpath, 'rb') as f:
+            st.download_button("⬇️ DOWNLOAD", f, fname,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key='wow_dl')
 
 
 main()
