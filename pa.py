@@ -1004,6 +1004,13 @@ def main():
             "📈 STOCK TRANSACTION",
             "🧠 BDC INTELLIGENCE",
             "🌍 NATIONAL STOCKOUT",
+            "─────── NEW ───────",
+            "🔴 LIVE RUNWAY MONITOR",
+            "📉 HISTORICAL TRENDS",
+            "🗺️ DEPOT STRESS MAP",
+            "🔮 DEMAND FORECAST",
+            "⚠️ REORDER ALERTS",
+            "📆 WEEK-ON-WEEK",
         ], index=0)
         st.markdown("---")
         st.markdown("""
@@ -1027,8 +1034,22 @@ def main():
         show_stock_transaction()
     elif choice == "🧠 BDC INTELLIGENCE":
         show_bdc_intelligence()
-    else:
+    elif choice == "🌍 NATIONAL STOCKOUT":
         show_national_stockout()
+    elif choice == "🔴 LIVE RUNWAY MONITOR":
+        show_live_runway_monitor()
+    elif choice == "📉 HISTORICAL TRENDS":
+        show_historical_trends()
+    elif choice == "🗺️ DEPOT STRESS MAP":
+        show_depot_stress_map()
+    elif choice == "🔮 DEMAND FORECAST":
+        show_demand_forecast()
+    elif choice == "⚠️ REORDER ALERTS":
+        show_reorder_alerts()
+    elif choice == "📆 WEEK-ON-WEEK":
+        show_week_on_week()
+    else:
+        st.info("Select a page from the sidebar.")
 def show_bdc_balance():
     st.markdown("<h2>🏦 BDC STOCK BALANCE ANALYZER</h2>", unsafe_allow_html=True)
     st.info("📊 Click the button below to fetch BDC Balance data")
@@ -2936,7 +2957,8 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int):
         'n_omc_rows':     len(omc_df),
     }
 
-    st.success("✅ Done! 2 API calls completed. Scroll down to see the forecast.")
+    _save_national_snapshot(forecast_df, f"{period_days}d")
+    st.success("✅ Done! 2 API calls completed. Snapshot saved to history. Scroll down to see the forecast.")
     st.rerun()
 
 
@@ -3644,3 +3666,1105 @@ def show_bdc_intelligence():
         st.dataframe(top_omcs, width='stretch', hide_index=True)
 if __name__ == "__main__":
     main()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# HISTORY ENGINE — persists national snapshots to disk on every fetch
+# ═══════════════════════════════════════════════════════════════════════════════
+
+SNAPSHOT_DIR = os.path.join(os.getcwd(), "national_snapshots")
+
+def _save_national_snapshot(forecast_df: pd.DataFrame, period_label: str):
+    """Persist a national stockout result row to the snapshot archive."""
+    os.makedirs(SNAPSHOT_DIR, exist_ok=True)
+    snap = {
+        'ts': datetime.now().isoformat(),
+        'period': period_label,
+        'rows': forecast_df[['product','total_balance','omc_sales','daily_rate','days_remaining']].to_dict('records')
+    }
+    fname = f"snap_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    with open(os.path.join(SNAPSHOT_DIR, fname), 'w') as f:
+        json.dump(snap, f)
+
+def _load_all_snapshots() -> pd.DataFrame:
+    """Load every saved snapshot into a tidy DataFrame."""
+    if not os.path.exists(SNAPSHOT_DIR):
+        return pd.DataFrame()
+    rows = []
+    for fname in sorted(os.listdir(SNAPSHOT_DIR)):
+        if not fname.endswith('.json'):
+            continue
+        try:
+            with open(os.path.join(SNAPSHOT_DIR, fname)) as f:
+                snap = json.load(f)
+            ts = pd.to_datetime(snap['ts'])
+            for r in snap['rows']:
+                rows.append({
+                    'timestamp': ts,
+                    'period': snap.get('period', ''),
+                    'product': r['product'],
+                    'total_balance': r['total_balance'],
+                    'omc_sales': r['omc_sales'],
+                    'daily_rate': r['daily_rate'],
+                    'days_remaining': r['days_remaining'],
+                })
+        except Exception:
+            continue
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. 🔴 LIVE RUNWAY MONITOR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def show_live_runway_monitor():
+    st.markdown("<h2>🔴 LIVE RUNWAY MONITOR</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Auto-refreshes every 60 minutes. Alerts when any product drops below threshold.
+    Always shows the latest national supply runway at a glance.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+
+    # ── Alert thresholds ──────────────────────────────────────────────────────
+    with st.expander("⚙️ Configure Alert Thresholds", expanded=False):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            pms_thresh  = st.number_input("PMS Critical (days)",  value=7,  min_value=1, max_value=60)
+            pms_warn    = st.number_input("PMS Warning (days)",   value=14, min_value=1, max_value=60)
+        with col2:
+            ago_thresh  = st.number_input("AGO Critical (days)",  value=7,  min_value=1, max_value=60)
+            ago_warn    = st.number_input("AGO Warning (days)",   value=14, min_value=1, max_value=60)
+        with col3:
+            lpg_thresh  = st.number_input("LPG Critical (days)",  value=7,  min_value=1, max_value=60)
+            lpg_warn    = st.number_input("LPG Warning (days)",   value=14, min_value=1, max_value=60)
+
+    thresholds = {
+        'PREMIUM': (pms_thresh,  pms_warn),
+        'GASOIL':  (ago_thresh,  ago_warn),
+        'LPG':     (lpg_thresh,  lpg_warn),
+    }
+
+    # ── Auto-refresh controls ─────────────────────────────────────────────────
+    col_a, col_b, col_c = st.columns([2, 1, 1])
+    with col_a:
+        auto_refresh = st.checkbox("🔄 Auto-refresh every 60 minutes", value=False)
+    with col_b:
+        period_days_lr = st.number_input("Lookback days", value=30, min_value=1, max_value=90, key='lr_period')
+    with col_c:
+        fetch_now = st.button("⚡ FETCH NOW", key='lr_fetch', use_container_width=False)
+
+    # ── Fetch logic ───────────────────────────────────────────────────────────
+    should_fetch = fetch_now
+    if auto_refresh:
+        last_fetch = st.session_state.get('lr_last_fetch')
+        if last_fetch is None or (datetime.now() - last_fetch).seconds > 3600:
+            should_fetch = True
+
+    if should_fetch:
+        end_dt   = datetime.now()
+        start_dt = end_dt - timedelta(days=period_days_lr)
+        start_str = start_dt.strftime("%m/%d/%Y")
+        end_str   = end_dt.strftime("%m/%d/%Y")
+
+        cfg = NPA_CONFIG
+        col_bal = 'ACTUAL BALANCE (LT\\KG)'
+
+        with st.spinner("Fetching BDC Balance…"):
+            bal_params = {
+                'lngCompanyId': cfg['COMPANY_ID'], 'strITSfromPersol': cfg['ITS_FROM_PERSOL'],
+                'strGroupBy': 'BDC', 'strGroupBy1': 'DEPOT',
+                'strQuery1': '', 'strQuery2': '', 'strQuery3': '', 'strQuery4': '',
+                'strPicHeight': '1', 'szPicWeight': '1',
+                'lngUserId': cfg['USER_ID'], 'intAppId': cfg['APP_ID'],
+            }
+            bal_bytes = _fetch_pdf_bytes(cfg['BDC_BALANCE_URL'], bal_params)
+            if bal_bytes:
+                scraper = StockBalanceScraper()
+                bal_df = pd.DataFrame(scraper.parse_pdf_file(io.BytesIO(bal_bytes)))
+            else:
+                st.error("❌ Balance fetch failed"); return
+
+        with st.spinner(f"Fetching OMC Loadings ({period_days_lr}d, chunked)…"):
+            omc_df = _fetch_national_omc_loadings(start_str, end_str)
+
+        # Compute runway
+        balance_by_product = bal_df.groupby('Product')[col_bal].sum() if not bal_df.empty else pd.Series()
+        omc_by_product = (
+            omc_df[omc_df['Product'].isin(['PREMIUM','GASOIL','LPG'])]
+            .groupby('Product')['Quantity'].sum()
+        ) if not omc_df.empty else pd.Series()
+
+        rows_out = []
+        for prod in ['PREMIUM', 'GASOIL', 'LPG']:
+            stock = float(balance_by_product.get(prod, 0))
+            dep   = float(omc_by_product.get(prod, 0))
+            daily = dep / period_days_lr if period_days_lr > 0 else 0
+            days  = stock / daily if daily > 0 else float('inf')
+            rows_out.append({'product': prod, 'total_balance': stock,
+                             'omc_sales': dep, 'daily_rate': daily, 'days_remaining': days})
+
+        forecast_df = pd.DataFrame(rows_out)
+        st.session_state.lr_forecast  = forecast_df
+        st.session_state.lr_last_fetch = datetime.now()
+        st.session_state.lr_period_days = period_days_lr
+        _save_national_snapshot(forecast_df, f"{period_days_lr}d")
+
+    # ── Display ───────────────────────────────────────────────────────────────
+    if st.session_state.get('lr_forecast') is None:
+        st.info("👆 Click **FETCH NOW** to load the live runway status.")
+        return
+
+    forecast_df  = st.session_state.lr_forecast
+    last_fetch_t = st.session_state.lr_last_fetch
+    period_d     = st.session_state.get('lr_period_days', period_days_lr)
+
+    st.markdown(
+        f"<p style='color:#888; font-size:13px;'>Last updated: "
+        f"<b style='color:#00ffff'>{last_fetch_t.strftime('%d %b %Y %H:%M:%S')}</b> | "
+        f"Lookback: {period_d} days</p>",
+        unsafe_allow_html=True
+    )
+
+    ICONS  = {'PREMIUM':'⛽','GASOIL':'🚛','LPG':'🔵'}
+    COLORS = {'PREMIUM':'#00ffff','GASOIL':'#ffaa00','LPG':'#00ff88'}
+    NAMES  = {'PREMIUM':'PREMIUM (PMS)','GASOIL':'GASOIL (AGO)','LPG':'LPG'}
+
+    cols = st.columns(3)
+    any_critical = any_warning = False
+
+    for col, (_, row) in zip(cols, forecast_df.iterrows()):
+        prod  = row['product']
+        days  = row['days_remaining']
+        crit, warn = thresholds.get(prod, (7, 14))
+        color = COLORS[prod]
+
+        if days == float('inf'):
+            border, status, emoji = '#888', 'NO DATA', '⚫'
+        elif days < crit:
+            border, status, emoji = '#ff0000', 'CRITICAL', '🔴'
+            any_critical = True
+        elif days < warn:
+            border, status, emoji = '#ffaa00', 'WARNING', '🟡'
+            any_warning = True
+        elif days < 30:
+            border, status, emoji = '#ff6600', 'MONITOR', '🟠'
+        else:
+            border, status, emoji = '#00ff88', 'HEALTHY', '🟢'
+
+        days_txt = f"{days:.1f}" if days != float('inf') else "∞"
+        empty_dt = (datetime.now() + timedelta(days=days)).strftime('%d %b %Y') if days != float('inf') else "N/A"
+
+        delta_html = ""
+        hist = _load_all_snapshots()
+        if not hist.empty:
+            prev = hist[hist['product'] == prod].sort_values('timestamp')
+            if len(prev) >= 2:
+                prev_days = prev.iloc[-2]['days_remaining']
+                delta = days - prev_days if days != float('inf') and prev_days != float('inf') else 0
+                arrow = "↑" if delta > 0 else "↓"
+                dcol  = "#00ff88" if delta > 0 else "#ff4444"
+                delta_html = f"<span style='color:{dcol}; font-size:14px;'>{arrow}{abs(delta):.1f}d vs prev</span>"
+
+        with col:
+            st.markdown(f"""
+            <div style='background:rgba(10,14,39,0.9); padding:28px 18px; border-radius:18px;
+                        border:3px solid {border}; text-align:center;
+                        box-shadow:0 0 25px {border}66; margin-bottom:10px;'>
+                <div style='font-size:40px;'>{ICONS[prod]}</div>
+                <div style='font-family:Orbitron,sans-serif; color:{color}; font-size:16px;
+                             font-weight:700; letter-spacing:2px; margin:8px 0;'>{NAMES[prod]}</div>
+                <div style='font-size:13px; color:{border}; font-weight:700; letter-spacing:3px;
+                             margin-bottom:12px;'>{emoji} {status}</div>
+                <div style='font-family:Orbitron,sans-serif; font-size:64px; font-weight:900;
+                             color:{border}; line-height:1; text-shadow:0 0 20px {border};'>{days_txt}</div>
+                <div style='color:#888; font-size:12px; margin:4px 0;'>DAYS OF SUPPLY</div>
+                {delta_html}
+                <div style='border-top:1px solid rgba(255,255,255,0.1); margin-top:14px; padding-top:10px;'>
+                    <div style='color:#888; font-size:11px;'>📦 {row["total_balance"]:,.0f} LT stock</div>
+                    <div style='color:#888; font-size:11px;'>📉 {row["daily_rate"]:,.0f} LT/day avg</div>
+                    <div style='color:{border}; font-size:12px; font-weight:700; margin-top:4px;'>
+                        🗓️ Est. empty: {empty_dt}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    if any_critical:
+        st.error("🚨 **CRITICAL ALERT:** One or more products are at critical supply levels! Immediate action required.")
+    elif any_warning:
+        st.warning("⚠️ **WARNING:** One or more products approaching low supply. Plan replenishment now.")
+    else:
+        st.success("✅ All products at healthy supply levels.")
+
+    if auto_refresh:
+        import time
+        st.caption("Auto-refresh active. Page will refresh in 60 minutes.")
+        time.sleep(3600)
+        st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. 📉 HISTORICAL TRENDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def show_historical_trends():
+    st.markdown("<h2>📉 HISTORICAL TRENDS</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Every time you run National Stockout or Live Runway Monitor, a snapshot is saved.
+    This page plots those snapshots over time — showing whether Ghana's fuel runway is
+    shrinking or growing.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+
+    hist = _load_all_snapshots()
+
+    if hist.empty:
+        st.info(
+            "📭 No snapshot history yet.\n\n"
+            "Run **🔴 Live Runway Monitor** or **🌍 National Stockout** a few times "
+            "and come back — each run saves a timestamped snapshot automatically."
+        )
+        return
+
+    hist = hist.sort_values('timestamp')
+    n_snaps = hist['timestamp'].nunique()
+    oldest  = hist['timestamp'].min().strftime('%d %b %Y')
+    newest  = hist['timestamp'].max().strftime('%d %b %Y')
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Total Snapshots", n_snaps)
+    col2.metric("Earliest", oldest)
+    col3.metric("Latest",   newest)
+
+    st.markdown("---")
+
+    COLORS = {'PREMIUM':'#00ffff','GASOIL':'#ffaa00','LPG':'#00ff88'}
+
+    # ── Days of Supply trend ──────────────────────────────────────────────────
+    st.markdown("### 📈 DAYS OF SUPPLY OVER TIME")
+    st.caption("Each dot = one saved snapshot. Trend shows if supply runway is growing or shrinking.")
+
+    fig_days = go.Figure()
+    for prod in ['PREMIUM', 'GASOIL', 'LPG']:
+        pdata = hist[hist['product'] == prod].copy()
+        pdata = pdata[pdata['days_remaining'] != float('inf')]
+        if pdata.empty: continue
+        # Trend line (rolling 3)
+        pdata = pdata.sort_values('timestamp')
+        pdata['trend'] = pdata['days_remaining'].rolling(3, min_periods=1).mean()
+        fig_days.add_trace(go.Scatter(
+            x=pdata['timestamp'], y=pdata['days_remaining'],
+            mode='markers', name=f"{prod} actual",
+            marker=dict(color=COLORS[prod], size=8),
+        ))
+        fig_days.add_trace(go.Scatter(
+            x=pdata['timestamp'], y=pdata['trend'],
+            mode='lines', name=f"{prod} trend",
+            line=dict(color=COLORS[prod], width=2, dash='dot'),
+        ))
+
+    # Alert lines
+    fig_days.add_hline(y=7,  line_dash="dash", line_color="#ff0000",
+                       annotation_text="CRITICAL 7d", annotation_font_color="#ff0000")
+    fig_days.add_hline(y=14, line_dash="dash", line_color="#ffaa00",
+                       annotation_text="WARNING 14d", annotation_font_color="#ffaa00")
+    fig_days.update_layout(
+        paper_bgcolor='rgba(10,14,39,0.9)', plot_bgcolor='rgba(10,14,39,0.9)',
+        font=dict(color='white'), height=420,
+        legend=dict(font=dict(color='white')),
+        xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
+        yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Days of Supply'),
+    )
+    st.plotly_chart(fig_days, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### 🛢️ NATIONAL STOCK VOLUME OVER TIME (LT)")
+
+    fig_stock = go.Figure()
+    for prod in ['PREMIUM', 'GASOIL', 'LPG']:
+        pdata = hist[hist['product'] == prod].sort_values('timestamp')
+        if pdata.empty: continue
+        fig_stock.add_trace(go.Scatter(
+            x=pdata['timestamp'], y=pdata['total_balance'],
+            mode='lines+markers', name=prod,
+            line=dict(color=COLORS[prod], width=2),
+            marker=dict(size=6),
+        ))
+    fig_stock.update_layout(
+        paper_bgcolor='rgba(10,14,39,0.9)', plot_bgcolor='rgba(10,14,39,0.9)',
+        font=dict(color='white'), height=380,
+        legend=dict(font=dict(color='white')),
+        xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
+        yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Stock (LT)'),
+    )
+    st.plotly_chart(fig_stock, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### 📉 DAILY DEPLETION RATE OVER TIME (LT/day)")
+    st.caption("Rising depletion rate = demand is accelerating.")
+
+    fig_dep = go.Figure()
+    for prod in ['PREMIUM', 'GASOIL', 'LPG']:
+        pdata = hist[hist['product'] == prod].sort_values('timestamp')
+        if pdata.empty: continue
+        fig_dep.add_trace(go.Bar(
+            x=pdata['timestamp'], y=pdata['daily_rate'],
+            name=prod, marker_color=COLORS[prod], opacity=0.8,
+        ))
+    fig_dep.update_layout(
+        barmode='group',
+        paper_bgcolor='rgba(10,14,39,0.9)', plot_bgcolor='rgba(10,14,39,0.9)',
+        font=dict(color='white'), height=360,
+        legend=dict(font=dict(color='white')),
+        xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
+        yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='LT/day'),
+    )
+    st.plotly_chart(fig_dep, use_container_width=True)
+
+    st.markdown("---")
+    st.markdown("### 📋 RAW SNAPSHOT TABLE")
+    disp = hist.copy()
+    disp['timestamp'] = disp['timestamp'].dt.strftime('%Y-%m-%d %H:%M')
+    disp['days_remaining'] = disp['days_remaining'].apply(lambda x: f"{x:.1f}" if x != float('inf') else "∞")
+    disp['total_balance'] = disp['total_balance'].apply(lambda x: f"{x:,.0f}")
+    disp['daily_rate']    = disp['daily_rate'].apply(lambda x: f"{x:,.0f}")
+    disp['omc_sales']     = disp['omc_sales'].apply(lambda x: f"{x:,.0f}")
+    st.dataframe(disp.rename(columns={
+        'timestamp':'Snapshot Time','period':'Period','product':'Product',
+        'total_balance':'Stock (LT)','omc_sales':'OMC Loadings (LT)',
+        'daily_rate':'Daily Rate (LT/day)','days_remaining':'Days of Supply'
+    }), use_container_width=True, hide_index=True)
+
+    if st.button("🗑️ Clear All Snapshots", key='clear_snaps'):
+        import shutil
+        shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)
+        st.success("Snapshots cleared.")
+        st.rerun()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. 🗺️ DEPOT STRESS MAP
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Known depot coordinates (Ghana)
+DEPOT_COORDS = {
+    'TEMA':        (5.6698,  -0.0166),
+    'TAKORADI':    (4.8845,  -1.7554),
+    'KUMASI':      (6.6885,  -1.6244),
+    'ACCRA':       (5.6037,  -0.1870),
+    'BOLGATANGA':  (10.7856, -0.8514),
+    'TAMALE':      (9.4008,  -0.8393),
+    'SUNYANI':     (7.3349,  -2.3266),
+    'HO':          (6.6011,   0.4714),
+    'CAPE COAST':  (5.1053,  -1.2466),
+    'SEKONDI':     (4.9340,  -1.7039),
+    'KOFORIDUA':   (6.0940,  -0.2588),
+}
+
+def _guess_coords(depot_name: str):
+    """Match depot name to known coordinates via keyword search."""
+    dn = depot_name.upper()
+    for city, coords in DEPOT_COORDS.items():
+        if city in dn:
+            return coords
+    return None
+
+def show_depot_stress_map():
+    st.markdown("<h2>🗺️ DEPOT STRESS MAP</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Geographic view of Ghana's fuel depot stock levels. Instantly see which physical
+    locations are critically low — even when the national total looks fine.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+
+    # ── Data source ───────────────────────────────────────────────────────────
+    has_balance = bool(st.session_state.get('bdc_records'))
+
+    if not has_balance:
+        st.info("📡 Fetching BDC Balance data (needed for depot-level stock)…")
+        if st.button("⚡ FETCH BDC BALANCE", key='dsm_fetch'):
+            cfg = NPA_CONFIG
+            with st.spinner("Fetching…"):
+                bal_params = {
+                    'lngCompanyId': cfg['COMPANY_ID'], 'strITSfromPersol': cfg['ITS_FROM_PERSOL'],
+                    'strGroupBy': 'BDC', 'strGroupBy1': 'DEPOT',
+                    'strQuery1': '', 'strQuery2': '', 'strQuery3': '', 'strQuery4': '',
+                    'strPicHeight': '1', 'szPicWeight': '1',
+                    'lngUserId': cfg['USER_ID'], 'intAppId': cfg['APP_ID'],
+                }
+                bal_bytes = _fetch_pdf_bytes(cfg['BDC_BALANCE_URL'], bal_params)
+                if bal_bytes:
+                    scraper = StockBalanceScraper()
+                    st.session_state.bdc_records = scraper.parse_pdf_file(io.BytesIO(bal_bytes))
+                    st.rerun()
+                else:
+                    st.error("❌ Fetch failed")
+        return
+
+    bal_df = pd.DataFrame(st.session_state.bdc_records)
+    col_bal = 'ACTUAL BALANCE (LT\\KG)'
+
+    if 'DEPOT' not in bal_df.columns or col_bal not in bal_df.columns:
+        st.error("❌ Balance data missing DEPOT or balance columns")
+        return
+
+    # ── Product filter ────────────────────────────────────────────────────────
+    prod_sel = st.selectbox("Product", ['ALL', 'PREMIUM', 'GASOIL', 'LPG'], key='dsm_prod')
+    if prod_sel != 'ALL':
+        bal_df = bal_df[bal_df['Product'] == prod_sel]
+
+    # Aggregate by depot
+    depot_agg = (
+        bal_df.groupby('DEPOT')[col_bal]
+        .sum()
+        .reset_index()
+        .rename(columns={col_bal: 'stock', 'DEPOT': 'depot'})
+    )
+
+    max_stock = depot_agg['stock'].max() or 1
+
+    # ── Build plotly map ──────────────────────────────────────────────────────
+    map_rows = []
+    unmatched = []
+    for _, row in depot_agg.iterrows():
+        coords = _guess_coords(row['depot'])
+        if coords:
+            map_rows.append({
+                'depot': row['depot'],
+                'stock': row['stock'],
+                'lat': coords[0],
+                'lon': coords[1],
+                'pct': row['stock'] / max_stock * 100,
+            })
+        else:
+            unmatched.append(row['depot'])
+
+    if map_rows:
+        map_df = pd.DataFrame(map_rows)
+        map_df['color'] = map_df['pct'].apply(
+            lambda p: '#ff0000' if p < 10 else '#ffaa00' if p < 25 else '#ffdd00' if p < 50 else '#00ff88'
+        )
+        map_df['status'] = map_df['pct'].apply(
+            lambda p: '🔴 CRITICAL' if p < 10 else '🟡 LOW' if p < 25 else '🟠 MODERATE' if p < 50 else '🟢 HEALTHY'
+        )
+        map_df['stock_fmt'] = map_df['stock'].apply(lambda x: f"{x:,.0f} LT")
+
+        fig_map = go.Figure()
+
+        for _, r in map_df.iterrows():
+            fig_map.add_trace(go.Scattergeo(
+                lat=[r['lat']], lon=[r['lon']],
+                mode='markers+text',
+                marker=dict(
+                    size=max(12, min(50, r['pct'] * 0.5 + 10)),
+                    color=r['color'],
+                    opacity=0.85,
+                    line=dict(width=2, color='white'),
+                ),
+                text=r['depot'][:20],
+                textposition='top center',
+                textfont=dict(color='white', size=10),
+                hovertemplate=(
+                    f"<b>{r['depot']}</b><br>"
+                    f"Stock: {r['stock_fmt']}<br>"
+                    f"Relative: {r['pct']:.1f}%<br>"
+                    f"Status: {r['status']}<extra></extra>"
+                ),
+                name=r['status'],
+                showlegend=False,
+            ))
+
+        fig_map.update_layout(
+            geo=dict(
+                scope='africa',
+                center=dict(lat=7.9, lon=-1.0),
+                projection_scale=12,
+                showland=True, landcolor='rgba(22,33,62,0.9)',
+                showocean=True, oceancolor='rgba(10,14,39,0.95)',
+                showcoastlines=True, coastlinecolor='rgba(0,255,255,0.4)',
+                showframe=False,
+                bgcolor='rgba(10,14,39,0)',
+            ),
+            paper_bgcolor='rgba(10,14,39,0)',
+            height=520,
+            margin=dict(l=0, r=0, t=0, b=0),
+        )
+        st.plotly_chart(fig_map, use_container_width=True)
+
+        st.markdown("---")
+        st.markdown("### 🏭 DEPOT STOCK RANKING")
+
+        # Colour-coded bar chart
+        fig_bar = go.Figure(go.Bar(
+            x=map_df.sort_values('stock', ascending=True)['depot'],
+            y=map_df.sort_values('stock', ascending=True)['stock'],
+            marker_color=map_df.sort_values('stock', ascending=True)['color'],
+            text=map_df.sort_values('stock', ascending=True)['stock_fmt'],
+            textposition='outside',
+        ))
+        fig_bar.update_layout(
+            paper_bgcolor='rgba(10,14,39,0.9)', plot_bgcolor='rgba(10,14,39,0.9)',
+            font=dict(color='white'), height=380,
+            xaxis=dict(tickangle=-30),
+            yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Stock (LT)'),
+        )
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    else:
+        st.warning("⚠️ No depot coordinates matched. Showing table instead.")
+
+    if unmatched:
+        st.caption(f"⚠️ Depots without map coordinates (table only): {', '.join(set(unmatched))}")
+
+    st.markdown("---")
+    st.markdown("### 📋 FULL DEPOT TABLE")
+    display_tbl = depot_agg.copy()
+    display_tbl['stock'] = display_tbl['stock'].apply(lambda x: f"{x:,.0f}")
+    st.dataframe(display_tbl.rename(columns={'depot':'Depot','stock':'Stock (LT)'}),
+                 use_container_width=True, hide_index=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. 🔮 DEMAND FORECAST
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def show_demand_forecast():
+    st.markdown("<h2>🔮 DEMAND FORECAST</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Uses OMC Loadings history to project future demand per OMC and nationally.
+    Based on weighted moving average — more recent weeks count more.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+
+    has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
+    if not has_loadings:
+        st.warning("⚠️ OMC Loadings data required. Fetch it from 🚚 OMC LOADINGS first.")
+        return
+
+    df = st.session_state.omc_df.copy()
+    df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
+    df = df.dropna(subset=['Date'])
+
+    if df.empty:
+        st.warning("⚠️ No valid date rows in OMC Loadings.")
+        return
+
+    col1, col2 = st.columns(2)
+    with col1:
+        forecast_weeks = st.slider("Forecast horizon (weeks)", 1, 12, 4, key='df_weeks')
+    with col2:
+        view_mode = st.radio("View", ["National by Product", "By OMC"], horizontal=True, key='df_view')
+
+    # ── Compute weekly actuals ────────────────────────────────────────────────
+    df['week'] = df['Date'].dt.to_period('W').apply(lambda p: p.start_time)
+
+    COLORS = {'PREMIUM':'#00ffff','GASOIL':'#ffaa00','LPG':'#00ff88'}
+
+    if view_mode == "National by Product":
+        weekly = df.groupby(['week', 'Product'])['Quantity'].sum().reset_index()
+        products = [p for p in ['PREMIUM','GASOIL','LPG'] if p in weekly['Product'].unique()]
+
+        fig = go.Figure()
+        forecast_summary = []
+
+        for prod in products:
+            pdata = weekly[weekly['Product'] == prod].sort_values('week')
+            if len(pdata) < 2:
+                continue
+
+            # Weighted moving average (exponential weights)
+            vals = pdata['Quantity'].values
+            n = len(vals)
+            weights = [0.5 ** (n - 1 - i) for i in range(n)]
+            wsum = sum(weights)
+            wma  = sum(w * v for w, v in zip(weights, vals)) / wsum
+
+            # Project forward
+            last_week = pdata['week'].iloc[-1]
+            future_weeks = [last_week + timedelta(weeks=i+1) for i in range(forecast_weeks)]
+            # Simple linear trend on last 4 weeks
+            if n >= 4:
+                recent = vals[-4:]
+                trend  = (recent[-1] - recent[0]) / 3
+            else:
+                trend = 0
+            proj_vals = [max(0, wma + trend * (i + 1)) for i in range(forecast_weeks)]
+
+            # Actual line
+            fig.add_trace(go.Scatter(
+                x=pdata['week'], y=pdata['Quantity'],
+                mode='lines+markers', name=f"{prod} actual",
+                line=dict(color=COLORS[prod], width=2),
+                marker=dict(size=7),
+            ))
+            # Forecast line
+            fig.add_trace(go.Scatter(
+                x=future_weeks, y=proj_vals,
+                mode='lines+markers', name=f"{prod} forecast",
+                line=dict(color=COLORS[prod], width=2, dash='dash'),
+                marker=dict(size=7, symbol='diamond'),
+            ))
+
+            forecast_summary.append({
+                'Product': prod,
+                'Recent Weekly Avg (LT)': f"{wma:,.0f}",
+                'Weekly Trend': f"{trend:+,.0f} LT/week",
+                f'Week+1 Projected (LT)': f"{proj_vals[0]:,.0f}",
+                f'Week+{forecast_weeks} Projected (LT)': f"{proj_vals[-1]:,.0f}",
+                f'{forecast_weeks}wk Total (LT)': f"{sum(proj_vals):,.0f}",
+            })
+
+        # Shaded forecast region
+        if future_weeks:
+            fig.add_vrect(
+                x0=future_weeks[0], x1=future_weeks[-1],
+                fillcolor='rgba(255,0,255,0.05)', layer='below',
+                line_width=0, annotation_text="FORECAST ZONE",
+                annotation_font_color='#ff00ff',
+            )
+
+        fig.update_layout(
+            paper_bgcolor='rgba(10,14,39,0.9)', plot_bgcolor='rgba(10,14,39,0.9)',
+            font=dict(color='white'), height=440,
+            legend=dict(font=dict(color='white')),
+            xaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Week'),
+            yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Volume (LT)'),
+            title=dict(text='Weekly OMC Loadings + Forecast', font=dict(color='#00ffff', family='Orbitron')),
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        if forecast_summary:
+            st.markdown("### 📋 FORECAST SUMMARY")
+            st.dataframe(pd.DataFrame(forecast_summary), use_container_width=True, hide_index=True)
+
+    else:  # By OMC
+        prod_filter = st.selectbox("Product", ['PREMIUM', 'GASOIL', 'LPG'], key='df_omc_prod')
+        df_p = df[df['Product'] == prod_filter]
+        weekly_omc = df_p.groupby(['week', 'OMC'])['Quantity'].sum().reset_index()
+
+        top_omcs = (
+            df_p.groupby('OMC')['Quantity'].sum()
+            .sort_values(ascending=False)
+            .head(10).index.tolist()
+        )
+        omc_sel = st.multiselect("Select OMCs", top_omcs, default=top_omcs[:5], key='df_omc_sel')
+
+        fig2 = go.Figure()
+        omc_forecast_rows = []
+
+        palette = ['#00ffff','#ff00ff','#00ff88','#ffaa00','#ff6600',
+                   '#ff4488','#44ffdd','#ffdd44','#aa44ff','#ff8844']
+
+        for idx, omc in enumerate(omc_sel):
+            odata = weekly_omc[weekly_omc['OMC'] == omc].sort_values('week')
+            if len(odata) < 1: continue
+
+            vals = odata['Quantity'].values
+            n    = len(vals)
+            weights = [0.5 ** (n - 1 - i) for i in range(n)]
+            wma = sum(w * v for w, v in zip(weights, vals)) / sum(weights)
+            trend = (vals[-1] - vals[0]) / max(n - 1, 1)
+            last_week = odata['week'].iloc[-1]
+            future_weeks = [last_week + timedelta(weeks=i+1) for i in range(forecast_weeks)]
+            proj_vals = [max(0, wma + trend * (i + 1)) for i in range(forecast_weeks)]
+
+            col = palette[idx % len(palette)]
+            fig2.add_trace(go.Scatter(
+                x=odata['week'], y=odata['Quantity'],
+                mode='lines+markers', name=f"{omc[:20]}",
+                line=dict(color=col, width=2), marker=dict(size=6),
+            ))
+            fig2.add_trace(go.Scatter(
+                x=future_weeks, y=proj_vals,
+                mode='lines', name=f"{omc[:20]} fcst",
+                line=dict(color=col, width=2, dash='dash'), showlegend=False,
+            ))
+            omc_forecast_rows.append({
+                'OMC': omc,
+                'WMA (LT/wk)': f"{wma:,.0f}",
+                'Trend': f"{trend:+,.0f}/wk",
+                f'Wk+1': f"{proj_vals[0]:,.0f}",
+                f'{forecast_weeks}wk Total': f"{sum(proj_vals):,.0f}",
+            })
+
+        fig2.update_layout(
+            paper_bgcolor='rgba(10,14,39,0.9)', plot_bgcolor='rgba(10,14,39,0.9)',
+            font=dict(color='white'), height=440,
+            legend=dict(font=dict(color='white', size=10)),
+            xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
+            yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Volume (LT)'),
+        )
+        st.plotly_chart(fig2, use_container_width=True)
+
+        if omc_forecast_rows:
+            st.markdown("### 📋 OMC FORECAST TABLE")
+            st.dataframe(pd.DataFrame(omc_forecast_rows), use_container_width=True, hide_index=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. ⚠️ REORDER ALERTS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def show_reorder_alerts():
+    st.markdown("<h2>⚠️ REORDER ALERTS</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Per-BDC stockout forecast. Combines each BDC's current stock with their
+    OMC loading rate to give individual days-of-supply and reorder recommendations.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+
+    has_balance  = bool(st.session_state.get('bdc_records'))
+    has_loadings = not st.session_state.get('omc_df', pd.DataFrame()).empty
+
+    if not has_balance:
+        st.warning("⚠️ BDC Balance required — fetch from 🏦 BDC BALANCE first.")
+    if not has_loadings:
+        st.warning("⚠️ OMC Loadings required — fetch from 🚚 OMC LOADINGS first.")
+    if not has_balance or not has_loadings:
+        return
+
+    bal_df  = pd.DataFrame(st.session_state.bdc_records)
+    omc_df  = st.session_state.omc_df.copy()
+    col_bal = 'ACTUAL BALANCE (LT\\KG)'
+
+    # ── Thresholds ────────────────────────────────────────────────────────────
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        crit_days = st.number_input("Critical threshold (days)", value=5,  min_value=1, max_value=30)
+    with col2:
+        warn_days = st.number_input("Warning threshold (days)",  value=10, min_value=1, max_value=60)
+    with col3:
+        reorder_buffer = st.number_input("Reorder buffer (days)",       value=7,  min_value=1, max_value=30,
+            help="Days of extra stock to recommend ordering")
+
+    omc_df['Date'] = pd.to_datetime(omc_df['Date'], errors='coerce')
+    omc_df = omc_df.dropna(subset=['Date'])
+    period_days_ra = max((omc_df['Date'].max() - omc_df['Date'].min()).days, 1) if not omc_df.empty else 30
+
+    # BDC stock by product
+    bdc_stock = bal_df.groupby(['BDC','Product'])[col_bal].sum().reset_index()
+    bdc_stock.columns = ['BDC','Product','stock']
+
+    # BDC depletion (OMC loadings FROM each BDC)
+    if 'BDC' in omc_df.columns:
+        bdc_dep = (
+            omc_df[omc_df['Product'].isin(['PREMIUM','GASOIL','LPG'])]
+            .groupby(['BDC','Product'])['Quantity']
+            .sum()
+            .reset_index()
+        )
+        bdc_dep.columns = ['BDC','Product','depletion']
+        bdc_dep['daily_rate'] = bdc_dep['depletion'] / period_days_ra
+    else:
+        st.warning("⚠️ BDC column not found in OMC Loadings — cannot compute per-BDC depletion.")
+        return
+
+    merged = bdc_stock.merge(bdc_dep, on=['BDC','Product'], how='left')
+    merged['daily_rate'] = merged['daily_rate'].fillna(0)
+    merged['days_remaining'] = merged.apply(
+        lambda r: r['stock'] / r['daily_rate'] if r['daily_rate'] > 0 else float('inf'),
+        axis=1
+    )
+    merged['reorder_qty'] = merged.apply(
+        lambda r: max(0, r['daily_rate'] * (warn_days + reorder_buffer) - r['stock'])
+        if r['daily_rate'] > 0 else 0,
+        axis=1
+    )
+
+    def _status(d):
+        if d == float('inf'): return '⚪ NO DATA'
+        if d < crit_days:     return '🔴 CRITICAL'
+        if d < warn_days:     return '🟡 WARNING'
+        if d < 30:            return '🟠 MONITOR'
+        return '🟢 HEALTHY'
+
+    merged['status'] = merged['days_remaining'].apply(_status)
+
+    # ── Alert summary ─────────────────────────────────────────────────────────
+    critical_rows = merged[merged['days_remaining'] < crit_days]
+    warning_rows  = merged[(merged['days_remaining'] >= crit_days) & (merged['days_remaining'] < warn_days)]
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("🔴 Critical BDC-Products", len(critical_rows))
+    c2.metric("🟡 Warning BDC-Products",  len(warning_rows))
+    c3.metric("BDCs Analysed", merged['BDC'].nunique())
+
+    if not critical_rows.empty:
+        st.error("🚨 CRITICAL — Immediate reorder required for:")
+        for _, r in critical_rows.sort_values('days_remaining').iterrows():
+            st.markdown(
+                f"**{r['BDC']}** — {r['Product']}: "
+                f"**{r['days_remaining']:.1f} days** remaining | "
+                f"Reorder: **{r['reorder_qty']:,.0f} LT**"
+            )
+
+    if not warning_rows.empty:
+        st.warning("⚠️ WARNING — Plan reorder within 48h for:")
+        for _, r in warning_rows.sort_values('days_remaining').iterrows():
+            st.markdown(
+                f"**{r['BDC']}** — {r['Product']}: "
+                f"**{r['days_remaining']:.1f} days** remaining | "
+                f"Reorder: **{r['reorder_qty']:,.0f} LT**"
+            )
+
+    st.markdown("---")
+    st.markdown("### 📋 FULL BDC REORDER TABLE")
+
+    prod_filter_ra = st.selectbox("Filter by Product", ['ALL','PREMIUM','GASOIL','LPG'], key='ra_prod')
+    stat_filter_ra = st.selectbox("Filter by Status",
+        ['ALL','🔴 CRITICAL','🟡 WARNING','🟠 MONITOR','🟢 HEALTHY','⚪ NO DATA'], key='ra_stat')
+
+    display_ra = merged.copy()
+    if prod_filter_ra != 'ALL':
+        display_ra = display_ra[display_ra['Product'] == prod_filter_ra]
+    if stat_filter_ra != 'ALL':
+        display_ra = display_ra[display_ra['status'] == stat_filter_ra]
+
+    display_ra = display_ra.sort_values('days_remaining')
+    display_ra['days_remaining'] = display_ra['days_remaining'].apply(
+        lambda x: f"{x:.1f}" if x != float('inf') else "∞")
+    display_ra['stock']       = display_ra['stock'].apply(lambda x: f"{x:,.0f}")
+    display_ra['depletion']   = display_ra['depletion'].fillna(0).apply(lambda x: f"{x:,.0f}")
+    display_ra['daily_rate']  = display_ra['daily_rate'].apply(lambda x: f"{x:,.0f}")
+    display_ra['reorder_qty'] = display_ra['reorder_qty'].apply(lambda x: f"{x:,.0f}")
+
+    st.dataframe(
+        display_ra[['BDC','Product','stock','depletion','daily_rate','days_remaining','reorder_qty','status']]
+        .rename(columns={
+            'BDC':'BDC','Product':'Product','stock':'Current Stock (LT)',
+            'depletion':'Period Depletion (LT)','daily_rate':'Daily Rate (LT/d)',
+            'days_remaining':'Days of Supply','reorder_qty':'Reorder Qty (LT)','status':'Status'
+        }),
+        use_container_width=True, hide_index=True
+    )
+
+    st.markdown("---")
+    if st.button("💾 EXPORT REORDER REPORT", key='ra_export'):
+        out_dir = os.path.join(os.getcwd(), "reorder_reports")
+        os.makedirs(out_dir, exist_ok=True)
+        fname = f"reorder_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        fpath = os.path.join(out_dir, fname)
+        merged.to_excel(fpath, index=False)
+        with open(fpath, 'rb') as f:
+            st.download_button("⬇️ DOWNLOAD", f, fname,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key='ra_dl')
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. 📆 WEEK-ON-WEEK COMPARISON
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def show_week_on_week():
+    st.markdown("<h2>📆 WEEK-ON-WEEK COMPARISON</h2>", unsafe_allow_html=True)
+    st.markdown("""
+    <p style='color:#ff00ff; font-size:16px;'>
+    Fetch two date ranges and compare side-by-side: which BDCs loaded more,
+    which OMCs dropped off, which products shifted. The delta view that answers
+    every operations meeting question instantly.
+    </p>
+    """, unsafe_allow_html=True)
+    st.markdown("---")
+
+    st.markdown("### 📅 SELECT TWO PERIODS TO COMPARE")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.markdown("#### 📘 Period A (e.g. last week)")
+        a_start = st.date_input("A: From", value=datetime.now() - timedelta(days=14), key='wow_a_start')
+        a_end   = st.date_input("A: To",   value=datetime.now() - timedelta(days=8),  key='wow_a_end')
+    with col2:
+        st.markdown("#### 📗 Period B (e.g. this week)")
+        b_start = st.date_input("B: From", value=datetime.now() - timedelta(days=7), key='wow_b_start')
+        b_end   = st.date_input("B: To",   value=datetime.now(),                      key='wow_b_end')
+
+    if st.button("⚡ FETCH & COMPARE", key='wow_fetch', use_container_width=False):
+        a_days = max((a_end - a_start).days, 1)
+        b_days = max((b_end - b_start).days, 1)
+
+        with st.status("Fetching Period A…", expanded=True) as sa:
+            df_a = _fetch_national_omc_loadings(
+                a_start.strftime("%m/%d/%Y"), a_end.strftime("%m/%d/%Y"))
+            sa.update(label=f"✅ Period A: {len(df_a):,} records", state="complete")
+
+        with st.status("Fetching Period B…", expanded=True) as sb:
+            df_b = _fetch_national_omc_loadings(
+                b_start.strftime("%m/%d/%Y"), b_end.strftime("%m/%d/%Y"))
+            sb.update(label=f"✅ Period B: {len(df_b):,} records", state="complete")
+
+        st.session_state.wow_a = {'df': df_a, 'label': f"{a_start} → {a_end}", 'days': a_days}
+        st.session_state.wow_b = {'df': df_b, 'label': f"{b_start} → {b_end}", 'days': b_days}
+        st.rerun()
+
+    if not st.session_state.get('wow_a'):
+        st.info("👆 Select two periods and click **FETCH & COMPARE**.")
+        return
+
+    wa = st.session_state.wow_a
+    wb = st.session_state.wow_b
+    df_a, df_b = wa['df'], wb['df']
+    label_a, label_b = wa['label'], wb['label']
+    days_a, days_b   = wa['days'],  wb['days']
+
+    COLORS = {'PREMIUM':'#00ffff','GASOIL':'#ffaa00','LPG':'#00ff88'}
+    PRODUCTS = ['PREMIUM','GASOIL','LPG']
+
+    # ── National product comparison ───────────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🛢️ NATIONAL VOLUME BY PRODUCT")
+
+    vol_a = df_a[df_a['Product'].isin(PRODUCTS)].groupby('Product')['Quantity'].sum() if not df_a.empty else pd.Series()
+    vol_b = df_b[df_b['Product'].isin(PRODUCTS)].groupby('Product')['Quantity'].sum() if not df_b.empty else pd.Series()
+
+    prod_rows = []
+    cols = st.columns(3)
+    for ci, prod in enumerate(PRODUCTS):
+        va = float(vol_a.get(prod, 0))
+        vb = float(vol_b.get(prod, 0))
+        da_rate = va / days_a if days_a > 0 else 0
+        db_rate = vb / days_b if days_b > 0 else 0
+        delta_abs = vb - va
+        delta_pct = ((vb - va) / va * 100) if va > 0 else 0
+        arrow = "↑" if delta_abs > 0 else "↓"
+        dcol  = "#00ff88" if delta_abs > 0 else "#ff4444"
+
+        with cols[ci]:
+            st.markdown(f"""
+            <div style='background:rgba(10,14,39,0.85); padding:20px; border-radius:14px;
+                        border:2px solid {COLORS[prod]}; text-align:center; margin-bottom:8px;'>
+                <div style='font-family:Orbitron,sans-serif; color:{COLORS[prod]};
+                             font-size:15px; font-weight:700; margin-bottom:10px;'>{prod}</div>
+                <div style='color:#888; font-size:11px;'>{label_a}</div>
+                <div style='color:#e0e0e0; font-size:20px; font-weight:700;'>{va:,.0f} LT</div>
+                <div style='color:#888; font-size:11px; margin-top:6px;'>{label_b}</div>
+                <div style='color:#ffffff; font-size:24px; font-weight:700;'>{vb:,.0f} LT</div>
+                <div style='color:{dcol}; font-size:18px; font-weight:700; margin-top:8px;'>
+                    {arrow} {abs(delta_abs):,.0f} LT ({delta_pct:+.1f}%)</div>
+                <div style='color:#888; font-size:11px; margin-top:6px;'>
+                    A: {da_rate:,.0f} LT/d → B: {db_rate:,.0f} LT/d</div>
+            </div>
+            """, unsafe_allow_html=True)
+        prod_rows.append({'Product':prod,'Period A (LT)':f"{va:,.0f}",
+                          'Period B (LT)':f"{vb:,.0f}",'Delta':f"{delta_abs:+,.0f}",
+                          'Change %':f"{delta_pct:+.1f}%"})
+
+    st.markdown("---")
+
+    # ── BDC comparison ────────────────────────────────────────────────────────
+    st.markdown("### 🏭 BDC-LEVEL COMPARISON")
+    prod_wow = st.selectbox("Product", ['ALL'] + PRODUCTS, key='wow_prod')
+
+    def _bdc_vol(df, prod):
+        if df.empty: return pd.Series(dtype=float)
+        f = df if prod == 'ALL' else df[df['Product'] == prod]
+        return f.groupby('BDC')['Quantity'].sum() if 'BDC' in f.columns else pd.Series(dtype=float)
+
+    bdc_a = _bdc_vol(df_a, prod_wow)
+    bdc_b = _bdc_vol(df_b, prod_wow)
+    all_bdcs = sorted(set(bdc_a.index) | set(bdc_b.index))
+
+    bdc_rows = []
+    for bdc in all_bdcs:
+        va = float(bdc_a.get(bdc, 0))
+        vb = float(bdc_b.get(bdc, 0))
+        delta = vb - va
+        pct   = ((vb - va) / va * 100) if va > 0 else (100.0 if vb > 0 else 0.0)
+        bdc_rows.append({'BDC': bdc, 'Period A (LT)': va, 'Period B (LT)': vb,
+                         'Delta (LT)': delta, 'Change %': round(pct, 1)})
+
+    bdc_cmp = pd.DataFrame(bdc_rows).sort_values('Delta (LT)', ascending=False)
+
+    # Visual bar chart
+    fig_bdc = go.Figure()
+    fig_bdc.add_trace(go.Bar(
+        name=label_a, x=bdc_cmp['BDC'], y=bdc_cmp['Period A (LT)'],
+        marker_color='rgba(0,255,255,0.6)',
+    ))
+    fig_bdc.add_trace(go.Bar(
+        name=label_b, x=bdc_cmp['BDC'], y=bdc_cmp['Period B (LT)'],
+        marker_color='rgba(255,0,255,0.6)',
+    ))
+    fig_bdc.update_layout(
+        barmode='group',
+        paper_bgcolor='rgba(10,14,39,0.9)', plot_bgcolor='rgba(10,14,39,0.9)',
+        font=dict(color='white'), height=420,
+        legend=dict(font=dict(color='white')),
+        xaxis=dict(tickangle=-30, gridcolor='rgba(255,255,255,0.05)'),
+        yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Volume (LT)'),
+    )
+    st.plotly_chart(fig_bdc, use_container_width=True)
+
+    st.markdown("#### 🔺 Biggest Movers")
+    disp_bdc = bdc_cmp.copy()
+    disp_bdc['Period A (LT)'] = disp_bdc['Period A (LT)'].apply(lambda x: f"{x:,.0f}")
+    disp_bdc['Period B (LT)'] = disp_bdc['Period B (LT)'].apply(lambda x: f"{x:,.0f}")
+    disp_bdc['Delta (LT)']    = disp_bdc['Delta (LT)'].apply(lambda x: f"{x:+,.0f}")
+    disp_bdc['Change %']      = disp_bdc['Change %'].apply(lambda x: f"{x:+.1f}%")
+    st.dataframe(disp_bdc, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+    # ── OMC comparison ────────────────────────────────────────────────────────
+    st.markdown("### 🏢 TOP OMC MOVERS")
+
+    def _omc_vol(df, prod):
+        if df.empty or 'OMC' not in df.columns: return pd.Series(dtype=float)
+        f = df if prod == 'ALL' else df[df['Product'] == prod]
+        return f.groupby('OMC')['Quantity'].sum()
+
+    omc_a = _omc_vol(df_a, prod_wow)
+    omc_b = _omc_vol(df_b, prod_wow)
+    all_omcs = sorted(set(omc_a.index) | set(omc_b.index))
+
+    omc_rows = []
+    for omc in all_omcs:
+        va = float(omc_a.get(omc, 0))
+        vb = float(omc_b.get(omc, 0))
+        delta = vb - va
+        pct   = ((vb - va) / va * 100) if va > 0 else (100.0 if vb > 0 else 0.0)
+        omc_rows.append({'OMC': omc, 'Period A (LT)': va, 'Period B (LT)': vb,
+                         'Delta (LT)': delta, 'Change %': round(pct, 1)})
+
+    omc_cmp = pd.DataFrame(omc_rows).sort_values('Delta (LT)', ascending=False)
+
+    top_gainers = omc_cmp.head(5)
+    top_losers  = omc_cmp.tail(5).iloc[::-1]
+
+    col_g, col_l = st.columns(2)
+    with col_g:
+        st.markdown("##### 🟢 Top 5 Gainers")
+        for _, r in top_gainers.iterrows():
+            st.markdown(f"**{r['OMC'][:30]}** — {r['Delta (LT)']:+,.0f} LT ({r['Change %']:+.1f}%)")
+    with col_l:
+        st.markdown("##### 🔴 Top 5 Decliners")
+        for _, r in top_losers.iterrows():
+            st.markdown(f"**{r['OMC'][:30]}** — {r['Delta (LT)']:+,.0f} LT ({r['Change %']:+.1f}%)")
+
+    st.markdown("---")
+    if st.button("💾 EXPORT COMPARISON", key='wow_export'):
+        out_dir = os.path.join(os.getcwd(), "wow_reports")
+        os.makedirs(out_dir, exist_ok=True)
+        fname = f"wow_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        fpath = os.path.join(out_dir, fname)
+        with pd.ExcelWriter(fpath, engine='openpyxl') as writer:
+            pd.DataFrame(prod_rows).to_excel(writer, sheet_name='Product Summary', index=False)
+            bdc_cmp.to_excel(writer,  sheet_name='BDC Comparison', index=False)
+            omc_cmp.to_excel(writer,  sheet_name='OMC Comparison', index=False)
+            if not df_a.empty: df_a.to_excel(writer, sheet_name='Period A Raw', index=False)
+            if not df_b.empty: df_b.to_excel(writer, sheet_name='Period B Raw', index=False)
+        with open(fpath, 'rb') as f:
+            st.download_button("⬇️ DOWNLOAD", f, fname,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key='wow_dl')
