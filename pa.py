@@ -3755,7 +3755,7 @@ def show_live_runway_monitor():
     with col_b:
         period_days_lr = st.number_input("Lookback days", value=30, min_value=1, max_value=90, key='lr_period')
     with col_c:
-        fetch_now = st.button("⚡ FETCH NOW", key='lr_fetch', use_container_width=False)
+        fetch_now = st.button("⚡ FETCH NOW", key='lr_fetch', width='content')
 
     # ── Fetch logic ───────────────────────────────────────────────────────────
     should_fetch = fetch_now
@@ -3982,7 +3982,7 @@ def show_historical_trends():
         xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
         yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Days of Supply'),
     )
-    st.plotly_chart(fig_days, use_container_width=True)
+    st.plotly_chart(fig_days, width='stretch')
 
     st.markdown("---")
     st.markdown("### 🛢️ NATIONAL STOCK VOLUME OVER TIME (LT)")
@@ -4004,7 +4004,7 @@ def show_historical_trends():
         xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
         yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Stock (LT)'),
     )
-    st.plotly_chart(fig_stock, use_container_width=True)
+    st.plotly_chart(fig_stock, width='stretch')
 
     st.markdown("---")
     st.markdown("### 📉 DAILY DEPLETION RATE OVER TIME (LT/day)")
@@ -4026,7 +4026,7 @@ def show_historical_trends():
         xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
         yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='LT/day'),
     )
-    st.plotly_chart(fig_dep, use_container_width=True)
+    st.plotly_chart(fig_dep, width='stretch')
 
     st.markdown("---")
     st.markdown("### 📋 RAW SNAPSHOT TABLE")
@@ -4040,7 +4040,7 @@ def show_historical_trends():
         'timestamp':'Snapshot Time','period':'Period','product':'Product',
         'total_balance':'Stock (LT)','omc_sales':'OMC Loadings (LT)',
         'daily_rate':'Daily Rate (LT/day)','days_remaining':'Days of Supply'
-    }), use_container_width=True, hide_index=True)
+    }), width='stretch', hide_index=True)
 
     if st.button("🗑️ Clear All Snapshots", key='clear_snaps'):
         import shutil
@@ -4198,7 +4198,7 @@ def show_depot_stress_map():
             height=520,
             margin=dict(l=0, r=0, t=0, b=0),
         )
-        st.plotly_chart(fig_map, use_container_width=True)
+        st.plotly_chart(fig_map, width='stretch')
 
         st.markdown("---")
         st.markdown("### 🏭 DEPOT STOCK RANKING")
@@ -4217,7 +4217,7 @@ def show_depot_stress_map():
             xaxis=dict(tickangle=-30),
             yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Stock (LT)'),
         )
-        st.plotly_chart(fig_bar, use_container_width=True)
+        st.plotly_chart(fig_bar, width='stretch')
 
     else:
         st.warning("⚠️ No depot coordinates matched. Showing table instead.")
@@ -4230,7 +4230,7 @@ def show_depot_stress_map():
     display_tbl = depot_agg.copy()
     display_tbl['stock'] = display_tbl['stock'].apply(lambda x: f"{x:,.0f}")
     st.dataframe(display_tbl.rename(columns={'depot':'Depot','stock':'Stock (LT)'}),
-                 use_container_width=True, hide_index=True)
+                 width='stretch', hide_index=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4342,11 +4342,11 @@ def show_demand_forecast():
             yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Volume (LT)'),
             title=dict(text='Weekly OMC Loadings + Forecast', font=dict(color='#00ffff', family='Orbitron')),
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
 
         if forecast_summary:
             st.markdown("### 📋 FORECAST SUMMARY")
-            st.dataframe(pd.DataFrame(forecast_summary), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(forecast_summary), width='stretch', hide_index=True)
 
     else:  # By OMC
         prod_filter = st.selectbox("Product", ['PREMIUM', 'GASOIL', 'LPG'], key='df_omc_prod')
@@ -4405,11 +4405,11 @@ def show_demand_forecast():
             xaxis=dict(gridcolor='rgba(255,255,255,0.05)'),
             yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Volume (LT)'),
         )
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width='stretch')
 
         if omc_forecast_rows:
             st.markdown("### 📋 OMC FORECAST TABLE")
-            st.dataframe(pd.DataFrame(omc_forecast_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(omc_forecast_rows), width='stretch', hide_index=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4548,7 +4548,7 @@ def show_reorder_alerts():
             'depletion':'Period Depletion (LT)','daily_rate':'Daily Rate (LT/d)',
             'days_remaining':'Days of Supply','reorder_qty':'Reorder Qty (LT)','status':'Status'
         }),
-        use_container_width=True, hide_index=True
+        width='stretch', hide_index=True
     )
 
     st.markdown("---")
@@ -4590,7 +4590,7 @@ def show_week_on_week():
         b_start = st.date_input("B: From", value=datetime.now() - timedelta(days=7), key='wow_b_start')
         b_end   = st.date_input("B: To",   value=datetime.now(),                      key='wow_b_end')
 
-    if st.button("⚡ FETCH & COMPARE", key='wow_fetch', use_container_width=False):
+    if st.button("⚡ FETCH & COMPARE", key='wow_fetch', width='content'):
         a_days = max((a_end - a_start).days, 1)
         b_days = max((b_end - b_start).days, 1)
 
@@ -4704,7 +4704,7 @@ def show_week_on_week():
         xaxis=dict(tickangle=-30, gridcolor='rgba(255,255,255,0.05)'),
         yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Volume (LT)'),
     )
-    st.plotly_chart(fig_bdc, use_container_width=True)
+    st.plotly_chart(fig_bdc, width='stretch')
 
     st.markdown("#### 🔺 Biggest Movers")
     disp_bdc = bdc_cmp.copy()
@@ -4712,7 +4712,7 @@ def show_week_on_week():
     disp_bdc['Period B (LT)'] = disp_bdc['Period B (LT)'].apply(lambda x: f"{x:,.0f}")
     disp_bdc['Delta (LT)']    = disp_bdc['Delta (LT)'].apply(lambda x: f"{x:+,.0f}")
     disp_bdc['Change %']      = disp_bdc['Change %'].apply(lambda x: f"{x:+.1f}%")
-    st.dataframe(disp_bdc, use_container_width=True, hide_index=True)
+    st.dataframe(disp_bdc, width='stretch', hide_index=True)
 
     st.markdown("---")
 
