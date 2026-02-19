@@ -3664,8 +3664,6 @@ def show_bdc_intelligence():
         top_omcs.columns = ['OMC', 'Total Volume (LT)']
      
         st.dataframe(top_omcs, width='stretch', hide_index=True)
-if __name__ == "__main__":
-    main()
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -4768,3 +4766,6 @@ def show_week_on_week():
             st.download_button("⬇️ DOWNLOAD", f, fname,
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key='wow_dl')
+
+
+main()
