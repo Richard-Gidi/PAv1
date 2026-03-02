@@ -4750,7 +4750,7 @@ def show_week_on_week():
         for _, r in top_losers.iterrows():
             st.markdown(f"**{r['OMC'][:30]}** — {r['Delta (LT)']:+,.0f} LT ({r['Change %']:+.1f}%)")
 
-    st.markdown("---")
+    st.markdown("----")
     if st.button("💾 EXPORT COMPARISON", key='wow_export'):
         out_dir = os.path.join(os.getcwd(), "wow_reports")
         os.makedirs(out_dir, exist_ok=True)
