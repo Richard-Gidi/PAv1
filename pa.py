@@ -925,29 +925,42 @@ def show_world_monitor():
     st.info("🔴 LIVE GLOBAL INTELLIGENCE: Real-time conflicts, military bases, nuclear sites, sanctions, weather, economic indicators, waterways, power outages, natural disasters & Iran attacks. Fully interactive map with 7-day view.")
     st.caption("Source: " + WORLD_MONITOR_URL.split("?")[0])
 
-    st.markdown('''
+    # JavaScript button that forces top-level navigation
+    _url = WORLD_MONITOR_URL
+    st.components.v1.html(f"""
     <div style='background:rgba(22,33,62,0.6); padding:40px; border-radius:15px;
-                border:2px solid #00ffff; text-align:center; margin:20px 0;'>
+                border:2px solid #00ffff; text-align:center; font-family:sans-serif;'>
         <div style='font-size:80px; margin-bottom:20px;'>🌍</div>
         <h3 style='color:#00ffff; margin:0;'>WORLD RISK MONITOR</h3>
         <p style='color:#888; margin:10px 0 20px;'>
             Real-time global intelligence powered by AI &amp; 100+ OSINT feeds.<br>
-            Conflicts, nuclear, sanctions, weather, military, infrastructure &amp; more.<br>
-            Built with deck.gl (WebGL) — best viewed full-screen.
+            Conflicts, nuclear, sanctions, weather, military, infrastructure &amp; more.
         </p>
-        <a href="''' + WORLD_MONITOR_URL + '''" target="_top"
-           style='display:inline-block; padding:16px 48px;
-                  background:linear-gradient(45deg, #ff00ff, #00ffff);
-                  color:white; text-decoration:none; border-radius:30px;
-                  font-weight:bold; font-size:18px; letter-spacing:1px;
-                  transition: opacity 0.2s;'>
+        <button onclick="goToMonitor()" style='
+            padding:16px 48px; border:none; cursor:pointer;
+            background:linear-gradient(45deg, #ff00ff, #00ffff);
+            color:white; border-radius:30px;
+            font-weight:bold; font-size:18px; letter-spacing:1px;'>
             🌍 OPEN WORLD RISK MONITOR
-        </a>
+        </button>
         <p style='color:#555; margin-top:16px; font-size:13px;'>
-            Opens in this tab — use your browser back button to return here.
+            Opens in this tab — use browser BACK button to return here.
         </p>
     </div>
-    ''', unsafe_allow_html=True)
+    <script>
+        function goToMonitor() {{
+            var url = "{_url}";
+            // Try every method to navigate the top-level tab
+            try {{ window.top.location.href = url; }} catch(e) {{
+                try {{ window.parent.location.href = url; }} catch(e2) {{
+                    try {{ window.open(url, '_top'); }} catch(e3) {{
+                        window.open(url, '_blank');
+                    }}
+                }}
+            }}
+        }}
+    </script>
+    """, height=300)
 
     st.markdown("---")
     st.markdown('''
@@ -956,7 +969,7 @@ def show_world_monitor():
         <ul>
             <li>🖱️ Drag to pan / Scroll to zoom</li>
             <li>🔍 25 toggleable data layers (Conflicts, Nuclear, Military, Sanctions, etc.)</li>
-            <li>📅 Time range is locked to last 7 days (as per your link)</li>
+            <li>📅 Time range is locked to last 7 days</li>
             <li>🌐 AI-powered threat classification &amp; instability scoring</li>
             <li>⬅️ Hit your browser BACK button to return to this dashboard</li>
         </ul>
