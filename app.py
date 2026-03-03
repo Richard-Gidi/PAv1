@@ -223,6 +223,7 @@ for idx, event in enumerate(filtered_events):
     is_live = event["id"] == 10
     
     with cols[idx % 3]:
+        # Build clean card HTML
         card_html = f"""
         <div class="event-card {'selected' if is_selected else ''}">
             <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap;">
@@ -237,11 +238,14 @@ for idx, event in enumerate(filtered_events):
             <div style="font-weight:700;font-size:14px;margin-bottom:6px;color:#f1f5f9;">{event['label']}</div>
         </div>
         """
+        
+        # ✅ KEY FIX: Use st.html() — this is the modern, reliable way
+        st.html(card_html)
+        
+        # Button below the card (cleaner layout)
         if st.button(f"View details →", key=f"btn_{event['id']}", use_container_width=True):
             st.session_state.selected_event = None if is_selected else event["id"]
             st.rerun()
-        
-        st.markdown(card_html, unsafe_allow_html=True)
         
         if is_selected:
             st.info(event["detail"])
