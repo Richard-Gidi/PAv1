@@ -1,3 +1,4 @@
+
 """
 NPA ENERGY ANALYTICS - STREAMLIT DASHBOARD
 ===========================================
@@ -6,7 +7,7 @@ pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly
 USAGE:
 streamlit run npa_dashboard.py
 FIXED: Product ID mapping for Stock Transaction now uses separate variable
-NEW: NATIONAL STOCKOUT now lets user choose Average Daily OR Maximum Daily loadings for depletion rate
+NEW: NATIONAL STOCKOUT now lets user choose Average Daily, Maximum Daily OR Median Daily loadings for depletion rate
 """
 import streamlit as st
 import os
@@ -192,7 +193,7 @@ def create_bdc_bar_chart(df, title="BDC Performance"):
                 height=500
             )
             return fig
-    
+   
         bdc_summary = df.groupby('BDC')[value_col].sum().sort_values(ascending=False).head(10).reset_index()
         bdc_summary.columns = ['BDC', 'Quantity']
     fig = go.Figure(data=[go.Bar(
@@ -621,14 +622,14 @@ def extract_npa_data_from_pdf(pdf_file) -> pd.DataFrame:
                 text = page.extract_text() or page.extract_text(x_tolerance=2, y_tolerance=2)
                 if not text:
                     continue
-            
+           
                 lines = text.split("\n")
-            
+           
                 for raw_line in lines:
                     line = raw_line.strip()
                     if not line:
                         continue
-                
+               
                     if "DEPOT:" in line:
                         maybe_depot = _extract_depot(line)
                         if maybe_depot:
@@ -648,7 +649,7 @@ def extract_npa_data_from_pdf(pdf_file) -> pd.DataFrame:
                         row = _parse_loaded_line(line, current_product, current_depot, current_bdc)
                         if row:
                             extracted_rows.append(row)
-            
+           
     except Exception as e:
         st.error(f"Error parsing PDF: {e}")
         return pd.DataFrame(columns=ONLY_COLUMNS)
@@ -793,7 +794,7 @@ def parse_daily_line(line, last_known_date):
                 break
         if not is_noise:
             order_num_tokens.append(t)
-        
+       
     order_number = " ".join(order_num_tokens).strip()
     if not order_number and len(tokens) > 0:
         order_number = remainder
@@ -814,7 +815,7 @@ def simplify_bdc_names(df):
         if not name:
             mapping[name] = name
             continue
-        
+       
         parts = name.split()
         short_name = " ".join(parts[:2])
         mapping[name] = short_name.upper()
@@ -833,16 +834,16 @@ def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
             for page in pdf.pages:
                 text = page.extract_text(x_tolerance=2, y_tolerance=2)
                 if not text: continue
-            
+           
                 lines = text.split('\n')
-            
+           
                 for line in lines:
                     clean = line.strip()
                     if not clean: continue
-                
+               
                     if clean.startswith("DEPOT:"):
                         raw_depot = clean.replace("DEPOT:", "").strip()
-                    
+                   
                         if raw_depot.startswith("BOST") or "TAKORADI BLUE OCEAN" in raw_depot:
                             ctx["Depot"] = "BOST Global"
                         else:
@@ -856,16 +857,16 @@ def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
                         if len(parts) > 1:
                             ctx["Status"] = parts[-1].strip()
                         continue
-                    
+                   
                     if not re.search(r"\d{2}$", clean):
                         continue
-                    
+                   
                     row_data = parse_daily_line(clean, ctx["Date"])
-                
+               
                     if row_data:
                         if row_data["Date"]:
                             ctx["Date"] = row_data["Date"]
-                    
+                   
                         final_row = {
                             "Date": row_data["Date"],
                             "Truck": row_data["Truck"],
@@ -884,7 +885,7 @@ def extract_daily_orders_from_pdf(pdf_file) -> pd.DataFrame:
     df = pd.DataFrame(all_rows)
     if not df.empty:
         df = simplify_bdc_names(df)
-    
+   
     return df
 def save_daily_orders_excel(df: pd.DataFrame, filename: str = None) -> str:
     out_dir = os.path.join(os.getcwd(), "daily_orders")
@@ -900,7 +901,7 @@ def save_daily_orders_excel(df: pd.DataFrame, filename: str = None) -> str:
             aggfunc="sum",
             fill_value=0
         ).reset_index()
-    
+   
         product_cols = [c for c in pivot.columns if c != "BDC"]
         pivot["Grand Total"] = pivot[product_cols].sum(axis=1)
     else:
@@ -985,7 +986,7 @@ def show_bdc_balance():
     if st.button("🔄 FETCH BDC BALANCE DATA", width='stretch'):
         with st.spinner("🔄 FETCHING DATA FROM NPA PORTAL..."):
             scraper = StockBalanceScraper()
-        
+       
             url = NPA_CONFIG['BDC_BALANCE_URL']
             params = {
                 'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
@@ -1001,32 +1002,32 @@ def show_bdc_balance():
                 'lngUserId': NPA_CONFIG['USER_ID'],
                 'intAppId': NPA_CONFIG['APP_ID']
             }
-        
+       
             try:
                 import requests
                 import io
-            
+           
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                     'Accept': 'application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
                     'Connection': 'keep-alive',
                 }
-            
+           
                 response = requests.get(url, params=params, headers=headers, timeout=30)
                 response.raise_for_status()
-            
+           
                 if response.content[:4] == b'%PDF':
                     st.success("✅ PDF received from server")
                     pdf_file = io.BytesIO(response.content)
                     st.session_state.bdc_records = scraper.parse_pdf_file(pdf_file)
-                
+               
                     if not st.session_state.bdc_records:
                         st.warning("⚠️ No records found in PDF.")
                 else:
                     st.error("❌ Response is not a PDF.")
                     st.session_state.bdc_records = []
-            
+           
             except requests.exceptions.RequestException as e:
                 st.error(f"❌ Network Error: {e}")
                 st.session_state.bdc_records = []
@@ -1040,12 +1041,12 @@ def show_bdc_balance():
         df = pd.DataFrame(records)
         st.success(f"✅ SUCCESSFULLY EXTRACTED {len(records)} RECORDS")
         st.markdown("---")
-    
+   
         st.markdown("<h3>📊 ANALYTICS DASHBOARD</h3>", unsafe_allow_html=True)
-    
+   
         summary = df.groupby('Product')['ACTUAL BALANCE (LT\\KG)'].sum()
         cols = st.columns(3)
-    
+   
         for idx, prod in enumerate(['GASOIL', 'LPG', 'PREMIUM']):
             with cols[idx]:
                 val = summary.get(prod, 0)
@@ -1056,9 +1057,9 @@ def show_bdc_balance():
                     <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG</p>
                 </div>
                 """, unsafe_allow_html=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>🏢 BDC BREAKDOWN</h3>", unsafe_allow_html=True)
         bdc_summary = df.groupby('BDC').agg({
             'ACTUAL BALANCE (LT\\KG)': 'sum',
@@ -1067,7 +1068,7 @@ def show_bdc_balance():
         }).reset_index()
         bdc_summary.columns = ['BDC', 'Total Balance (LT/KG)', 'Depots', 'Products']
         bdc_summary = bdc_summary.sort_values('Total Balance (LT/KG)', ascending=False)
-    
+   
         col1, col2 = st.columns([2, 1])
         with col1:
             st.dataframe(bdc_summary, width='stretch', hide_index=True)
@@ -1077,11 +1078,11 @@ def show_bdc_balance():
             st.metric("Total Depots", f"{df['DEPOT'].nunique()}")
             col_name = 'ACTUAL BALANCE (LT\\KG)'
             st.metric("Grand Total", f"{df[col_name].sum():,.0f} LT/KG")
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
-    
+   
         pivot_data = df.pivot_table(
             index='BDC',
             columns='Product',
@@ -1089,25 +1090,25 @@ def show_bdc_balance():
             aggfunc='sum',
             fill_value=0
         ).reset_index()
-    
+   
         for prod in ['GASOIL', 'LPG', 'PREMIUM']:
             if prod not in pivot_data.columns:
                 pivot_data[prod] = 0
-    
+   
         pivot_data['TOTAL'] = pivot_data[['GASOIL', 'LPG', 'PREMIUM']].sum(axis=1)
         pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
-    
+   
         st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], width='stretch', hide_index=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
-    
+   
         col1, col2 = st.columns(2)
-    
+   
         with col1:
             search_type = st.selectbox("Search By:", ["Product", "BDC", "Depot"], key='bdc_search_type')
-    
+   
         with col2:
             if search_type == "Product":
                 search_value = st.selectbox("Select Product:", ['ALL'] + sorted(df['Product'].unique().tolist()), key='bdc_product_search')
@@ -1115,7 +1116,7 @@ def show_bdc_balance():
                 search_value = st.selectbox("Select BDC:", ['ALL'] + sorted(df['BDC'].unique().tolist()), key='bdc_bdc_search')
             else:
                 search_value = st.selectbox("Select Depot:", ['ALL'] + sorted(df['DEPOT'].unique().tolist()), key='bdc_depot_search')
-    
+   
         if search_value == 'ALL':
             filtered = df
         else:
@@ -1125,11 +1126,11 @@ def show_bdc_balance():
                 filtered = df[df['BDC'] == search_value]
             else:
                 filtered = df[df['DEPOT'] == search_value]
-    
+   
         st.markdown(f"<h3>📋 FILTERED DATA: {search_value}</h3>", unsafe_allow_html=True)
         display = filtered[['Product', 'BDC', 'DEPOT', 'AVAILABLE BALANCE (LT\\KG)', 'ACTUAL BALANCE (LT\\KG)', 'Date']].sort_values(['Product', 'BDC', 'DEPOT'])
         st.dataframe(display, width='stretch', height=400, hide_index=True)
-    
+   
         st.markdown("---")
         st.markdown("<h3>📋 QUICK STATS</h3>", unsafe_allow_html=True)
         cols = st.columns(4)
@@ -1142,7 +1143,7 @@ def show_bdc_balance():
             st.metric("DEPOTS", f"{filtered['DEPOT'].nunique()}")
         with cols[3]:
             st.metric("TOTAL BALANCE", f"{filtered[col_actual].sum():,.0f}")
-    
+   
         st.markdown("---")
         st.markdown("<h3>💾 EXPORT DATA</h3>", unsafe_allow_html=True)
         scraper = StockBalanceScraper()
@@ -1173,12 +1174,12 @@ def show_omc_loadings():
         with st.spinner("🔄 FETCHING DATA FROM NPA PORTAL..."):
             st.session_state.omc_start_date = start_date
             st.session_state.omc_end_date = end_date
-        
+       
             start_str = start_date.strftime("%m/%d/%Y")
             end_str = end_date.strftime("%m/%d/%Y")
-        
+       
             st.info(f"🔍 Requesting orders from **{start_str}** to **{end_str}**")
-        
+       
             url = NPA_CONFIG['OMC_LOADINGS_URL']
             params = {
                 'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
@@ -1195,32 +1196,32 @@ def show_omc_loadings():
                 'iUserId': NPA_CONFIG['USER_ID'],
                 'iAppId': NPA_CONFIG['APP_ID']
             }
-        
+       
             try:
                 import requests
                 import io
-            
+           
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                     'Accept': 'application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
                     'Connection': 'keep-alive',
                 }
-            
+           
                 response = requests.get(url, params=params, headers=headers, timeout=30)
                 response.raise_for_status()
-            
+           
                 if response.content[:4] == b'%PDF':
                     st.success("✅ PDF received from server")
                     pdf_file = io.BytesIO(response.content)
                     st.session_state.omc_df = extract_npa_data_from_pdf(pdf_file)
-                
+               
                     if st.session_state.omc_df.empty:
                         st.warning("⚠️ No order records found in the PDF for this date range.")
                 else:
                     st.error("❌ Response is not a PDF.")
                     st.session_state.omc_df = pd.DataFrame()
-            
+           
             except requests.exceptions.RequestException as e:
                 st.error(f"❌ Network Error: {e}")
                 st.session_state.omc_df = pd.DataFrame()
@@ -1233,13 +1234,13 @@ def show_omc_loadings():
     if not df.empty:
         st.success(f"✅ EXTRACTED {len(df)} RECORDS")
         st.markdown("---")
-    
+   
         st.info(f"📊 Showing {len(df)} records from {st.session_state.omc_start_date.strftime('%Y/%m/%d')} to {st.session_state.omc_end_date.strftime('%Y/%m/%d')}")
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>📊 ANALYTICS DASHBOARD</h3>", unsafe_allow_html=True)
-    
+   
         cols = st.columns(4)
         with cols[0]:
             st.markdown(f"""
@@ -1271,9 +1272,9 @@ def show_omc_loadings():
                 <h1>₵{total_value:,.0f}</h1>
             </div>
             """, unsafe_allow_html=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>📦 PRODUCT BREAKDOWN</h3>", unsafe_allow_html=True)
         product_summary = df.groupby('Product').agg({
             'Quantity': 'sum',
@@ -1282,7 +1283,7 @@ def show_omc_loadings():
         }).reset_index()
         product_summary.columns = ['Product', 'Total Volume (LT/KG)', 'Orders', 'OMCs']
         product_summary = product_summary.sort_values('Total Volume (LT/KG)', ascending=False)
-    
+   
         col1, col2 = st.columns([2, 1])
         with col1:
             st.dataframe(product_summary, width='stretch', hide_index=True)
@@ -1290,9 +1291,9 @@ def show_omc_loadings():
             for _, row in product_summary.iterrows():
                 pct = (row['Total Volume (LT/KG)'] / product_summary['Total Volume (LT/KG)'].sum()) * 100
                 st.metric(row['Product'], f"{pct:.1f}%")
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>🏢 TOP OMCs BY VOLUME</h3>", unsafe_allow_html=True)
         omc_summary = df.groupby('OMC').agg({
             'Quantity': 'sum',
@@ -1301,11 +1302,11 @@ def show_omc_loadings():
         }).reset_index()
         omc_summary.columns = ['OMC', 'Total Volume (LT/KG)', 'Orders', 'Products']
         omc_summary = omc_summary.sort_values('Total Volume (LT/KG)', ascending=False).head(10)
-    
+   
         st.dataframe(omc_summary, width='stretch', hide_index=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>🏦 BDC PERFORMANCE</h3>", unsafe_allow_html=True)
         bdc_summary = df.groupby('BDC').agg({
             'Quantity': 'sum',
@@ -1315,11 +1316,11 @@ def show_omc_loadings():
         }).reset_index()
         bdc_summary.columns = ['BDC', 'Total Volume (LT/KG)', 'Orders', 'OMCs', 'Products']
         bdc_summary = bdc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
-    
+   
         st.dataframe(bdc_summary, width='stretch', hide_index=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
         pivot_data = df.pivot_table(
             index='BDC',
@@ -1328,25 +1329,25 @@ def show_omc_loadings():
             aggfunc='sum',
             fill_value=0
         ).reset_index()
-    
+   
         for prod in ['GASOIL', 'LPG', 'PREMIUM']:
             if prod not in pivot_data.columns:
                 pivot_data[prod] = 0
-    
+   
         pivot_data['TOTAL'] = pivot_data[['GASOIL', 'LPG', 'PREMIUM']].sum(axis=1)
         pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
-    
+   
         st.dataframe(pivot_data[['BDC', 'GASOIL', 'LPG', 'PREMIUM', 'TOTAL']], width='stretch', hide_index=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
-    
+   
         col1, col2 = st.columns(2)
-    
+   
         with col1:
             search_type = st.selectbox("Search By:", ["Product", "OMC", "BDC", "Depot"], key='omc_search_type')
-    
+   
         with col2:
             if search_type == "Product":
                 search_value = st.selectbox("Select Product:", ['ALL'] + sorted(df['Product'].unique().tolist()), key='omc_product_search')
@@ -1356,7 +1357,7 @@ def show_omc_loadings():
                 search_value = st.selectbox("Select BDC:", ['ALL'] + sorted(df['BDC'].unique().tolist()), key='omc_bdc_search')
             else:
                 search_value = st.selectbox("Select Depot:", ['ALL'] + sorted(df['Depot'].unique().tolist()), key='omc_depot_search')
-    
+   
         if search_value == 'ALL':
             filtered = df
         else:
@@ -1368,9 +1369,9 @@ def show_omc_loadings():
                 filtered = df[df['BDC'] == search_value]
             else:
                 filtered = df[df['Depot'] == search_value]
-    
+   
         st.markdown(f"<h3>📋 FILTERED DATA: {search_value}</h3>", unsafe_allow_html=True)
-    
+   
         if not filtered.empty:
             cols = st.columns(4)
             with cols[0]:
@@ -1381,10 +1382,10 @@ def show_omc_loadings():
                 st.metric("Unique OMCs", f"{filtered['OMC'].nunique()}")
             with cols[3]:
                 st.metric("Filtered Value", f"₵{(filtered['Quantity'] * filtered['Price']).sum():,.0f}")
-    
+   
         display = filtered[['Date', 'OMC', 'Truck', 'Quantity', 'Order Number', 'BDC', 'Depot', 'Price', 'Product']].sort_values(['Product', 'OMC', 'Date'])
         st.dataframe(display, width='stretch', height=400, hide_index=True)
-    
+   
         st.markdown("---")
         st.markdown("<h3>💾 EXPORT DATA</h3>", unsafe_allow_html=True)
         path = save_to_excel_multi(df)
@@ -1414,12 +1415,12 @@ def show_daily_orders():
         with st.spinner("🔄 FETCHING DAILY ORDERS FROM NPA PORTAL..."):
             st.session_state.daily_start_date = start_date
             st.session_state.daily_end_date = end_date
-        
+       
             start_str = start_date.strftime("%m/%d/%Y")
             end_str = end_date.strftime("%m/%d/%Y")
-        
+       
             st.info(f"🔍 Requesting daily orders from **{start_str}** to **{end_str}**")
-        
+       
             url = NPA_CONFIG['DAILY_ORDERS_URL']
             params = {
                 'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
@@ -1436,32 +1437,32 @@ def show_daily_orders():
                 'iUserId': NPA_CONFIG['USER_ID'],
                 'iAppId': NPA_CONFIG['APP_ID']
             }
-        
+       
             try:
                 import requests
                 import io
-            
+           
                 headers = {
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
                     'Accept': 'application/pdf,text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
                     'Accept-Language': 'en-US,en;q=0.5',
                     'Connection': 'keep-alive',
                 }
-            
+           
                 response = requests.get(url, params=params, headers=headers, timeout=30)
                 response.raise_for_status()
-            
+           
                 if response.content[:4] == b'%PDF':
                     st.success("✅ PDF received from server")
                     pdf_file = io.BytesIO(response.content)
                     st.session_state.daily_df = extract_daily_orders_from_pdf(pdf_file)
-                
+               
                     if st.session_state.daily_df.empty:
                         st.warning("⚠️ No daily orders found for this date.")
                 else:
                     st.error("❌ Response is not a PDF.")
                     st.session_state.daily_df = pd.DataFrame()
-            
+           
             except requests.exceptions.RequestException as e:
                 st.error(f"❌ Network Error: {e}")
                 st.session_state.daily_df = pd.DataFrame()
@@ -1474,9 +1475,9 @@ def show_daily_orders():
     if not df.empty:
         if not st.session_state.get('omc_df', pd.DataFrame()).empty:
             loadings_df = st.session_state.omc_df
-        
+       
             import re
-        
+       
             def extract_order_prefix(order_num):
                 if pd.isna(order_num):
                     return None
@@ -1485,43 +1486,43 @@ def show_daily_orders():
                 if match:
                     return match.group(1)
                 return None
-        
+       
             loadings_df['Order_Prefix'] = loadings_df['Order Number'].apply(extract_order_prefix)
-        
+       
             prefix_to_omc = {}
             for prefix in loadings_df['Order_Prefix'].dropna().unique():
                 prefix_orders = loadings_df[loadings_df['Order_Prefix'] == prefix]
                 most_common_omc = prefix_orders['OMC'].mode()
                 if len(most_common_omc) > 0:
                     prefix_to_omc[prefix] = most_common_omc.iloc[0]
-        
+       
             order_to_omc_exact = loadings_df[['Order Number', 'OMC']].drop_duplicates()
             order_to_omc_dict_exact = dict(zip(order_to_omc_exact['Order Number'], order_to_omc_exact['OMC']))
-        
+       
             df['Order_Prefix'] = df['Order Number'].apply(extract_order_prefix)
-        
+       
             df['OMC'] = df['Order Number'].map(order_to_omc_dict_exact)
-        
+       
             df['OMC'] = df.apply(
                 lambda row: prefix_to_omc.get(row['Order_Prefix']) if pd.isna(row['OMC']) and row['Order_Prefix'] else row['OMC'],
                 axis=1
             )
-        
+       
             df = df.drop(columns=['Order_Prefix'])
-        
+       
             matched_count = df['OMC'].notna().sum()
             match_rate = (matched_count / len(df) * 100) if len(df) > 0 else 0
-        
+       
             exact_matches = df['Order Number'].isin(order_to_omc_dict_exact.keys()).sum()
             prefix_matches = matched_count - exact_matches
-        
+       
             st.session_state.daily_df = df
-        
+       
             st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
-        
+       
             if matched_count > 0:
                 st.info(f"🔗 **INTELLIGENT OMC MATCHING:** Matched {matched_count} orders ({match_rate:.1f}%) - {exact_matches} exact, {prefix_matches} by prefix pattern!")
-            
+           
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     st.metric("Total Orders", len(df))
@@ -1531,7 +1532,7 @@ def show_daily_orders():
                     st.metric("Exact Match", exact_matches)
                 with col4:
                     st.metric("Prefix Match", prefix_matches)
-            
+           
                 if prefix_matches > 0:
                     st.caption(f"📋 **Prefix Patterns Discovered:** {', '.join([f'{k}→{v}' for k, v in list(prefix_to_omc.items())[:10]])}")
             else:
@@ -1539,17 +1540,17 @@ def show_daily_orders():
         else:
             df['OMC'] = None
             st.session_state.daily_df = df
-        
+       
             st.success(f"✅ EXTRACTED {len(df)} DAILY ORDERS")
             st.warning("💡 **Tip:** Fetch OMC Loadings data first to automatically match order numbers with OMC names!")
-    
+   
         st.markdown("---")
-    
+   
         st.info(f"📊 Showing {len(df)} orders from {st.session_state.daily_start_date.strftime('%Y/%m/%d')} to {st.session_state.daily_end_date.strftime('%Y/%m/%d')}")
         st.markdown("---")
-    
+   
         st.markdown("<h3>📊 DAILY ANALYTICS</h3>", unsafe_allow_html=True)
-    
+   
         cols = st.columns(5)
         with cols[0]:
             st.markdown(f"""
@@ -1589,9 +1590,9 @@ def show_daily_orders():
                 <h1>₵{total_value:,.0f}</h1>
             </div>
             """, unsafe_allow_html=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>📦 PRODUCT SUMMARY</h3>", unsafe_allow_html=True)
         product_summary = df.groupby('Product').agg({
             'Quantity': 'sum',
@@ -1600,7 +1601,7 @@ def show_daily_orders():
         }).reset_index()
         product_summary.columns = ['Product', 'Total Volume (LT/KG)', 'Orders', 'BDCs']
         product_summary = product_summary.sort_values('Total Volume (LT/KG)', ascending=False)
-    
+   
         col1, col2 = st.columns([2, 1])
         with col1:
             st.dataframe(product_summary, width='stretch', hide_index=True)
@@ -1608,9 +1609,9 @@ def show_daily_orders():
             for _, row in product_summary.iterrows():
                 pct = (row['Total Volume (LT/KG)'] / product_summary['Total Volume (LT/KG)'].sum()) * 100
                 st.metric(row['Product'], f"{pct:.1f}%")
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>🏦 BDC SUMMARY</h3>", unsafe_allow_html=True)
         bdc_summary = df.groupby('BDC').agg({
             'Quantity': 'sum',
@@ -1620,13 +1621,13 @@ def show_daily_orders():
         }).reset_index()
         bdc_summary.columns = ['BDC', 'Total Volume (LT/KG)', 'Orders', 'Products', 'Depots']
         bdc_summary = bdc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
-    
+   
         st.dataframe(bdc_summary, width='stretch', hide_index=True)
-    
+   
         if 'OMC' in df.columns and df['OMC'].notna().any():
             st.markdown("<h3>🏢 OMC SUMMARY (MATCHED)</h3>", unsafe_allow_html=True)
             st.info("📌 OMC names matched from OMC Loadings data using order numbers")
-        
+       
             omc_summary = df[df['OMC'].notna()].groupby('OMC').agg({
                 'Quantity': 'sum',
                 'Order Number': 'count',
@@ -1635,12 +1636,12 @@ def show_daily_orders():
             }).reset_index()
             omc_summary.columns = ['OMC', 'Total Volume (LT/KG)', 'Orders', 'Products', 'BDCs']
             omc_summary = omc_summary.sort_values('Total Volume (LT/KG)', ascending=False)
-        
+       
             st.dataframe(omc_summary, width='stretch', hide_index=True)
-        
+       
             st.markdown("---")
         st.markdown("---")
-    
+   
         st.markdown("<h3>📊 PRODUCT DISTRIBUTION BY BDC</h3>", unsafe_allow_html=True)
         pivot_data = df.pivot_table(
             index='BDC',
@@ -1649,15 +1650,15 @@ def show_daily_orders():
             aggfunc='sum',
             fill_value=0
         ).reset_index()
-    
+   
         product_cols = [c for c in pivot_data.columns if c != 'BDC']
         pivot_data['TOTAL'] = pivot_data[product_cols].sum(axis=1)
         pivot_data = pivot_data.sort_values('TOTAL', ascending=False)
-    
+   
         st.dataframe(pivot_data, width='stretch', hide_index=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>📋 ORDER STATUS BREAKDOWN</h3>", unsafe_allow_html=True)
         status_summary = df.groupby('Status').agg({
             'Order Number': 'count',
@@ -1665,16 +1666,16 @@ def show_daily_orders():
         }).reset_index()
         status_summary.columns = ['Status', 'Orders', 'Total Volume (LT/KG)']
         st.dataframe(status_summary, width='stretch', hide_index=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("<h3>🔍 SEARCH & FILTER</h3>", unsafe_allow_html=True)
-    
+   
         col1, col2 = st.columns(2)
-    
+   
         with col1:
             search_type = st.selectbox("Search By:", ["Product", "BDC", "Depot", "Status"], key='daily_search_type')
-    
+   
         with col2:
             if search_type == "Product":
                 search_value = st.selectbox("Select Product:", ['ALL'] + sorted(df['Product'].unique().tolist()), key='daily_product_search')
@@ -1684,7 +1685,7 @@ def show_daily_orders():
                 search_value = st.selectbox("Select Depot:", ['ALL'] + sorted(df['Depot'].unique().tolist()), key='daily_depot_search')
             else:
                 search_value = st.selectbox("Select Status:", ['ALL'] + sorted(df['Status'].unique().tolist()), key='daily_status_search')
-    
+   
         if search_value == 'ALL':
             filtered = df
         else:
@@ -1696,9 +1697,9 @@ def show_daily_orders():
                 filtered = df[df['Depot'] == search_value]
             else:
                 filtered = df[df['Status'] == search_value]
-    
+   
         st.markdown(f"<h3>📋 FILTERED DATA: {search_value}</h3>", unsafe_allow_html=True)
-    
+   
         if not filtered.empty:
             cols = st.columns(4)
             with cols[0]:
@@ -1709,10 +1710,10 @@ def show_daily_orders():
                 st.metric("Unique BDCs", f"{filtered['BDC'].nunique()}")
             with cols[3]:
                 st.metric("Filtered Value", f"₵{(filtered['Quantity'] * filtered['Price']).sum():,.0f}")
-    
+   
         display = filtered[['Date', 'OMC', 'Truck', 'Quantity', 'Order Number', 'BDC', 'Depot', 'Price', 'Product', 'Status']].sort_values(['Product', 'BDC', 'Date'])
         st.dataframe(display, width='stretch', height=400, hide_index=True)
-    
+   
         st.markdown("---")
         st.markdown("<h3>💾 EXPORT DATA</h3>", unsafe_allow_html=True)
         path = save_daily_orders_excel(df)
@@ -2141,12 +2142,12 @@ def show_competitive_intel():
     with tab1:
         st.markdown("### 🚨 ANOMALY DETECTION ENGINE")
         st.caption("Automatically detect unusual patterns in orders and pricing")
-    
+   
         mean_vol = loadings_df['Quantity'].mean()
         std_vol = loadings_df['Quantity'].std()
         anomaly_threshold = mean_vol + (2 * std_vol)
         volume_anomalies = loadings_df[loadings_df['Quantity'] > anomaly_threshold]
-    
+   
         col1, col2, col3 = st.columns(3)
         with col1:
             st.metric("Volume Anomalies", len(volume_anomalies))
@@ -2154,16 +2155,16 @@ def show_competitive_intel():
             st.metric("Anomalous Volume", f"{volume_anomalies['Quantity'].sum():,.0f} LT")
         with col3:
             st.metric("Threshold", f"{anomaly_threshold:,.0f} LT")
-    
+   
         if not volume_anomalies.empty:
             st.warning(f"🚨 {len(volume_anomalies)} abnormally large orders detected!")
             top_anomalies = volume_anomalies.nlargest(10, 'Quantity')[
                 ['Date', 'BDC', 'OMC', 'Product', 'Quantity', 'Order Number']
             ]
             st.dataframe(top_anomalies, width='stretch', hide_index=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("#### 💰 Price Anomalies by Product")
         price_data = []
         for product in ['PREMIUM', 'GASOIL', 'LPG']:
@@ -2173,7 +2174,7 @@ def show_competitive_intel():
                 pstd = pdf['Price'].std()
                 high_anom = len(pdf[pdf['Price'] > pmean + (2 * pstd)])
                 low_anom = len(pdf[pdf['Price'] < pmean - (2 * pstd)])
-            
+           
                 price_data.append({
                     'Product': product,
                     'Avg Price': f"₵{pmean:.2f}",
@@ -2181,23 +2182,23 @@ def show_competitive_intel():
                     'Low Price Anomalies': low_anom,
                     'Total Anomalies': high_anom + low_anom
                 })
-    
+   
         st.dataframe(pd.DataFrame(price_data), width='stretch', hide_index=True)
     with tab2:
         st.markdown("### 💰 PRICE INTELLIGENCE DASHBOARD")
-    
+   
         price_stats = loadings_df.groupby(['BDC', 'Product'])['Price'].agg(['mean', 'min', 'max']).reset_index()
         price_stats.columns = ['BDC', 'Product', 'Avg Price', 'Min Price', 'Max Price']
-    
+   
         overall_mean = loadings_df['Price'].mean()
         price_stats['Tier'] = price_stats['Avg Price'].apply(
             lambda x: '🔴 Premium' if x > overall_mean * 1.1 else '🟢 Competitive'
         )
-    
+   
         st.dataframe(price_stats.sort_values('Avg Price', ascending=False), width='stretch', hide_index=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("#### 💡 Best Pricing Opportunities")
         opportunities = []
         for product in ['PREMIUM', 'GASOIL', 'LPG']:
@@ -2206,36 +2207,36 @@ def show_competitive_intel():
                 bdc_prices = pdf.groupby('BDC')['Price'].mean()
                 min_bdc = bdc_prices.idxmin()
                 max_bdc = bdc_prices.idxmax()
-            
+           
                 opportunities.append({
                     'Product': product,
                     'Lowest': f"{min_bdc} (₵{bdc_prices.min():.2f})",
                     'Highest': f"{max_bdc} (₵{bdc_prices.max():.2f})",
                     'Gap': f"₵{(bdc_prices.max() - bdc_prices.min()):.2f}"
                 })
-    
+   
         st.dataframe(pd.DataFrame(opportunities), width='stretch', hide_index=True)
     with tab3:
         st.markdown("### ⭐ BDC PERFORMANCE LEADERBOARD")
-    
+   
         scores = []
         for bdc in loadings_df['BDC'].unique():
             bdc_df = loadings_df[loadings_df['BDC'] == bdc]
-        
+       
             vol = bdc_df['Quantity'].sum()
             max_vol = loadings_df.groupby('BDC')['Quantity'].sum().max()
             vol_score = (vol / max_vol) * 40
-        
+       
             orders = len(bdc_df)
             max_orders = loadings_df.groupby('BDC').size().max()
             order_score = (orders / max_orders) * 30
-        
+       
             products = bdc_df['Product'].nunique()
             diversity_score = (products / 3) * 30
-        
+       
             total = vol_score + order_score + diversity_score
             grade = 'A+' if total >= 90 else 'A' if total >= 80 else 'B' if total >= 70 else 'C' if total >= 60 else 'D'
-        
+       
             scores.append({
                 'BDC': bdc,
                 'Volume Score': round(vol_score, 1),
@@ -2244,15 +2245,15 @@ def show_competitive_intel():
                 'Total Score': round(total, 1),
                 'Grade': grade
             })
-    
+   
         scores_df = pd.DataFrame(scores).sort_values('Total Score', ascending=False)
         scores_df.insert(0, 'Rank', range(1, len(scores_df) + 1))
         scores_df['Medal'] = scores_df['Rank'].apply(lambda x: '🥇' if x==1 else '🥈' if x==2 else '🥉' if x==3 else '')
-    
+   
         st.dataframe(scores_df, width='stretch', hide_index=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("#### 🏆 TOP 3 CHAMPIONS")
         cols = st.columns(3)
         for idx, (_, row) in enumerate(scores_df.head(3).iterrows()):
@@ -2267,15 +2268,15 @@ def show_competitive_intel():
                     <p style='color: #ffffff; font-size: 24px; margin: 5px 0;'>Grade: {row['Grade']}</p>
                 </div>
                 """, unsafe_allow_html=True)
-    
+   
         st.markdown("---")
-    
+   
         st.markdown("#### 🔍 Check Any BDC")
         selected = st.selectbox("Select BDC:", scores_df['BDC'].unique())
-    
+   
         if selected:
             bdc_score = scores_df[scores_df['BDC'] == selected].iloc[0]
-        
+       
             st.markdown(f"""
             <div style='background: rgba(22,33,62,0.6); padding: 30px; border-radius: 15px;
                         border: 2px solid #00ffff; text-align: center; margin: 20px 0;'>
@@ -2285,7 +2286,7 @@ def show_competitive_intel():
                 <p style='color: #888; margin: 10px 0;'>Rank #{int(bdc_score['Rank'])} of {len(scores_df)}</p>
             </div>
             """, unsafe_allow_html=True)
-        
+       
             cols = st.columns(3)
             with cols[0]:
                 st.metric("Volume Score", f"{bdc_score['Volume Score']:.1f}/40")
@@ -2677,13 +2678,17 @@ def show_national_stockout():
     start_str = start_date.strftime("%m/%d/%Y")
     end_str = end_date.strftime("%m/%d/%Y")
     period_days = max((end_date - start_date).days, 1)
-    # ── NEW: User choice for loadings depletion rate ───────────────────────────
+    # ── 3 OPTIONS FOR DEPLETION RATE ───────────────────────────
     depletion_mode = st.radio(
         "🚚 **Loadings Depletion Rate for Stockout Forecast**",
-        ["📊 Average Daily Loading (standard baseline)", "🔥 Maximum Observed Daily Loading (conservative stress test)"],
+        [
+            "📊 Average Daily Loading (standard baseline)",
+            "🔥 Maximum Observed Daily Loading (conservative stress test)",
+            "📊 Median Daily Loading (balanced typical day)"
+        ],
         index=0,
         key="ns_depletion_mode",
-        help="**Average** = total loadings ÷ days (normal scenario)\n**Maximum** = highest single-day loading observed (worst-case / stress scenario)"
+        help="**Average** = total ÷ days (normal scenario)\n**Maximum** = highest single-day loading (worst-case stress test)\n**Median** = middle value (robust to outliers)"
     )
     st.info(
         "⚡ **Just 2 API calls.** "
@@ -2703,6 +2708,7 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
     col_bal = 'ACTUAL BALANCE (LT\\KG)'
     DISPLAY = {'PREMIUM': 'PREMIUM (PMS)', 'GASOIL': 'GASOIL (AGO)', 'LPG': 'LPG'}
     use_max_daily = "Maximum" in depletion_mode
+    use_median = "Median" in depletion_mode
     # ── STEP 1: BDC Balance (current national stock snapshot) ─────────────────
     with st.status("📡 Step 1 / 2 — Fetching national BDC stock balance…", expanded=True) as status_a:
         st.write("Connecting to NPA portal…")
@@ -2771,18 +2777,21 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
         else:
             filtered_omc = omc_df[omc_df['Product'].isin(['PREMIUM', 'GASOIL', 'LPG'])].copy()
             filtered_omc['Date'] = pd.to_datetime(filtered_omc['Date'], errors='coerce')
-            if use_max_daily:
-                daily_agg = (
-                    filtered_omc
-                    .groupby(['Date', 'Product'])['Quantity']
-                    .sum()
-                    .reset_index()
-                )
+            daily_agg = (
+                filtered_omc
+                .groupby(['Date', 'Product'])['Quantity']
+                .sum()
+                .reset_index()
+            )
+            if use_median:
+                omc_by_product = daily_agg.groupby('Product')['Quantity'].median()
+                depletion_label = "📊 Median Daily Loading"
+            elif use_max_daily:
                 omc_by_product = daily_agg.groupby('Product')['Quantity'].max()
                 depletion_label = "🔥 Max Daily Loading (stress test)"
             else:
                 omc_by_product = filtered_omc.groupby('Product')['Quantity'].sum()
-                depletion_label = f"📊 OMC Loadings ({period_days}d)"
+                depletion_label = f"📊 Average Daily Loading ({period_days}d)"
             st.write(
                 f"✅ **{len(omc_df):,} total loading records** across {n_weeks} weeks | "
                 f"PMS: **{omc_by_product.get('PREMIUM', 0):,.0f} LT** | "
@@ -2795,8 +2804,8 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
     for prod in ['PREMIUM', 'GASOIL', 'LPG']:
         stock = float(balance_by_product.get(prod, 0))
         depletion = float(omc_by_product.get(prod, 0))
-        if use_max_daily:
-            daily_rate = depletion  # already the max daily value
+        if use_median or use_max_daily:
+            daily_rate = depletion
         else:
             daily_rate = depletion / period_days if period_days > 0 else 0
         days = (stock / daily_rate) if daily_rate > 0 else float('inf')
@@ -2804,7 +2813,7 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
             'product': prod,
             'display_name': DISPLAY[prod],
             'total_balance': stock,
-            'omc_sales': depletion,          # for display (total or max-daily)
+            'omc_sales': depletion,
             'daily_rate': daily_rate,
             'days_remaining': days,
         })
@@ -2953,7 +2962,7 @@ def _display_national_results(period_days_arg: int):
     st.markdown("### 📦 OMC LOADINGS BREAKDOWN BY PRODUCT")
     st.caption(
         f"**{depletion_label}** = fuel dispatched from BDCs to OMCs over the selected period "
-        "(or the highest single-day loading when stress-test mode is active)."
+        "(or the highest single-day loading / median when that mode is active)."
     )
     bd_cols = st.columns(3)
     COLORS = {'PREMIUM': '#00ffff', 'GASOIL': '#ffaa00', 'LPG': '#00ff88'}
@@ -3141,16 +3150,16 @@ def show_bdc_intelligence():
     if not has_balance or not has_loadings:
         st.markdown("### 🔄 AUTO-FETCH DATA")
         st.info("BDC Intelligence needs both Stock Balance and OMC Loadings data. Let's fetch them automatically!")
-    
+   
         col1, col2 = st.columns(2)
-    
+   
         with col1:
             if not has_balance:
                 st.warning("⚠️ BDC Balance Data Missing")
                 if st.button("🔄 FETCH BDC BALANCE", width='stretch', key='auto_fetch_balance'):
                     with st.spinner("🔄 Fetching BDC Balance Data..."):
                         scraper = StockBalanceScraper()
-                    
+                   
                         url = NPA_CONFIG['BDC_BALANCE_URL']
                         params = {
                             'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
@@ -3166,25 +3175,25 @@ def show_bdc_intelligence():
                             'lngUserId': NPA_CONFIG['USER_ID'],
                             'intAppId': NPA_CONFIG['APP_ID']
                         }
-                    
+                   
                         try:
                             import requests
                             import io
-                        
+                       
                             headers = {
                                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                                 'Accept': 'application/pdf,text/html,application/xhtml+xml',
                                 'Accept-Language': 'en-US,en;q=0.5',
                                 'Connection': 'keep-alive',
                             }
-                        
+                       
                             response = requests.get(url, params=params, headers=headers, timeout=30)
                             response.raise_for_status()
-                        
+                       
                             if response.content[:4] == b'%PDF':
                                 pdf_file = io.BytesIO(response.content)
                                 st.session_state.bdc_records = scraper.parse_pdf_file(pdf_file)
-                            
+                           
                                 if st.session_state.bdc_records:
                                     st.success(f"✅ Fetched {len(st.session_state.bdc_records)} BDC Balance records!")
                                     st.rerun()
@@ -3192,30 +3201,30 @@ def show_bdc_intelligence():
                                     st.error("❌ No records found in PDF")
                             else:
                                 st.error("❌ Invalid response from server")
-                            
+                           
                         except Exception as e:
                             st.error(f"❌ Error fetching BDC Balance: {e}")
             else:
                 st.success("✅ BDC Balance Data Loaded")
                 st.caption(f"{len(st.session_state.bdc_records)} records available")
-    
+   
         with col2:
             if not has_loadings:
                 st.warning("⚠️ OMC Loadings Data Missing")
-            
+           
                 st.markdown("**Select Date Range:**")
                 from datetime import timedelta
                 default_start = datetime.now() - timedelta(days=30)
                 default_end = datetime.now()
-            
+           
                 start_date = st.date_input("From", value=default_start, key='intel_start_date')
                 end_date = st.date_input("To", value=default_end, key='intel_end_date')
-            
+           
                 if st.button("🔄 FETCH OMC LOADINGS", width='stretch', key='auto_fetch_loadings'):
                     with st.spinner("🔄 Fetching OMC Loadings Data..."):
                         start_str = start_date.strftime("%m/%d/%Y")
                         end_str = end_date.strftime("%m/%d/%Y")
-                    
+                   
                         url = NPA_CONFIG['OMC_LOADINGS_URL']
                         params = {
                             'lngCompanyId': NPA_CONFIG['COMPANY_ID'],
@@ -3232,25 +3241,25 @@ def show_bdc_intelligence():
                             'iUserId': NPA_CONFIG['USER_ID'],
                             'iAppId': NPA_CONFIG['APP_ID']
                         }
-                    
+                   
                         try:
                             import requests
                             import io
-                        
+                       
                             headers = {
                                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                                 'Accept': 'application/pdf,text/html,application/xhtml+xml',
                                 'Accept-Language': 'en-US,en;q=0.5',
                                 'Connection': 'keep-alive',
                             }
-                        
+                       
                             response = requests.get(url, params=params, headers=headers, timeout=30)
                             response.raise_for_status()
-                        
+                       
                             if response.content[:4] == b'%PDF':
                                 pdf_file = io.BytesIO(response.content)
                                 st.session_state.omc_df = extract_npa_data_from_pdf(pdf_file)
-                            
+                           
                                 if not st.session_state.omc_df.empty:
                                     st.success(f"✅ Fetched {len(st.session_state.omc_df)} OMC Loading records!")
                                     st.rerun()
@@ -3258,15 +3267,15 @@ def show_bdc_intelligence():
                                     st.error("❌ No records found in PDF")
                             else:
                                 st.error("❌ Invalid response from server")
-                            
+                           
                         except Exception as e:
                             st.error(f"❌ Error fetching OMC Loadings: {e}")
             else:
                 st.success("✅ OMC Loadings Data Loaded")
                 st.caption(f"{len(st.session_state.omc_df)} records available")
-    
+   
         st.markdown("---")
-    
+   
         if not (bool(st.session_state.get('bdc_records')) and not st.session_state.get('omc_df', pd.DataFrame()).empty):
             st.info("👆 Click the buttons above to fetch the required data automatically!")
             return
@@ -3296,15 +3305,15 @@ def show_bdc_intelligence():
     tab1, tab2, tab3 = st.tabs(["📊 Overview", "⏱️ Stockout Prediction", "📉 Consumption Analysis"])
     with tab1:
         st.markdown("### 📊 CURRENT STATUS")
-    
+   
         bdc_balance = balance_df[balance_df['BDC'] == selected_bdc]
-    
+   
         if not bdc_balance.empty:
                 col1, col2, col3 = st.columns(3)
-            
+           
                 col_name = 'ACTUAL BALANCE (LT\\KG)'
                 product_stocks = bdc_balance.groupby('Product')[col_name].sum()
-            
+           
                 for idx, (product, stock) in enumerate(product_stocks.items()):
                     with [col1, col2, col3][idx % 3]:
                         st.markdown(f"""
@@ -3314,24 +3323,24 @@ def show_bdc_intelligence():
                             <p style='color: #888; font-size: 14px; margin: 0;'>LT/KG in Stock</p>
                         </div>
                         """, unsafe_allow_html=True)
-            
+           
                 st.markdown("---")
-            
+           
                 st.markdown("#### 🏭 Stock by Depot")
                 depot_breakdown = bdc_balance.groupby(['DEPOT', 'Product'])[col_name].sum().reset_index()
                 depot_pivot = depot_breakdown.pivot(index='DEPOT', columns='Product', values=col_name).fillna(0)
                 st.dataframe(depot_pivot, width='stretch')
         else:
             st.warning(f"⚠️ No stock balance data found for {selected_bdc}")
-    
+   
         st.markdown("---")
         st.markdown("### 🚚 LOADING ACTIVITY")
-    
+   
         bdc_loadings = loadings_df[loadings_df['BDC'] == selected_bdc]
-    
+   
         if not bdc_loadings.empty:
                 cols = st.columns(4)
-            
+           
                 with cols[0]:
                     st.metric("Total Orders", f"{len(bdc_loadings):,}")
                 with cols[1]:
@@ -3341,7 +3350,7 @@ def show_bdc_intelligence():
                 with cols[3]:
                     avg_order = bdc_loadings['Quantity'].mean()
                     st.metric("Avg Order Size", f"{avg_order:,.0f} LT")
-            
+           
                 st.markdown("#### 📦 Loading by Product")
                 product_loadings = bdc_loadings.groupby('Product').agg({
                     'Quantity': ['sum', 'mean', 'count']
@@ -3352,45 +3361,45 @@ def show_bdc_intelligence():
             st.warning(f"⚠️ No loading data found for {selected_bdc}")
     with tab2:
         st.markdown("### ⏱️ STOCKOUT PREDICTION")
-    
+   
         bdc_balance = balance_df[balance_df['BDC'] == selected_bdc]
         bdc_loadings = loadings_df[loadings_df['BDC'] == selected_bdc]
-    
+   
         if bdc_balance.empty:
             st.warning(f"⚠️ No balance data for {selected_bdc}")
             return
-    
+   
         if bdc_loadings.empty:
             st.warning(f"⚠️ No loading data for {selected_bdc}")
             return
-    
+   
         loadings_df_copy = bdc_loadings.copy()
         loadings_df_copy['Date'] = pd.to_datetime(loadings_df_copy['Date'], errors='coerce')
         loadings_df_copy = loadings_df_copy.dropna(subset=['Date'])
-    
+   
         if loadings_df_copy.empty:
             st.warning("⚠️ No valid date information in loading data")
             return
-    
+   
         date_range = (loadings_df_copy['Date'].max() - loadings_df_copy['Date'].min()).days
         if date_range == 0:
             date_range = 1
-    
+   
         daily_consumption = loadings_df_copy.groupby('Product')['Quantity'].sum() / date_range
-    
+   
         col_name = 'ACTUAL BALANCE (LT\\KG)'
         current_stock = bdc_balance.groupby('Product')[col_name].sum()
-    
+   
         st.markdown("#### 📅 Estimated Days Until Stockout")
-    
+   
         predictions = []
         for product in current_stock.index:
             stock = current_stock[product]
             daily_rate = daily_consumption.get(product, 0)
-        
+       
             if daily_rate > 0:
                 days_remaining = stock / daily_rate
-            
+           
                 if days_remaining < 7:
                     status = "🔴 CRITICAL"
                     color = "#ff0000"
@@ -3400,7 +3409,7 @@ def show_bdc_intelligence():
                 else:
                     status = "🟢 HEALTHY"
                     color = "#00ff88"
-            
+           
                 predictions.append({
                     'Product': product,
                     'Current Stock (LT)': f"{stock:,.0f}",
@@ -3408,7 +3417,7 @@ def show_bdc_intelligence():
                     'Days Remaining': f"{days_remaining:.1f}",
                     'Status': status
                 })
-            
+           
                 st.markdown(f"""
                 <div style='background: rgba(22,33,62,0.6); padding: 20px; border-radius: 10px;
                             border: 2px solid {color}; margin: 10px 0;'>
@@ -3438,7 +3447,7 @@ def show_bdc_intelligence():
                     'Days Remaining': "∞",
                     'Status': "ℹ️ NO DATA"
                 })
-    
+   
         if predictions:
             st.markdown("---")
             st.markdown("#### 📋 Summary Table")
@@ -3446,36 +3455,36 @@ def show_bdc_intelligence():
             st.dataframe(pred_df, width='stretch', hide_index=True)
     with tab3:
         st.markdown("### 📉 CONSUMPTION ANALYSIS")
-    
+   
         bdc_loadings = loadings_df[loadings_df['BDC'] == selected_bdc]
-    
+   
         if bdc_loadings.empty:
             st.warning(f"⚠️ No loading data for {selected_bdc}")
             return
-    
+   
         ts_df = bdc_loadings.copy()
         ts_df['Date'] = pd.to_datetime(ts_df['Date'], errors='coerce')
         ts_df = ts_df.dropna(subset=['Date'])
-    
+   
         if ts_df.empty:
             st.warning("⚠️ No valid dates in loading data")
             return
-    
+   
         daily_by_product = ts_df.groupby([ts_df['Date'].dt.date, 'Product'])['Quantity'].sum().reset_index()
         daily_by_product.columns = ['Date', 'Product', 'Volume']
-    
+   
         st.markdown("#### 📈 Daily Consumption Trend")
-    
+   
         for product in daily_by_product['Product'].unique():
             product_data = daily_by_product[daily_by_product['Product'] == product]
-        
+       
             if not product_data.empty:
                 st.markdown(f"**{product}**")
                 st.line_chart(product_data.set_index('Date')['Volume'], width='stretch')
-    
+   
         st.markdown("---")
         st.markdown("#### 📊 Consumption Statistics")
-    
+   
         stats = ts_df.groupby('Product')['Quantity'].agg([
             ('Total', 'sum'),
             ('Average', 'mean'),
@@ -3484,19 +3493,19 @@ def show_bdc_intelligence():
             ('Max', 'max'),
             ('Std Dev', 'std')
         ]).reset_index()
-    
+   
         st.dataframe(stats, width='stretch', hide_index=True)
-    
+   
         st.markdown("---")
         st.markdown("#### 🏢 Top OMCs Loading from this BDC")
-    
+   
         top_omcs = ts_df.groupby('OMC')['Quantity'].sum().sort_values(ascending=False).head(10).reset_index()
         top_omcs.columns = ['OMC', 'Total Volume (LT)']
-    
+   
         st.dataframe(top_omcs, width='stretch', hide_index=True)
 # ═══════════════════════════════════════════════════════════════════════════════
 # HISTORY ENGINE — persists national snapshots to disk on every fetch
-# ═══════════════════════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
 SNAPSHOT_DIR = os.path.join(os.getcwd(), "national_snapshots")
 def _save_national_snapshot(forecast_df: pd.DataFrame, period_label: str):
     """Persist a national stockout result row to the snapshot archive."""
