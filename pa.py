@@ -922,17 +922,30 @@ def save_daily_orders_excel(df: pd.DataFrame, filename: str = None) -> str:
 # ==================== NEW: WORLD RISK MONITOR FUNCTION ====================
 def show_world_monitor():
     st.markdown("<h2>🌍 WORLD RISK MONITOR - Powered by WorldMonitor.app</h2>", unsafe_allow_html=True)
-    st.info("🔴 LIVE GLOBAL INTELLIGENCE: Real-time conflicts, military bases, nuclear sites, sanctions, weather, economic indicators, waterways, power outages, natural disasters & Iran attacks. Fully interactive map with 7-day view.")
+    st.info("🔴 LIVE GLOBAL INTELLIGENCE: Real-time conflicts, military bases, nuclear sites, sanctions, weather, economic indicators, waterways, power outages, natural disasters & Iran attacks.")
     st.caption("Source: " + WORLD_MONITOR_URL.split('?')[0])
-    
-    # Full-screen iframe with your exact parameters
-    st.components.v1.iframe(
-        WORLD_MONITOR_URL,
-        height=850,
-        width="100%",
-        scrolling=True
+
+    # Attempt iframe with raw HTML (bypasses Streamlit's width type check)
+    st.markdown(
+        f"""
+        <div style='border:2px solid #00ffff; border-radius:12px; overflow:hidden; margin-bottom:16px;'>
+            <iframe src="{WORLD_MONITOR_URL}" width="100%" height="850"
+                    style="border:none;" allowfullscreen loading="lazy"
+                    sandbox="allow-scripts allow-same-origin allow-popups">
+            </iframe>
+        </div>
+        """,
+        unsafe_allow_html=True,
     )
-    
+
+    # Fallback — always show a direct link
+    st.markdown(
+        "<p style='color:#ff00ff;'>⚠️ <b>If the map is blank</b>, the site blocks iframe embedding. "
+        "Use the button below to open it directly.</p>",
+        unsafe_allow_html=True,
+    )
+    st.link_button("🌍 OPEN WORLD MONITOR IN NEW TAB", WORLD_MONITOR_URL)
+
     st.markdown("---")
     st.markdown("""
     <div style='background:rgba(22,33,62,0.6); padding:20px; border-radius:15px; border:2px solid #00ffff;'>
@@ -940,7 +953,7 @@ def show_world_monitor():
         <ul>
             <li>🖱️ Drag to pan • Scroll to zoom</li>
             <li>🔍 Click any layer (Conflicts, Nuclear, Sanctions, etc.) to toggle</li>
-            <li>📅 Time range is locked to last 7 days (as per your link)</li>
+            <li>📅 Time range is locked to last 7 days</li>
             <li>🌐 All data updates live from WorldMonitor.app</li>
         </ul>
     </div>
