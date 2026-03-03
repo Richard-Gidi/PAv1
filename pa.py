@@ -925,69 +925,40 @@ def show_world_monitor():
     st.info("🔴 LIVE GLOBAL INTELLIGENCE: Real-time conflicts, military bases, nuclear sites, sanctions, weather, economic indicators, waterways, power outages, natural disasters & Iran attacks. Fully interactive map with 7-day view.")
     st.caption("Source: " + WORLD_MONITOR_URL.split("?")[0])
 
-    if "show_world_map" not in st.session_state:
-        st.session_state.show_world_map = False
-
-    if not st.session_state.show_world_map:
-        st.markdown('''
-        <div style='background:rgba(22,33,62,0.6); padding:40px; border-radius:15px;
-                    border:2px solid #00ffff; text-align:center; margin:20px 0;'>
-            <div style='font-size:80px; margin-bottom:20px;'>🌍</div>
-            <h3 style='color:#00ffff; margin:0;'>WORLD RISK MONITOR</h3>
-            <p style='color:#888; margin:10px 0 20px;'>
-                Real-time global intelligence: conflicts, nuclear, sanctions, weather,<br>
-                economic indicators, waterways, outages, military &amp; natural disasters.
-            </p>
-            <p style='color:#ff00ff; font-size:14px;'>
-                Click the button below to load the live map inside this dashboard.
-            </p>
-        </div>
-        ''', unsafe_allow_html=True)
-
-        if st.button('🌍 LAUNCH WORLD RISK MONITOR', width='stretch', key='launch_world_map'):
-            st.session_state.show_world_map = True
-            st.rerun()
-
-    else:
-        if st.button('❌ CLOSE WORLD MONITOR', key='close_world_map'):
-            st.session_state.show_world_map = False
-            st.rerun()
-
-        _url = WORLD_MONITOR_URL
-        world_html = f'''<!DOCTYPE html>
-<html><head><meta charset='UTF-8'><style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-html,body{{width:100%;height:100%;overflow:hidden;background:#0a0e27}}
-#loader{{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0e27;z-index:10;font-family:sans-serif;color:#00ffff}}
-.spinner{{width:50px;height:50px;border:4px solid rgba(0,255,255,0.2);border-top:4px solid #00ffff;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:20px}}
-@keyframes spin{{to{{transform:rotate(360deg)}}}}
-#map-frame{{width:100%;height:100%;border:none}}
-#fallback{{display:none;position:absolute;top:0;left:0;width:100%;height:100%;flex-direction:column;align-items:center;justify-content:center;background:#0a0e27;z-index:20;font-family:sans-serif;color:#ff00ff;text-align:center;padding:40px}}
-#fallback a{{display:inline-block;margin-top:20px;padding:14px 32px;background:linear-gradient(45deg,#ff00ff,#00ffff);color:white;text-decoration:none;border-radius:25px;font-weight:bold;font-size:16px}}
-</style></head><body>
-<div id='loader'><div class='spinner'></div><p>Loading World Risk Monitor...</p></div>
-<div id='fallback'>
-<div style='font-size:60px;margin-bottom:16px'>🌍</div>
-<h2 style='color:#00ffff;margin-bottom:12px'>Map could not load inline</h2>
-<p style='color:#aaa;max-width:500px;line-height:1.6'>WorldMonitor.app may block embedded loading.<br>Click below to open the full interactive map.</p>
-<a href='{_url}' target='_blank'>🌍 Open World Monitor</a></div>
-<iframe id='map-frame' src='{_url}' sandbox='allow-scripts allow-same-origin allow-popups allow-forms' allow='geolocation;fullscreen' loading='eager' onload='onFrameLoad()' onerror='showErr()'></iframe>
-<script>
-var t=setTimeout(showErr,12000);
-function onFrameLoad(){{clearTimeout(t);document.getElementById('loader').style.display='none';try{{var d=document.getElementById('map-frame').contentDocument;if(d&&d.body&&d.body.innerHTML.length<50)showErr()}}catch(e){{}}}}
-function showErr(){{clearTimeout(t);document.getElementById('loader').style.display='none';document.getElementById('fallback').style.display='flex';document.getElementById('map-frame').style.display='none'}}
-</script></body></html>'''
-        st.components.v1.html(world_html, height=880, scrolling=False)
+    st.markdown('''
+    <div style='background:rgba(22,33,62,0.6); padding:40px; border-radius:15px;
+                border:2px solid #00ffff; text-align:center; margin:20px 0;'>
+        <div style='font-size:80px; margin-bottom:20px;'>🌍</div>
+        <h3 style='color:#00ffff; margin:0;'>WORLD RISK MONITOR</h3>
+        <p style='color:#888; margin:10px 0 20px;'>
+            Real-time global intelligence powered by AI &amp; 100+ OSINT feeds.<br>
+            Conflicts, nuclear, sanctions, weather, military, infrastructure &amp; more.<br>
+            Built with deck.gl (WebGL) — best viewed full-screen.
+        </p>
+        <a href="''' + WORLD_MONITOR_URL + '''" target="_top"
+           style='display:inline-block; padding:16px 48px;
+                  background:linear-gradient(45deg, #ff00ff, #00ffff);
+                  color:white; text-decoration:none; border-radius:30px;
+                  font-weight:bold; font-size:18px; letter-spacing:1px;
+                  transition: opacity 0.2s;'>
+            🌍 OPEN WORLD RISK MONITOR
+        </a>
+        <p style='color:#555; margin-top:16px; font-size:13px;'>
+            Opens in this tab — use your browser back button to return here.
+        </p>
+    </div>
+    ''', unsafe_allow_html=True)
 
     st.markdown("---")
     st.markdown('''
     <div style='background:rgba(22,33,62,0.6); padding:20px; border-radius:15px; border:2px solid #00ffff;'>
-        <h3 style='color:#00ffff;'>How to use this map</h3>
+        <h3 style='color:#00ffff;'>About this map</h3>
         <ul>
             <li>🖱️ Drag to pan / Scroll to zoom</li>
-            <li>🔍 Click any layer (Conflicts, Nuclear, Sanctions, etc.) to toggle</li>
+            <li>🔍 25 toggleable data layers (Conflicts, Nuclear, Military, Sanctions, etc.)</li>
             <li>📅 Time range is locked to last 7 days (as per your link)</li>
-            <li>🌐 All data updates live from WorldMonitor.app</li>
+            <li>🌐 AI-powered threat classification &amp; instability scoring</li>
+            <li>⬅️ Hit your browser BACK button to return to this dashboard</li>
         </ul>
     </div>
     ''', unsafe_allow_html=True)
