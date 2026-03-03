@@ -148,67 +148,84 @@ fig.add_trace(go.Scatter(
     mode="lines",
     line=dict(color="#f59e0b", width=3),
     fill="tozeroy",
-    fillcolor="rgba(245,158,11,0.18)",
+    fillcolor="rgba(245,158,11,0.20)",
     name="Brent Price",
-    hovertemplate="%{x}<br>$%{y:.0f}/bbl<extra></extra>"
+    hovertemplate="%{x}<br><b>$%{y:.0f}/bbl</b><extra></extra>"
 ))
 
 # Event highlights
 for event in filtered_events:
     cat_color = CATEGORIES[event["category"]]["color"]
     is_selected = st.session_state.selected_event == event["id"]
-    
-    # Reference area (shaded zone)
+
     fig.add_vrect(
         x0=event["dateRange"][0],
         x1=event["dateRange"][1],
         fillcolor=cat_color,
-        opacity=0.22 if is_selected else 0.07,
+        opacity=0.25 if is_selected else 0.08,
         layer="below",
         line_width=0,
     )
-    
-    # Reference line + label
+
     fig.add_vline(
         x=event["date"],
-        line_dash="dash",
+        line_dash="dot",
         line_color=cat_color,
         line_width=1.5,
-        opacity=0.7
+        opacity=0.8
     )
+
     fig.add_annotation(
         x=event["date"],
         y=148,
         text=str(event["id"]),
         showarrow=False,
         font=dict(size=11, color=cat_color, family="Space Mono"),
-        bgcolor="rgba(10,12,20,0.9)",
-        borderpad=3,
+        bgcolor="#0a0f1c",
+        borderpad=4,
         bordercolor=cat_color,
         borderwidth=1
     )
 
+# 🔥 DEEP DARK LAYOUT
 fig.update_layout(
-    height=460,
+    height=480,
     template="plotly_dark",
-    paper_bgcolor="rgba(255,255,255,0.015)",
-    plot_bgcolor="rgba(255,255,255,0)",
+    paper_bgcolor="#070a14",
+    plot_bgcolor="#070a14",
     margin=dict(l=10, r=10, t=30, b=10),
+    hovermode="x unified",
+    font=dict(color="#e5e7eb", family="DM Sans"),
+
     xaxis=dict(
         tickformat="%Y",
-        tickangle=0,
-        tickfont=dict(size=11, family="Space Mono"),
-        gridcolor="rgba(255,255,255,0.05)"
+        tickfont=dict(size=11, family="Space Mono", color="#cbd5e1"),
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.05)",
+        zeroline=False,
+        showline=True,
+        linecolor="rgba(255,255,255,0.15)"
     ),
+
     yaxis=dict(
         title="Price $/bbl",
         tickprefix="$",
         range=[0, 150],
-        tickfont=dict(size=11, family="Space Mono"),
-        gridcolor="rgba(255,255,255,0.05)"
+        tickfont=dict(size=11, family="Space Mono", color="#cbd5e1"),
+        showgrid=True,
+        gridcolor="rgba(255,255,255,0.05)",
+        zeroline=False,
+        showline=True,
+        linecolor="rgba(255,255,255,0.15)"
     ),
-    showlegend=False,
-    hovermode="x unified"
+
+    hoverlabel=dict(
+        bgcolor="#0f172a",
+        font_size=13,
+        font_family="Space Mono"
+    ),
+
+    showlegend=False
 )
 
 st.plotly_chart(fig, use_container_width=True)
