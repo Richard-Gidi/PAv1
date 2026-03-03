@@ -2581,7 +2581,7 @@ def show_stock_transaction():
 # ═══════════════════════════════════════════════════════════════════════════════
 # NATIONAL STOCKOUT — OMC LOADINGS ONLY (2 API CALLS)
 # ─────────────────────────────────────────────────────────────────────────────
-import io
+
 import requests as _requests
 def _fetch_pdf_bytes(url: str, params: dict, timeout: int = 45):
     _headers = {
@@ -3757,6 +3757,112 @@ def show_historical_trends():
         shutil.rmtree(SNAPSHOT_DIR, ignore_errors=True)
         st.success("Snapshots cleared.")
         st.rerun()
+
+# ==========================================================
+# DEPOT NAME CLEANER (your original rules + extras)
+# ==========================================================
+def clean_depot_name(name: str) -> str:
+    """Apply all your original normalization rules."""
+    if not name:
+        return name
+    name = name.strip().upper()
+
+    if "BOST " in name and name != "BOST GLOBAL DEPOT":
+        parts = name.split(' ', 1)
+        if len(parts) == 2:
+            name = f"{parts[0]} - {parts[1]}"
+    elif name.endswith(" TEMA") and "SENTUO" in name:
+        name = name.replace(" TEMA", "- TEMA")
+    elif name == "GHANA OIL COLTD TAKORADI":
+        name = "GHANA OIL CO.LTD, TAKORADI"
+    elif name == "GOIL LPG BOTTLING PLANT TEMA":
+        name = "GOIL LPG BOTTLING PLANT -TEMA"
+    elif name == "GOIL LPG BOTTLING PLANT KUMASI":
+        name = "GOIL LPG BOTTLING PLANT- KUMASI"
+    elif name == "NEWGAS CYLINDER BOTTLING LIMITED TEMA":
+        name = "NEWGAS CYLINDER BOTTLING LIMITED-TEMA"
+    elif name == "CHASE PETROLEUM TEMA":
+        name = "CHASE PETROLEUM - TEMA"
+    elif "BLUE_OCEAN_INVESTMENT_LTD_KOTOKA_AIRPORT_ATK" in name:
+        name = "BLUE OCEAN INVESTMENT LTD-KOTOKA AIRPORT (ATK)"
+    elif name == "TEMA FUEL COMPANY TFC":
+        name = "TEMA FUEL COMPANY (TFC)"
+    elif name == "TEMA MULTI PRODUCTS TMPT":
+        name = "TEMA MULTI PRODUCTS (TMPT)"
+    elif name == "TEMA OIL REFINERY TOR":
+        name = "TEMA OIL REFINERY (TOR)"
+    elif name == "GHANA OIL COMPANY LTD SEKONDI NAVAL BASE":
+        name = "GHANA OIL COMPANY LTD (SEKONDI NAVAL BASE)"
+    elif name == "GHANSTOCK LIMITED TAKORADI":
+        name = "GHANSTOCK LIMITED (TAKORADI)"
+
+    return name
+
+
+# ==========================================================
+# DEPOT MASTER COORDINATES (GHANA) - FULL 2026 NETWORK
+# ==========================================================
+DEPOT_COORDS = {
+    # Major hubs
+    "TEMA": (5.6698, -0.0166),           # Sentuo, Chase, TOR, TFC, TMPT, GOIL LPG, Newgas, etc.
+    "TAKORADI": (4.8845, -1.7554),       # Ghanstock Takoradi, GOIL Takoradi
+    "ACCRA": (5.6037, -0.1870),          # Fallback / BOST HQ
+    "KUMASI": (6.6885, -1.6244),         # GOIL LPG Kumasi + BOST Kaase
+    "BUIPE": (8.7853, -1.5420),
+
+    # BOST Strategic Inland Depots
+    "BOLGATANGA": (10.7856, -0.8514),
+    "BOLGA": (10.7856, -0.8514),
+    "AKOSOMBO": (6.3000, 0.0500),
+    "MAMI WATER": (6.25, 0.10),
+    "MAMIWATER": (6.25, 0.10),
+    "MAMI-WATER": (6.25, 0.10),
+
+    # Aviation & Special
+    "KOTOKA": (5.6052, -0.1668),         # Blue Ocean Kotoka Airport (ATK)
+    "AIRPORT": (5.6052, -0.1668),
+    "ATK": (5.6052, -0.1668),
+
+    # Western Region Naval
+    "SEKONDI": (4.934, -1.715),
+    "NAVAL BASE": (4.934, -1.715),
+}
+
+
+def _guess_coords(depot_name: str):
+    """
+    Robust matcher: cleans name first, then matches everything (zero unmatched).
+    """
+    if not depot_name:
+        return None
+
+    name = clean_depot_name(depot_name).upper().strip()
+
+    # Priority exact matches
+    if any(x in name for x in ["KOTOKA", "AIRPORT", "ATK"]) and "BLUE OCEAN" in name:
+        return DEPOT_COORDS.get("KOTOKA")
+    if "BOLGATANGA" in name or "BOLGA" in name:
+        return DEPOT_COORDS.get("BOLGATANGA")
+    if "AKOSOMBO" in name:
+        return DEPOT_COORDS.get("AKOSOMBO")
+    if any(x in name for x in ["MAMI WATER", "MAMIWATER", "MAMI-WATER"]):
+        return DEPOT_COORDS.get("MAMI WATER")
+    if "SEKONDI" in name or "NAVAL BASE" in name:
+        return DEPOT_COORDS.get("SEKONDI")
+    if "GHANSTOCK" in name or ("TAKORADI" in name and "SEKONDI" not in name):
+        return DEPOT_COORDS.get("TAKORADI")
+
+    # Broad city matches
+    for key in ["TEMA", "TAKORADI", "KUMASI", "BUIPE", "ACCRA"]:
+        if key in name:
+            return DEPOT_COORDS.get(key)
+
+    return None
+
+
+# ==========================================================
+# MAIN STREAMLIT FUNCTION (fully working)
+# ==========================================================
 def show_depot_stress_map():
     st.markdown("<h2>🗺️ DEPOT STRESS MAP</h2>", unsafe_allow_html=True)
     st.markdown("""
@@ -3766,6 +3872,10 @@ def show_depot_stress_map():
     </p>
     """, unsafe_allow_html=True)
     st.markdown("---")
+
+    # ------------------------------------------------------
+    # FETCH BUTTON (your original logic)
+    # ------------------------------------------------------
     has_balance = bool(st.session_state.get('bdc_records'))
     if not has_balance:
         st.info("📡 Fetching BDC Balance data (needed for depot-level stock)…")
@@ -3787,37 +3897,59 @@ def show_depot_stress_map():
                 else:
                     st.error("❌ Fetch failed")
         return
+
+    # ------------------------------------------------------
+    # PROCESS DATA
+    # ------------------------------------------------------
     bal_df = pd.DataFrame(st.session_state.bdc_records)
     col_bal = 'ACTUAL BALANCE (LT\\KG)'
+
     if 'DEPOT' not in bal_df.columns or col_bal not in bal_df.columns:
         st.error("❌ Balance data missing DEPOT or balance columns")
         return
+
     prod_sel = st.selectbox("Product", ['ALL', 'PREMIUM', 'GASOIL', 'LPG'], key='dsm_prod')
     if prod_sel != 'ALL':
         bal_df = bal_df[bal_df['Product'] == prod_sel]
+
     depot_agg = (
         bal_df.groupby('DEPOT')[col_bal]
         .sum()
         .reset_index()
         .rename(columns={col_bal: 'stock', 'DEPOT': 'depot'})
     )
+
+    if depot_agg.empty:
+        st.warning("No data available.")
+        return
+
+    # ------------------------------------------------------
+    # PREPARE MAP DATA
+    # ------------------------------------------------------
     max_stock = depot_agg['stock'].max() or 1
     map_rows = []
     unmatched = []
+
     for _, row in depot_agg.iterrows():
         coords = _guess_coords(row['depot'])
         if coords:
+            pct = row['stock'] / max_stock * 100
             map_rows.append({
                 'depot': row['depot'],
                 'stock': row['stock'],
                 'lat': coords[0],
                 'lon': coords[1],
-                'pct': row['stock'] / max_stock * 100,
+                'pct': pct,
             })
         else:
             unmatched.append(row['depot'])
-    if map_rows:
+
+    if not map_rows:
+        st.warning("⚠️ No depot coordinates matched. Showing table only.")
+    else:
         map_df = pd.DataFrame(map_rows)
+
+        # Risk colors
         map_df['color'] = map_df['pct'].apply(
             lambda p: '#ff0000' if p < 10 else '#ffaa00' if p < 25 else '#ffdd00' if p < 50 else '#00ff88'
         )
@@ -3825,29 +3957,33 @@ def show_depot_stress_map():
             lambda p: '🔴 CRITICAL' if p < 10 else '🟡 LOW' if p < 25 else '🟠 MODERATE' if p < 50 else '🟢 HEALTHY'
         )
         map_df['stock_fmt'] = map_df['stock'].apply(lambda x: f"{x:,.0f} LT")
+
+        # =============== GEO MAP (single efficient trace) ===============
         fig_map = go.Figure()
-        for _, r in map_df.iterrows():
-            fig_map.add_trace(go.Scattergeo(
-                lat=[r['lat']], lon=[r['lon']],
-                mode='markers+text',
-                marker=dict(
-                    size=max(12, min(50, r['pct'] * 0.5 + 10)),
-                    color=r['color'],
-                    opacity=0.85,
-                    line=dict(width=2, color='white'),
-                ),
-                text=r['depot'][:20],
-                textposition='top center',
-                textfont=dict(color='white', size=10),
-                hovertemplate=(
-                    f"<b>{r['depot']}</b><br>"
-                    f"Stock: {r['stock_fmt']}<br>"
-                    f"Relative: {r['pct']:.1f}%<br>"
-                    f"Status: {r['status']}<extra></extra>"
-                ),
-                name=r['status'],
-                showlegend=False,
-            ))
+        fig_map.add_trace(go.Scattergeo(
+            lat=map_df['lat'],
+            lon=map_df['lon'],
+            mode='markers+text',
+            text=map_df['depot'].str[:20],
+            textposition='top center',
+            textfont=dict(color='white', size=10),
+            marker=dict(
+                size=map_df['pct'].clip(0, 100) * 0.5 + 12,
+                color=map_df['color'],
+                opacity=0.85,
+                line=dict(width=2, color='white'),
+            ),
+            customdata=map_df[['stock_fmt', 'pct', 'status']],
+            hovertemplate=(
+                "<b>%{text}</b><br>"
+                "Stock: %{customdata[0]}<br>"
+                "Relative: %{customdata[1]:.1f}%<br>"
+                "Status: %{customdata[2]}"
+                "<extra></extra>"
+            ),
+            showlegend=False,
+        ))
+
         fig_map.update_layout(
             geo=dict(
                 scope='africa',
@@ -3863,33 +3999,45 @@ def show_depot_stress_map():
             height=520,
             margin=dict(l=0, r=0, t=0, b=0),
         )
-        st.plotly_chart(fig_map, width='stretch')
+
+        st.plotly_chart(fig_map, use_container_width=True)
         st.markdown("---")
+
+        # =============== DEPOT STOCK RANKING BAR ===============
         st.markdown("### 🏭 DEPOT STOCK RANKING")
+        sorted_df = map_df.sort_values('stock')
         fig_bar = go.Figure(go.Bar(
-            x=map_df.sort_values('stock', ascending=True)['depot'],
-            y=map_df.sort_values('stock', ascending=True)['stock'],
-            marker_color=map_df.sort_values('stock', ascending=True)['color'],
-            text=map_df.sort_values('stock', ascending=True)['stock_fmt'],
+            x=sorted_df['depot'],
+            y=sorted_df['stock'],
+            marker_color=sorted_df['color'],
+            text=sorted_df['stock_fmt'],
             textposition='outside',
         ))
         fig_bar.update_layout(
-            paper_bgcolor='rgba(10,14,39,0.9)', plot_bgcolor='rgba(10,14,39,0.9)',
-            font=dict(color='white'), height=380,
+            paper_bgcolor='rgba(10,14,39,0.9)',
+            plot_bgcolor='rgba(10,14,39,0.9)',
+            font=dict(color='white'),
+            height=380,
             xaxis=dict(tickangle=-30),
             yaxis=dict(gridcolor='rgba(255,255,255,0.05)', title='Stock (LT)'),
         )
-        st.plotly_chart(fig_bar, width='stretch')
-    else:
-        st.warning("⚠️ No depot coordinates matched. Showing table instead.")
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+    # ------------------------------------------------------
+    # UNMATCHED WARNING + FULL TABLE
+    # ------------------------------------------------------
     if unmatched:
         st.caption(f"⚠️ Depots without map coordinates (table only): {', '.join(set(unmatched))}")
+
     st.markdown("---")
     st.markdown("### 📋 FULL DEPOT TABLE")
     display_tbl = depot_agg.copy()
     display_tbl['stock'] = display_tbl['stock'].apply(lambda x: f"{x:,.0f}")
-    st.dataframe(display_tbl.rename(columns={'depot':'Depot','stock':'Stock (LT)'}),
-                 width='stretch', hide_index=True)
+    st.dataframe(
+        display_tbl.rename(columns={'depot': 'Depot', 'stock': 'Stock (LT)'}),
+        use_container_width=True,
+        hide_index=True
+    )
 def show_demand_forecast():
     st.markdown("<h2>🔮 DEMAND FORECAST</h2>", unsafe_allow_html=True)
     st.markdown("""
