@@ -933,15 +933,14 @@ def show_world_monitor():
         <h3 style='color:#00ffff; margin:0;'>WORLD RISK MONITOR</h3>
         <p style='color:#888; margin:10px 0 20px;'>
             Real-time global intelligence powered by AI &amp; 100+ OSINT feeds.<br>
-            Conflicts, nuclear, sanctions, weather, military, infrastructure &amp; more.
+            25 data layers: conflicts, nuclear, military, sanctions, weather,<br>
+            infrastructure, satellites &amp; more. Built with WebGL (deck.gl).
         </p>
     </div>
     ''', unsafe_allow_html=True)
 
-    if st.button("🌍 OPEN WORLD RISK MONITOR", width='stretch', key='open_world_map'):
-        streamlit_js_eval(js_expressions=f"window.open('{WORLD_MONITOR_URL}', '_self')")
-
-    st.caption("⬅️ Use your browser BACK button to return to this dashboard.")
+    st.link_button("🌍 OPEN WORLD RISK MONITOR", WORLD_MONITOR_URL, use_container_width=True)
+    st.caption("Opens in a new tab with your pre-configured satellite view, layers & 7-day window.")
 
     st.markdown("---")
     st.markdown('''
