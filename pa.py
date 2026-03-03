@@ -922,42 +922,75 @@ def save_daily_orders_excel(df: pd.DataFrame, filename: str = None) -> str:
 # ==================== NEW: WORLD RISK MONITOR FUNCTION ====================
 def show_world_monitor():
     st.markdown("<h2>🌍 WORLD RISK MONITOR - Powered by WorldMonitor.app</h2>", unsafe_allow_html=True)
-    st.info("🔴 LIVE GLOBAL INTELLIGENCE: Real-time conflicts, military bases, nuclear sites, sanctions, weather, economic indicators, waterways, power outages, natural disasters & Iran attacks.")
-    st.caption("Source: " + WORLD_MONITOR_URL.split('?')[0])
+    st.info("🔴 LIVE GLOBAL INTELLIGENCE: Real-time conflicts, military bases, nuclear sites, sanctions, weather, economic indicators, waterways, power outages, natural disasters & Iran attacks. Fully interactive map with 7-day view.")
+    st.caption("Source: " + WORLD_MONITOR_URL.split("?")[0])
 
-    # Attempt iframe with raw HTML (bypasses Streamlit's width type check)
-    st.markdown(
-        f"""
-        <div style='border:2px solid #00ffff; border-radius:12px; overflow:hidden; margin-bottom:16px;'>
-            <iframe src="{WORLD_MONITOR_URL}" width="100%" height="850"
-                    style="border:none;" allowfullscreen loading="lazy"
-                    sandbox="allow-scripts allow-same-origin allow-popups">
-            </iframe>
+    if "show_world_map" not in st.session_state:
+        st.session_state.show_world_map = False
+
+    if not st.session_state.show_world_map:
+        st.markdown('''
+        <div style='background:rgba(22,33,62,0.6); padding:40px; border-radius:15px;
+                    border:2px solid #00ffff; text-align:center; margin:20px 0;'>
+            <div style='font-size:80px; margin-bottom:20px;'>🌍</div>
+            <h3 style='color:#00ffff; margin:0;'>WORLD RISK MONITOR</h3>
+            <p style='color:#888; margin:10px 0 20px;'>
+                Real-time global intelligence: conflicts, nuclear, sanctions, weather,<br>
+                economic indicators, waterways, outages, military &amp; natural disasters.
+            </p>
+            <p style='color:#ff00ff; font-size:14px;'>
+                Click the button below to load the live map inside this dashboard.
+            </p>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        ''', unsafe_allow_html=True)
 
-    # Fallback — always show a direct link
-    st.markdown(
-        "<p style='color:#ff00ff;'>⚠️ <b>If the map is blank</b>, the site blocks iframe embedding. "
-        "Use the button below to open it directly.</p>",
-        unsafe_allow_html=True,
-    )
-    st.link_button("🌍 OPEN WORLD MONITOR IN NEW TAB", WORLD_MONITOR_URL)
+        if st.button('🌍 LAUNCH WORLD RISK MONITOR', width='stretch', key='launch_world_map'):
+            st.session_state.show_world_map = True
+            st.rerun()
+
+    else:
+        if st.button('❌ CLOSE WORLD MONITOR', key='close_world_map'):
+            st.session_state.show_world_map = False
+            st.rerun()
+
+        _url = WORLD_MONITOR_URL
+        world_html = f'''<!DOCTYPE html>
+<html><head><meta charset='UTF-8'><style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+html,body{{width:100%;height:100%;overflow:hidden;background:#0a0e27}}
+#loader{{position:absolute;top:0;left:0;width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#0a0e27;z-index:10;font-family:sans-serif;color:#00ffff}}
+.spinner{{width:50px;height:50px;border:4px solid rgba(0,255,255,0.2);border-top:4px solid #00ffff;border-radius:50%;animation:spin 1s linear infinite;margin-bottom:20px}}
+@keyframes spin{{to{{transform:rotate(360deg)}}}}
+#map-frame{{width:100%;height:100%;border:none}}
+#fallback{{display:none;position:absolute;top:0;left:0;width:100%;height:100%;flex-direction:column;align-items:center;justify-content:center;background:#0a0e27;z-index:20;font-family:sans-serif;color:#ff00ff;text-align:center;padding:40px}}
+#fallback a{{display:inline-block;margin-top:20px;padding:14px 32px;background:linear-gradient(45deg,#ff00ff,#00ffff);color:white;text-decoration:none;border-radius:25px;font-weight:bold;font-size:16px}}
+</style></head><body>
+<div id='loader'><div class='spinner'></div><p>Loading World Risk Monitor...</p></div>
+<div id='fallback'>
+<div style='font-size:60px;margin-bottom:16px'>🌍</div>
+<h2 style='color:#00ffff;margin-bottom:12px'>Map could not load inline</h2>
+<p style='color:#aaa;max-width:500px;line-height:1.6'>WorldMonitor.app may block embedded loading.<br>Click below to open the full interactive map.</p>
+<a href='{_url}' target='_blank'>🌍 Open World Monitor</a></div>
+<iframe id='map-frame' src='{_url}' sandbox='allow-scripts allow-same-origin allow-popups allow-forms' allow='geolocation;fullscreen' loading='eager' onload='onFrameLoad()' onerror='showErr()'></iframe>
+<script>
+var t=setTimeout(showErr,12000);
+function onFrameLoad(){{clearTimeout(t);document.getElementById('loader').style.display='none';try{{var d=document.getElementById('map-frame').contentDocument;if(d&&d.body&&d.body.innerHTML.length<50)showErr()}}catch(e){{}}}}
+function showErr(){{clearTimeout(t);document.getElementById('loader').style.display='none';document.getElementById('fallback').style.display='flex';document.getElementById('map-frame').style.display='none'}}
+</script></body></html>'''
+        st.components.v1.html(world_html, height=880, scrolling=False)
 
     st.markdown("---")
-    st.markdown("""
+    st.markdown('''
     <div style='background:rgba(22,33,62,0.6); padding:20px; border-radius:15px; border:2px solid #00ffff;'>
         <h3 style='color:#00ffff;'>How to use this map</h3>
         <ul>
-            <li>🖱️ Drag to pan • Scroll to zoom</li>
+            <li>🖱️ Drag to pan / Scroll to zoom</li>
             <li>🔍 Click any layer (Conflicts, Nuclear, Sanctions, etc.) to toggle</li>
-            <li>📅 Time range is locked to last 7 days</li>
+            <li>📅 Time range is locked to last 7 days (as per your link)</li>
             <li>🌐 All data updates live from WorldMonitor.app</li>
         </ul>
     </div>
-    """, unsafe_allow_html=True)
+    ''', unsafe_allow_html=True)
        
 # ==================== MAIN APP ====================
 def main():
