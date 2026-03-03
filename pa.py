@@ -112,6 +112,11 @@ NPA_CONFIG = {
     'STOCK_TRANSACTION_URL': os.getenv('NPA_STOCK_TRANSACTION_URL', 'https://iml.npa-enterprise.com/NewNPA/home/CreateStockTransactionReport'),
     'OMC_NAME': os.getenv('OMC_NAME', 'OILCORP ENERGIA LIMITED')
 }
+
+
+# ==================== NEW: WORLD MONITOR URL FROM .ENV ====================
+WORLD_MONITOR_URL = os.getenv('WORLD_MONITOR_URL', 'https://www.worldmonitor.app/?lat=20.0000&lon=0.0000&zoom=1.00&view=global&timeRange=7d&layers=conflicts%2Cbases%2Chotspots%2Cnuclear%2Csanctions%2Cweather%2Ceconomic%2Cwaterways%2Coutages%2Cmilitary%2Cnatural%2CiranAttacks')
+
 # ==================== HISTORY & CACHE FUNCTIONS ====================
 def save_to_history(data_type, df, metadata=None):
     history_dir = os.path.join(os.getcwd(), "data_history")
@@ -912,6 +917,35 @@ def save_daily_orders_excel(df: pd.DataFrame, filename: str = None) -> str:
         if not pivot.empty:
             pivot.to_excel(writer, sheet_name="Summary by BDC", index=False)
     return out_path
+
+
+# ==================== NEW: WORLD RISK MONITOR FUNCTION ====================
+def show_world_monitor():
+    st.markdown("<h2>🌍 WORLD RISK MONITOR - Powered by WorldMonitor.app</h2>", unsafe_allow_html=True)
+    st.info("🔴 LIVE GLOBAL INTELLIGENCE: Real-time conflicts, military bases, nuclear sites, sanctions, weather, economic indicators, waterways, power outages, natural disasters & Iran attacks. Fully interactive map with 7-day view.")
+    st.caption("Source: " + WORLD_MONITOR_URL.split('?')[0])
+    
+    # Full-screen iframe with your exact parameters
+    st.components.v1.iframe(
+        WORLD_MONITOR_URL,
+        height=850,
+        width="100%",
+        scrolling=True
+    )
+    
+    st.markdown("---")
+    st.markdown("""
+    <div style='background:rgba(22,33,62,0.6); padding:20px; border-radius:15px; border:2px solid #00ffff;'>
+        <h3 style='color:#00ffff;'>How to use this map</h3>
+        <ul>
+            <li>🖱️ Drag to pan • Scroll to zoom</li>
+            <li>🔍 Click any layer (Conflicts, Nuclear, Sanctions, etc.) to toggle</li>
+            <li>📅 Time range is locked to last 7 days (as per your link)</li>
+            <li>🌐 All data updates live from WorldMonitor.app</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
+       
 # ==================== MAIN APP ====================
 def main():
     st.markdown("""
@@ -940,6 +974,7 @@ def main():
             "🔮 DEMAND FORECAST",
             "⚠️ REORDER ALERTS",
             "📆 WEEK-ON-WEEK",
+            "🌍 WORLD RISK MONITOR"
         ], index=0)
         st.markdown("---")
         st.markdown("""
@@ -976,6 +1011,8 @@ def main():
         show_reorder_alerts()
     elif choice == "📆 WEEK-ON-WEEK":
         show_week_on_week()
+    elif choice == "🌍 WORLD RISK MONITOR":   
+        show_world_monitor()
     else:
         st.info("Select a page from the sidebar.")
 def show_bdc_balance():
