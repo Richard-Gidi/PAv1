@@ -2652,14 +2652,33 @@ def _fetch_national_omc_loadings(start_str: str, end_str: str,
 def show_national_stockout():
     st.markdown("<h2>🌍 NATIONAL STOCKOUT FORECAST</h2>", unsafe_allow_html=True)
     st.markdown("---")
+
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input("From", value=datetime.now() - timedelta(days=30), key='ns_start')
     with col2:
         end_date = st.date_input("To", value=datetime.now(), key='ns_end')
-    start_str = start_date.strftime("%m/%d/%Y")
-    end_str = end_date.strftime("%m/%d/%Y")
-    period_days = max((end_date - start_date).days, 1)
+
+    start_str  = start_date.strftime("%m/%d/%Y")
+    end_str    = end_date.strftime("%m/%d/%Y")
+    period_days = max((end_date - start_date).days, 1)   # kept for chunking; actual rate uses helper
+
+    # ── NEW: Day-type toggle ──────────────────────────────────
+    day_type = st.radio(
+        "📅 **Day Type for Daily Rate Calculation**",
+        ["📆 Calendar Days (default)", "💼 Business Days (Mon–Fri only)"],
+        index=0,
+        key="ns_day_type",
+        help=(
+            "Calendar Days: divide total loadings by every day in the period.\n\n"
+            "Business Days: divide only by Mon–Fri trading days — gives a higher "
+            "(more conservative) daily rate and therefore fewer days of supply."
+        ),
+        horizontal=True,
+    )
+    use_business_days = "Business" in day_type
+    # ─────────────────────────────────────────────────────────
+
     depletion_mode = st.radio(
         "🚚 **Loadings Depletion Rate for Stockout Forecast**",
         [
@@ -2670,12 +2689,17 @@ def show_national_stockout():
         index=0,
         key="ns_depletion_mode"
     )
+
     exclude_tor_lpg = st.checkbox(
         "❌ Exclude TEMA OIL REFINERY (TOR) from LPG national stock calculation",
         value=False,
         key="ns_exclude_tor",
-        help="TOR LPG is often refinery-internal/strategic reserve and should not count toward national commercial supply runway."
+        help=(
+            "TOR LPG is often refinery-internal/strategic reserve and should not "
+            "count toward national commercial supply runway."
+        )
     )
+
     st.info(
         "⚡ **Just 2 API calls.** "
         "Step 1 fetches the current BDC Balance (national stock snapshot). "
@@ -2684,46 +2708,78 @@ def show_national_stockout():
         "that moves fuel between BDC books but does NOT reduce the national supply."
     )
     st.markdown("---")
+
     if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", width='stretch'):
-        _run_national_analysis(start_str, end_str, period_days, depletion_mode, exclude_tor_lpg)
+        _run_national_analysis(
+            start_str, end_str, period_days,
+            depletion_mode, exclude_tor_lpg, use_business_days
+        )
+
     if st.session_state.get('ns_results'):
         _display_national_results(period_days)
-def _run_national_analysis(start_str: str, end_str: str, period_days: int, depletion_mode: str, exclude_tor_lpg: bool):
-    cfg = NPA_CONFIG
-    col_bal = 'ACTUAL BALANCE (LT\\KG)'
-    DISPLAY = {'PREMIUM': 'PREMIUM (PMS)', 'GASOIL': 'GASOIL (AGO)', 'LPG': 'LPG'}
+
+def _run_national_analysis(
+    start_str: str,
+    end_str: str,
+    period_days: int,
+    depletion_mode: str,
+    exclude_tor_lpg: bool,
+    use_business_days: bool = False,          # ← NEW param
+):
+    cfg      = NPA_CONFIG
+    col_bal  = 'ACTUAL BALANCE (LT\\KG)'
+    DISPLAY  = {'PREMIUM': 'PREMIUM (PMS)', 'GASOIL': 'GASOIL (AGO)', 'LPG': 'LPG'}
+
     use_max_daily = "Maximum" in depletion_mode
-    use_median = "Median" in depletion_mode
+    use_median    = "Median"  in depletion_mode
+
+    # ── effective days denominator ────────────────────────────
+    effective_days = _count_period_days(start_str, end_str, use_business_days)
+    day_type_label = (
+        f"{effective_days} business days"
+        if use_business_days
+        else f"{period_days} calendar days"
+    )
+    # ─────────────────────────────────────────────────────────
+
     with st.status("📡 Step 1 / 2 — Fetching national BDC stock balance…", expanded=True) as status_a:
         bal_params = {
-            'lngCompanyId': cfg['COMPANY_ID'],
+            'lngCompanyId':    cfg['COMPANY_ID'],
             'strITSfromPersol': cfg['ITS_FROM_PERSOL'],
-            'strGroupBy': 'BDC',
-            'strGroupBy1': 'DEPOT',
+            'strGroupBy':      'BDC',
+            'strGroupBy1':     'DEPOT',
             'strQuery1': '', 'strQuery2': '', 'strQuery3': '', 'strQuery4': '',
             'strPicHeight': '1', 'szPicWeight': '1',
             'lngUserId': cfg['USER_ID'],
-            'intAppId': cfg['APP_ID'],
+            'intAppId':  cfg['APP_ID'],
         }
         bal_bytes = _fetch_pdf_bytes(cfg['BDC_BALANCE_URL'], bal_params)
         if not bal_bytes:
             st.error("❌ Could not fetch BDC Balance PDF. Check network/credentials.")
             status_a.update(label="❌ Balance fetch failed", state="error")
             return
-        scraper = StockBalanceScraper()
+
+        scraper     = StockBalanceScraper()
         bal_records = scraper.parse_pdf_file(io.BytesIO(bal_bytes))
-        bal_df = pd.DataFrame(bal_records)
+        bal_df      = pd.DataFrame(bal_records)
+
         if exclude_tor_lpg:
-            tor_mask = bal_df['BDC'].str.contains('TOR', case=False, na=False) & (bal_df['Product'] == 'LPG')
+            tor_mask = (
+                bal_df['BDC'].str.contains('TOR', case=False, na=False) &
+                (bal_df['Product'] == 'LPG')
+            )
             excluded = bal_df[tor_mask][col_bal].sum()
-            bal_df = bal_df[~tor_mask].copy()
-            st.info(f"✅ TOR LPG stock excluded from national calculation ({excluded:,.0f} LT removed)")
+            bal_df   = bal_df[~tor_mask].copy()
+            st.info(f"✅ TOR LPG excluded from national calculation ({excluded:,.0f} LT removed)")
+
         balance_by_product = bal_df.groupby('Product')[col_bal].sum()
         n_bdcs = bal_df['BDC'].nunique()
         n_rows = len(bal_df)
+
         pms_stock = balance_by_product.get('PREMIUM', 0)
         ago_stock = balance_by_product.get('GASOIL', 0)
-        lpg_stock = balance_by_product.get('LPG', 0)
+        lpg_stock = balance_by_product.get('LPG',    0)
+
         st.write(f"✅ {n_rows} balance rows across **{n_bdcs} BDCs**")
         st.write(
             f"📦 Current stock — "
@@ -2732,6 +2788,7 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
             f"LPG: **{lpg_stock:,.0f} LT**"
         )
         status_a.update(label=f"✅ Step 1 done — {n_bdcs} BDCs, stock parsed", state="running")
+
     with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings (chunked by week)…", expanded=True) as status_b:
         from math import ceil
         n_weeks = ceil(period_days / 7)
@@ -2739,14 +2796,22 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
             f"Splitting **{period_days}-day** period into **{n_weeks} weekly chunks** "
             f"to avoid large PDF crashes. Fetching in parallel (4 workers)…"
         )
-        prog_bar = st.progress(0, text="Starting…")
+        st.info(
+            f"📅 Day-type mode: **{'Business Days' if use_business_days else 'Calendar Days'}** — "
+            f"using **{effective_days}** days as the denominator for average daily rate."
+        )
+
+        prog_bar  = st.progress(0, text="Starting…")
         prog_text = st.empty()
+
         def _on_progress(done, total):
             pct = done / total
             prog_bar.progress(pct, text=f"Week chunk {done}/{total} fetched")
             prog_text.caption(f"✅ {done} / {total} weekly windows complete")
+
         omc_df = _fetch_national_omc_loadings(start_str, end_str, progress_cb=_on_progress)
         prog_bar.progress(1.0, text="✅ All chunks fetched")
+
         if omc_df.empty:
             st.warning(
                 "⚠️ No OMC loadings returned for this period. "
@@ -2757,49 +2822,64 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
         else:
             filtered_omc = omc_df[omc_df['Product'].isin(['PREMIUM', 'GASOIL', 'LPG'])].copy()
             filtered_omc['Date'] = pd.to_datetime(filtered_omc['Date'], errors='coerce')
+
             daily_agg = (
                 filtered_omc
                 .groupby(['Date', 'Product'])['Quantity']
                 .sum()
                 .reset_index()
             )
+
             if use_median:
-                omc_by_product = daily_agg.groupby('Product')['Quantity'].median()
+                omc_by_product  = daily_agg.groupby('Product')['Quantity'].median()
                 depletion_label = "📊 Median Daily Loading"
             elif use_max_daily:
-                omc_by_product = daily_agg.groupby('Product')['Quantity'].max()
+                omc_by_product  = daily_agg.groupby('Product')['Quantity'].max()
                 depletion_label = "🔥 Max Daily Loading (stress test)"
             else:
-                omc_by_product = filtered_omc.groupby('Product')['Quantity'].sum()
-                depletion_label = f"📊 Average Daily Loading ({period_days}d)"
+                omc_by_product  = filtered_omc.groupby('Product')['Quantity'].sum()
+                depletion_label = f"📊 Avg Daily Loading ({day_type_label})"
+
             st.write(
                 f"✅ **{len(omc_df):,} total loading records** across {n_weeks} weeks | "
                 f"PMS: **{omc_by_product.get('PREMIUM', 0):,.0f} LT** | "
-                f"AGO: **{omc_by_product.get('GASOIL', 0):,.0f} LT** | "
-                f"LPG: **{omc_by_product.get('LPG', 0):,.0f} LT**"
+                f"AGO: **{omc_by_product.get('GASOIL',  0):,.0f} LT** | "
+                f"LPG: **{omc_by_product.get('LPG',     0):,.0f} LT**"
             )
-        status_b.update(label=f"✅ Step 2 done — {len(omc_df):,} records from {n_weeks} weekly chunks", state="complete")
+
+        status_b.update(
+            label=f"✅ Step 2 done — {len(omc_df):,} records from {n_weeks} weekly chunks",
+            state="complete"
+        )
+
+    # ── Build per-product forecast rows ──────────────────────
     rows_out = []
     for prod in ['PREMIUM', 'GASOIL', 'LPG']:
-        stock = float(balance_by_product.get(prod, 0))
+        stock     = float(balance_by_product.get(prod, 0))
         depletion = float(omc_by_product.get(prod, 0))
+
         if use_median or use_max_daily:
-            daily_rate = depletion
+            daily_rate = depletion                                      # already a per-day figure
         else:
-            daily_rate = depletion / period_days if period_days > 0 else 0
+            daily_rate = depletion / effective_days if effective_days > 0 else 0   # ← uses effective_days
+
         days = (stock / daily_rate) if daily_rate > 0 else float('inf')
         rows_out.append({
-            'product': prod,
+            'product':      prod,
             'display_name': DISPLAY[prod],
             'total_balance': stock,
-            'omc_sales': depletion,
-            'daily_rate': daily_rate,
+            'omc_sales':    depletion,
+            'daily_rate':   daily_rate,
             'days_remaining': days,
         })
+
     forecast_df = pd.DataFrame(rows_out)
+
     bdc_pivot = (
-        bal_df.pivot_table(index='BDC', columns='Product', values=col_bal,
-                           aggfunc='sum', fill_value=0)
+        bal_df.pivot_table(
+            index='BDC', columns='Product', values=col_bal,
+            aggfunc='sum', fill_value=0
+        )
         .reset_index()
     )
     for p in ['GASOIL', 'LPG', 'PREMIUM']:
@@ -2809,73 +2889,114 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
     bdc_pivot = bdc_pivot.sort_values('TOTAL', ascending=False)
     nat_total = bdc_pivot['TOTAL'].sum()
     bdc_pivot['Market Share %'] = (bdc_pivot['TOTAL'] / nat_total * 100).round(2)
+
+    # ── Persist results ───────────────────────────────────────
     st.session_state.ns_results = {
-        'forecast_df': forecast_df,
-        'bal_df': bal_df,
-        'omc_df': omc_df,
-        'bdc_pivot': bdc_pivot,
-        'period_days': period_days,
-        'start_str': start_str,
-        'end_str': end_str,
-        'n_bdcs_balance': n_bdcs,
-        'n_omc_rows': len(omc_df),
-        'depletion_mode': depletion_mode,
-        'depletion_label': depletion_label,
-        'exclude_tor_lpg': exclude_tor_lpg
+        'forecast_df':      forecast_df,
+        'bal_df':           bal_df,
+        'omc_df':           omc_df,
+        'bdc_pivot':        bdc_pivot,
+        'period_days':      period_days,
+        'effective_days':   effective_days,          # ← NEW
+        'use_business_days': use_business_days,      # ← NEW
+        'day_type_label':   day_type_label,          # ← NEW
+        'start_str':        start_str,
+        'end_str':          end_str,
+        'n_bdcs_balance':   n_bdcs,
+        'n_omc_rows':       len(omc_df),
+        'depletion_mode':   depletion_mode,
+        'depletion_label':  depletion_label,
+        'exclude_tor_lpg':  exclude_tor_lpg,
     }
+
     _save_national_snapshot(forecast_df, f"{period_days}d")
     st.success("✅ Done! 2 API calls completed. Snapshot saved to history. Scroll down to see the forecast.")
     st.rerun()
+
 def _display_national_results(period_days_arg: int):
-    res = st.session_state.ns_results
-    forecast_df = res['forecast_df']
-    bal_df = res['bal_df']
-    omc_df = res['omc_df']
-    bdc_pivot = res['bdc_pivot']
-    period_days = res['period_days']
-    start_str = res['start_str']
-    end_str = res['end_str']
+    res             = st.session_state.ns_results
+    forecast_df     = res['forecast_df']
+    bal_df          = res['bal_df']
+    omc_df          = res['omc_df']
+    bdc_pivot       = res['bdc_pivot']
+    period_days     = res['period_days']
+    effective_days  = res.get('effective_days', period_days)
+    use_biz         = res.get('use_business_days', False)
+    day_type_label  = res.get('day_type_label', f"{period_days} calendar days")
+    start_str       = res['start_str']
+    end_str         = res['end_str']
     depletion_label = res.get('depletion_label', f'OMC Loadings ({period_days}d)')
-    tor_note = " (TOR excluded from LPG)" if res.get('exclude_tor_lpg') else ""
+    tor_note        = " (TOR excl. from LPG)" if res.get('exclude_tor_lpg') else ""
+
+    day_badge = (
+        "💼 Business Days" if use_biz else "📆 Calendar Days"
+    )
+
     st.markdown("---")
     st.markdown(
         f"<h3>🇬🇭 GHANA NATIONAL FUEL SUPPLY — "
-        f"{start_str} → {end_str} ({period_days} days)</h3>",
+        f"{start_str} → {end_str} ({period_days} calendar days)</h3>",
         unsafe_allow_html=True
     )
     st.caption(
         f"Balance: **{res['n_bdcs_balance']} BDCs** | "
         f"OMC Loadings: **{res['n_omc_rows']:,} records** | "
-        f"Depletion source: {depletion_label}{tor_note} (CTO excluded — internal BDC transfers)"
+        f"Depletion source: {depletion_label}{tor_note} | "
+        f"Day type: **{day_badge}** ({effective_days} days used as denominator) | "
+        f"CTO excluded — internal BDC transfers"
     )
+
+    # ── Day-type info box ─────────────────────────────────────
+    if use_biz:
+        st.info(
+            f"💼 **Business-days mode active** — daily rate computed using "
+            f"**{effective_days} business days** (Mon–Fri) instead of "
+            f"{period_days} calendar days. "
+            f"This gives a higher daily rate and therefore *fewer* days of supply, "
+            f"reflecting actual operational trading days."
+        )
+    else:
+        st.info(
+            f"📆 **Calendar-days mode active** — daily rate computed using "
+            f"**{period_days} calendar days** (including weekends). "
+            f"Switch to Business Days for a more conservative estimate."
+        )
+    # ─────────────────────────────────────────────────────────
+
     st.markdown("---")
     st.markdown("### 🛢️ DAYS OF SUPPLY — NATIONAL FORECAST")
-    ICONS = {'PREMIUM': '⛽', 'GASOIL': '🚛', 'LPG': '🔵'}
+
+    ICONS  = {'PREMIUM': '⛽', 'GASOIL': '🚛', 'LPG': '🔵'}
     COLORS = {'PREMIUM': '#00ffff', 'GASOIL': '#ffaa00', 'LPG': '#00ff88'}
+
     cols = st.columns(len(forecast_df))
     for col, (_, row) in zip(cols, forecast_df.iterrows()):
-        days = row['days_remaining']
-        prod = row['product']
+        days  = row['days_remaining']
+        prod  = row['product']
         color = COLORS.get(prod, '#ffffff')
+
         if days == float('inf'):
-            days_text = "∞"
+            days_text  = "∞"
             weeks_text = ""
         else:
-            weeks = days / 7
-            days_text = f"{days:.1f}"
+            weeks      = days / 7
+            days_text  = f"{days:.1f}"
             weeks_text = f" (~{weeks:.1f} weeks)"
+
         if days < 7:
-            days_text, status_text, border = f"{days_text}", "🔴 CRITICAL", "#ff0000"
+            days_text, status_text, border = days_text, "🔴 CRITICAL", "#ff0000"
         elif days < 14:
-            days_text, status_text, border = f"{days_text}", "🟡 WARNING", "#ffaa00"
+            days_text, status_text, border = days_text, "🟡 WARNING",  "#ffaa00"
         elif days < 30:
-            days_text, status_text, border = f"{days_text}", "🟠 MONITOR", "#ff6600"
+            days_text, status_text, border = days_text, "🟠 MONITOR",  "#ff6600"
         else:
-            days_text, status_text, border = f"{days_text}", "🟢 HEALTHY", "#00ff88"
+            days_text, status_text, border = days_text, "🟢 HEALTHY",  "#00ff88"
+
         stockout_date = (
             (datetime.now() + timedelta(days=days)).strftime('%d %b %Y')
             if days != float('inf') else "N/A"
         )
+
         with col:
             st.markdown(f"""
             <div style='background:rgba(10,14,39,0.85); padding:24px 16px; border-radius:16px;
@@ -2915,48 +3036,56 @@ def _display_national_results(period_days_arg: int):
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
     st.markdown("---")
     st.markdown("### 📊 NATIONAL SUMMARY TABLE")
+
     summary_rows = []
     for _, row in forecast_df.iterrows():
         days = row['days_remaining']
         if days == float('inf'):
-            days_text = "∞"
+            days_text  = "∞"
             weeks_text = ""
         else:
-            weeks = days / 7
-            days_text = f"{days:.1f}"
+            weeks      = days / 7
+            days_text  = f"{days:.1f}"
             weeks_text = f" (~{weeks:.1f} weeks)"
-        if days < 7: status = "🔴 CRITICAL"
+
+        if days < 7:   status = "🔴 CRITICAL"
         elif days < 14: status = "🟡 WARNING"
         elif days < 30: status = "🟠 MONITOR"
-        else: status = "🟢 HEALTHY"
+        else:           status = "🟢 HEALTHY"
+
         stockout = (
             (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
             if days != float('inf') else "N/A"
         )
         summary_rows.append({
-            'Product': row['display_name'],
-            'National Stock (LT/KG)': f"{row['total_balance']:,.0f}",
-            f'{depletion_label} (LT)': f"{row['omc_sales']:,.0f}",
-            'Avg Daily Depletion (LT/day)': f"{row['daily_rate']:,.0f}",
-            'Days of Supply': f"{days_text} {weeks_text}",
-            'Projected Empty': stockout,
-            'Status': status,
+            'Product':                              row['display_name'],
+            'National Stock (LT/KG)':              f"{row['total_balance']:,.0f}",
+            f'{depletion_label} (LT)':             f"{row['omc_sales']:,.0f}",
+            f'Daily Rate ({day_badge}) (LT/day)':  f"{row['daily_rate']:,.0f}",  # ← shows day type
+            'Days of Supply':                       f"{days_text} {weeks_text}",
+            'Projected Empty':                      stockout,
+            'Status':                               status,
         })
     st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
+
     st.markdown("---")
     st.markdown("### 📦 OMC LOADINGS BREAKDOWN BY PRODUCT")
     st.caption(
         f"**{depletion_label}** = fuel dispatched from BDCs to OMCs over the selected period "
-        "(or the highest single-day loading / median when that mode is active)."
+        "(or the highest single-day loading / median when that mode is active). "
+        f"Daily rate computed over **{day_type_label}**."
     )
+
     bd_cols = st.columns(3)
     COLORS = {'PREMIUM': '#00ffff', 'GASOIL': '#ffaa00', 'LPG': '#00ff88'}
-    ICONS = {'PREMIUM': '⛽', 'GASOIL': '🚛', 'LPG': '🔵'}
+    ICONS  = {'PREMIUM': '⛽',      'GASOIL': '🚛',      'LPG': '🔵'}
     total_nat_depletion = forecast_df['omc_sales'].sum()
+
     for col, (_, row) in zip(bd_cols, forecast_df.iterrows()):
-        prod = row['product']
+        prod  = row['product']
         omc_v = row['omc_sales']
         nat_pct = (omc_v / total_nat_depletion * 100) if total_nat_depletion > 0 else 0
         with col:
@@ -2976,7 +3105,7 @@ def _display_national_results(period_days_arg: int):
                         <td style='color:#00ff88; text-align:right; font-weight:700;'>{nat_pct:.1f}%</td>
                     </tr>
                     <tr style='border-top:1px solid rgba(255,255,255,0.15);'>
-                        <td style='color:#ffffff; padding:6px 0 2px; font-weight:700;'>📅 Daily avg</td>
+                        <td style='color:#ffffff; padding:6px 0 2px; font-weight:700;'>📅 Daily avg ({day_badge})</td>
                         <td style='color:#00ffff; text-align:right; font-weight:700;'>{row["daily_rate"]:,.0f} LT/day</td>
                     </tr>
                     <tr>
@@ -2986,22 +3115,27 @@ def _display_national_results(period_days_arg: int):
                 </table>
             </div>
             """, unsafe_allow_html=True)
+
     st.markdown("---")
     st.markdown("### ⚖️ NATIONAL OUTFLOW SUMMARY")
     st.caption(
         f"Outflow = {depletion_label} (fuel dispatched from BDCs to OMCs over the selected period). "
+        f"Daily rate uses **{day_type_label}**. "
         "Inflow data (vessel receipts) is not yet available in this report."
     )
+
     flow_rows = []
     for _, row in forecast_df.iterrows():
         flow_rows.append({
-            'Product': row['display_name'],
-            f'{depletion_label} (LT)': f"{row['omc_sales']:,.0f}",
-            'Daily Avg Outflow (LT/day)': f"{row['daily_rate']:,.0f}",
-            'Current Stock (LT)': f"{row['total_balance']:,.0f}",
-            'Days of Supply': f"{row['days_remaining']:.1f}" if row['days_remaining'] != float('inf') else "∞",
+            'Product':                             row['display_name'],
+            f'{depletion_label} (LT)':            f"{row['omc_sales']:,.0f}",
+            f'Daily Avg Outflow ({day_badge})':   f"{row['daily_rate']:,.0f} LT/day",
+            'Current Stock (LT)':                  f"{row['total_balance']:,.0f}",
+            'Days of Supply':
+                f"{row['days_remaining']:.1f}" if row['days_remaining'] != float('inf') else "∞",
         })
     st.dataframe(pd.DataFrame(flow_rows), width='stretch', hide_index=True)
+
     st.markdown("---")
     st.markdown("### 🏦 CURRENT STOCK BY BDC")
     display_bdc = bdc_pivot.copy()
@@ -3009,29 +3143,35 @@ def _display_national_results(period_days_arg: int):
         display_bdc[c] = display_bdc[c].apply(lambda x: f"{x:,.0f}")
     display_bdc['Market Share %'] = display_bdc['Market Share %'].apply(lambda x: f"{x:.2f}%")
     st.dataframe(display_bdc, width='stretch', hide_index=True)
+
     st.markdown("---")
     st.markdown("### 💾 EXPORT NATIONAL REPORT")
     if st.button("📄 GENERATE EXCEL REPORT", width='stretch', key='ns_export'):
-        out_dir = os.path.join(os.getcwd(), "national_stockout_reports")
+        out_dir  = os.path.join(os.getcwd(), "national_stockout_reports")
         os.makedirs(out_dir, exist_ok=True)
         filename = f"national_stockout_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         filepath = os.path.join(out_dir, filename)
+
         summary_export = pd.DataFrame([{
-            'Product': row['display_name'],
-            'National Stock (LT/KG)': row['total_balance'],
-            f'{depletion_label} (LT)': row['omc_sales'],
-            'Daily Depletion (LT/day)': row['daily_rate'],
-            'Days of Supply': row['days_remaining'] if row['days_remaining'] != float('inf') else 9999,
+            'Product':                       row['display_name'],
+            'National Stock (LT/KG)':        row['total_balance'],
+            f'{depletion_label} (LT)':       row['omc_sales'],
+            f'Daily Depletion ({day_badge})': row['daily_rate'],
+            'Days of Supply':
+                row['days_remaining'] if row['days_remaining'] != float('inf') else 9999,
             'Projected Empty': (
                 (datetime.now() + timedelta(days=row['days_remaining'])).strftime('%Y-%m-%d')
                 if row['days_remaining'] != float('inf') else 'N/A'
             ),
+            'Day Type Used': day_badge,
         } for _, row in forecast_df.iterrows()])
+
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
             summary_export.to_excel(writer, sheet_name='Stockout Forecast', index=False)
-            bdc_pivot.to_excel(writer, sheet_name='Stock by BDC', index=False)
+            bdc_pivot.to_excel(writer,      sheet_name='Stock by BDC',       index=False)
             if not omc_df.empty:
-                omc_df.to_excel(writer, sheet_name='OMC Loadings Detail', index=False)
+                omc_df.to_excel(writer,     sheet_name='OMC Loadings Detail', index=False)
+
         st.success(f"✅ Report saved: {filename}")
         with open(filepath, 'rb') as f:
             st.download_button(
@@ -3039,6 +3179,7 @@ def _display_national_results(period_days_arg: int):
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width='stretch'
             )
+
 def _parse_stock_transaction_pdf(pdf_file) -> list:
     DESCRIPTIONS = sorted([
         'Balance b/fwd', 'Stock Take', 'Sale',
@@ -4482,6 +4623,22 @@ def _save_national_snapshot(forecast_df: pd.DataFrame, period_label: str):
     fname = f"snap_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(os.path.join(SNAPSHOT_DIR, fname), 'w') as f:
         json.dump(snap, f)
+
+
+# ─── helper ──────────────────────────────────────────────────
+def _count_period_days(start_str: str, end_str: str, use_business_days: bool) -> int:
+    """Return the number of calendar or business days in the window (min 1)."""
+    fmt = "%m/%d/%Y"
+    d_start = datetime.strptime(start_str, fmt).date()
+    d_end   = datetime.strptime(end_str,   fmt).date()
+    if use_business_days:
+        count = len(pd.bdate_range(d_start, d_end))
+    else:
+        count = (d_end - d_start).days
+    return max(count, 1)
+
+
+
 def _load_all_snapshots() -> pd.DataFrame:
     if not os.path.exists(SNAPSHOT_DIR):
         return pd.DataFrame()
@@ -4511,14 +4668,33 @@ def _load_all_snapshots() -> pd.DataFrame:
 def show_national_stockout():
     st.markdown("<h2>🌍 NATIONAL STOCKOUT FORECAST</h2>", unsafe_allow_html=True)
     st.markdown("---")
+
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input("From", value=datetime.now() - timedelta(days=30), key='ns_start')
     with col2:
         end_date = st.date_input("To", value=datetime.now(), key='ns_end')
-    start_str = start_date.strftime("%m/%d/%Y")
-    end_str = end_date.strftime("%m/%d/%Y")
-    period_days = max((end_date - start_date).days, 1)
+
+    start_str  = start_date.strftime("%m/%d/%Y")
+    end_str    = end_date.strftime("%m/%d/%Y")
+    period_days = max((end_date - start_date).days, 1)   # kept for chunking; actual rate uses helper
+
+    # ── NEW: Day-type toggle ──────────────────────────────────
+    day_type = st.radio(
+        "📅 **Day Type for Daily Rate Calculation**",
+        ["📆 Calendar Days (default)", "💼 Business Days (Mon–Fri only)"],
+        index=0,
+        key="ns_day_type",
+        help=(
+            "Calendar Days: divide total loadings by every day in the period.\n\n"
+            "Business Days: divide only by Mon–Fri trading days — gives a higher "
+            "(more conservative) daily rate and therefore fewer days of supply."
+        ),
+        horizontal=True,
+    )
+    use_business_days = "Business" in day_type
+    # ─────────────────────────────────────────────────────────
+
     depletion_mode = st.radio(
         "🚚 **Loadings Depletion Rate for Stockout Forecast**",
         [
@@ -4529,12 +4705,17 @@ def show_national_stockout():
         index=0,
         key="ns_depletion_mode"
     )
+
     exclude_tor_lpg = st.checkbox(
         "❌ Exclude TEMA OIL REFINERY (TOR) from LPG national stock calculation",
         value=False,
         key="ns_exclude_tor",
-        help="TOR LPG is often refinery-internal/strategic reserve and should not count toward national commercial supply runway."
+        help=(
+            "TOR LPG is often refinery-internal/strategic reserve and should not "
+            "count toward national commercial supply runway."
+        )
     )
+
     st.info(
         "⚡ **Just 2 API calls.** "
         "Step 1 fetches the current BDC Balance (national stock snapshot). "
@@ -4543,46 +4724,78 @@ def show_national_stockout():
         "that moves fuel between BDC books but does NOT reduce the national supply."
     )
     st.markdown("---")
+
     if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", width='stretch'):
-        _run_national_analysis(start_str, end_str, period_days, depletion_mode, exclude_tor_lpg)
+        _run_national_analysis(
+            start_str, end_str, period_days,
+            depletion_mode, exclude_tor_lpg, use_business_days
+        )
+
     if st.session_state.get('ns_results'):
         _display_national_results(period_days)
-def _run_national_analysis(start_str: str, end_str: str, period_days: int, depletion_mode: str, exclude_tor_lpg: bool):
-    cfg = NPA_CONFIG
-    col_bal = 'ACTUAL BALANCE (LT\\KG)'
-    DISPLAY = {'PREMIUM': 'PREMIUM (PMS)', 'GASOIL': 'GASOIL (AGO)', 'LPG': 'LPG'}
+
+def _run_national_analysis(
+    start_str: str,
+    end_str: str,
+    period_days: int,
+    depletion_mode: str,
+    exclude_tor_lpg: bool,
+    use_business_days: bool = False,          # ← NEW param
+):
+    cfg      = NPA_CONFIG
+    col_bal  = 'ACTUAL BALANCE (LT\\KG)'
+    DISPLAY  = {'PREMIUM': 'PREMIUM (PMS)', 'GASOIL': 'GASOIL (AGO)', 'LPG': 'LPG'}
+
     use_max_daily = "Maximum" in depletion_mode
-    use_median = "Median" in depletion_mode
+    use_median    = "Median"  in depletion_mode
+
+    # ── effective days denominator ────────────────────────────
+    effective_days = _count_period_days(start_str, end_str, use_business_days)
+    day_type_label = (
+        f"{effective_days} business days"
+        if use_business_days
+        else f"{period_days} calendar days"
+    )
+    # ─────────────────────────────────────────────────────────
+
     with st.status("📡 Step 1 / 2 — Fetching national BDC stock balance…", expanded=True) as status_a:
         bal_params = {
-            'lngCompanyId': cfg['COMPANY_ID'],
+            'lngCompanyId':    cfg['COMPANY_ID'],
             'strITSfromPersol': cfg['ITS_FROM_PERSOL'],
-            'strGroupBy': 'BDC',
-            'strGroupBy1': 'DEPOT',
+            'strGroupBy':      'BDC',
+            'strGroupBy1':     'DEPOT',
             'strQuery1': '', 'strQuery2': '', 'strQuery3': '', 'strQuery4': '',
             'strPicHeight': '1', 'szPicWeight': '1',
             'lngUserId': cfg['USER_ID'],
-            'intAppId': cfg['APP_ID'],
+            'intAppId':  cfg['APP_ID'],
         }
         bal_bytes = _fetch_pdf_bytes(cfg['BDC_BALANCE_URL'], bal_params)
         if not bal_bytes:
             st.error("❌ Could not fetch BDC Balance PDF. Check network/credentials.")
             status_a.update(label="❌ Balance fetch failed", state="error")
             return
-        scraper = StockBalanceScraper()
+
+        scraper     = StockBalanceScraper()
         bal_records = scraper.parse_pdf_file(io.BytesIO(bal_bytes))
-        bal_df = pd.DataFrame(bal_records)
+        bal_df      = pd.DataFrame(bal_records)
+
         if exclude_tor_lpg:
-            tor_mask = bal_df['BDC'].str.contains('TOR', case=False, na=False) & (bal_df['Product'] == 'LPG')
+            tor_mask = (
+                bal_df['BDC'].str.contains('TOR', case=False, na=False) &
+                (bal_df['Product'] == 'LPG')
+            )
             excluded = bal_df[tor_mask][col_bal].sum()
-            bal_df = bal_df[~tor_mask].copy()
-            st.info(f"✅ TOR LPG stock excluded from national calculation ({excluded:,.0f} LT removed)")
+            bal_df   = bal_df[~tor_mask].copy()
+            st.info(f"✅ TOR LPG excluded from national calculation ({excluded:,.0f} LT removed)")
+
         balance_by_product = bal_df.groupby('Product')[col_bal].sum()
         n_bdcs = bal_df['BDC'].nunique()
         n_rows = len(bal_df)
+
         pms_stock = balance_by_product.get('PREMIUM', 0)
         ago_stock = balance_by_product.get('GASOIL', 0)
-        lpg_stock = balance_by_product.get('LPG', 0)
+        lpg_stock = balance_by_product.get('LPG',    0)
+
         st.write(f"✅ {n_rows} balance rows across **{n_bdcs} BDCs**")
         st.write(
             f"📦 Current stock — "
@@ -4591,6 +4804,7 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
             f"LPG: **{lpg_stock:,.0f} LT**"
         )
         status_a.update(label=f"✅ Step 1 done — {n_bdcs} BDCs, stock parsed", state="running")
+
     with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings (chunked by week)…", expanded=True) as status_b:
         from math import ceil
         n_weeks = ceil(period_days / 7)
@@ -4598,14 +4812,22 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
             f"Splitting **{period_days}-day** period into **{n_weeks} weekly chunks** "
             f"to avoid large PDF crashes. Fetching in parallel (4 workers)…"
         )
-        prog_bar = st.progress(0, text="Starting…")
+        st.info(
+            f"📅 Day-type mode: **{'Business Days' if use_business_days else 'Calendar Days'}** — "
+            f"using **{effective_days}** days as the denominator for average daily rate."
+        )
+
+        prog_bar  = st.progress(0, text="Starting…")
         prog_text = st.empty()
+
         def _on_progress(done, total):
             pct = done / total
             prog_bar.progress(pct, text=f"Week chunk {done}/{total} fetched")
             prog_text.caption(f"✅ {done} / {total} weekly windows complete")
+
         omc_df = _fetch_national_omc_loadings(start_str, end_str, progress_cb=_on_progress)
         prog_bar.progress(1.0, text="✅ All chunks fetched")
+
         if omc_df.empty:
             st.warning(
                 "⚠️ No OMC loadings returned for this period. "
@@ -4616,49 +4838,64 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
         else:
             filtered_omc = omc_df[omc_df['Product'].isin(['PREMIUM', 'GASOIL', 'LPG'])].copy()
             filtered_omc['Date'] = pd.to_datetime(filtered_omc['Date'], errors='coerce')
+
             daily_agg = (
                 filtered_omc
                 .groupby(['Date', 'Product'])['Quantity']
                 .sum()
                 .reset_index()
             )
+
             if use_median:
-                omc_by_product = daily_agg.groupby('Product')['Quantity'].median()
+                omc_by_product  = daily_agg.groupby('Product')['Quantity'].median()
                 depletion_label = "📊 Median Daily Loading"
             elif use_max_daily:
-                omc_by_product = daily_agg.groupby('Product')['Quantity'].max()
+                omc_by_product  = daily_agg.groupby('Product')['Quantity'].max()
                 depletion_label = "🔥 Max Daily Loading (stress test)"
             else:
-                omc_by_product = filtered_omc.groupby('Product')['Quantity'].sum()
-                depletion_label = f"📊 Average Daily Loading ({period_days}d)"
+                omc_by_product  = filtered_omc.groupby('Product')['Quantity'].sum()
+                depletion_label = f"📊 Avg Daily Loading ({day_type_label})"
+
             st.write(
                 f"✅ **{len(omc_df):,} total loading records** across {n_weeks} weeks | "
                 f"PMS: **{omc_by_product.get('PREMIUM', 0):,.0f} LT** | "
-                f"AGO: **{omc_by_product.get('GASOIL', 0):,.0f} LT** | "
-                f"LPG: **{omc_by_product.get('LPG', 0):,.0f} LT**"
+                f"AGO: **{omc_by_product.get('GASOIL',  0):,.0f} LT** | "
+                f"LPG: **{omc_by_product.get('LPG',     0):,.0f} LT**"
             )
-        status_b.update(label=f"✅ Step 2 done — {len(omc_df):,} records from {n_weeks} weekly chunks", state="complete")
+
+        status_b.update(
+            label=f"✅ Step 2 done — {len(omc_df):,} records from {n_weeks} weekly chunks",
+            state="complete"
+        )
+
+    # ── Build per-product forecast rows ──────────────────────
     rows_out = []
     for prod in ['PREMIUM', 'GASOIL', 'LPG']:
-        stock = float(balance_by_product.get(prod, 0))
+        stock     = float(balance_by_product.get(prod, 0))
         depletion = float(omc_by_product.get(prod, 0))
+
         if use_median or use_max_daily:
-            daily_rate = depletion
+            daily_rate = depletion                                      # already a per-day figure
         else:
-            daily_rate = depletion / period_days if period_days > 0 else 0
+            daily_rate = depletion / effective_days if effective_days > 0 else 0   # ← uses effective_days
+
         days = (stock / daily_rate) if daily_rate > 0 else float('inf')
         rows_out.append({
-            'product': prod,
+            'product':      prod,
             'display_name': DISPLAY[prod],
             'total_balance': stock,
-            'omc_sales': depletion,
-            'daily_rate': daily_rate,
+            'omc_sales':    depletion,
+            'daily_rate':   daily_rate,
             'days_remaining': days,
         })
+
     forecast_df = pd.DataFrame(rows_out)
+
     bdc_pivot = (
-        bal_df.pivot_table(index='BDC', columns='Product', values=col_bal,
-                           aggfunc='sum', fill_value=0)
+        bal_df.pivot_table(
+            index='BDC', columns='Product', values=col_bal,
+            aggfunc='sum', fill_value=0
+        )
         .reset_index()
     )
     for p in ['GASOIL', 'LPG', 'PREMIUM']:
@@ -4668,73 +4905,114 @@ def _run_national_analysis(start_str: str, end_str: str, period_days: int, deple
     bdc_pivot = bdc_pivot.sort_values('TOTAL', ascending=False)
     nat_total = bdc_pivot['TOTAL'].sum()
     bdc_pivot['Market Share %'] = (bdc_pivot['TOTAL'] / nat_total * 100).round(2)
+
+    # ── Persist results ───────────────────────────────────────
     st.session_state.ns_results = {
-        'forecast_df': forecast_df,
-        'bal_df': bal_df,
-        'omc_df': omc_df,
-        'bdc_pivot': bdc_pivot,
-        'period_days': period_days,
-        'start_str': start_str,
-        'end_str': end_str,
-        'n_bdcs_balance': n_bdcs,
-        'n_omc_rows': len(omc_df),
-        'depletion_mode': depletion_mode,
-        'depletion_label': depletion_label,
-        'exclude_tor_lpg': exclude_tor_lpg
+        'forecast_df':      forecast_df,
+        'bal_df':           bal_df,
+        'omc_df':           omc_df,
+        'bdc_pivot':        bdc_pivot,
+        'period_days':      period_days,
+        'effective_days':   effective_days,          # ← NEW
+        'use_business_days': use_business_days,      # ← NEW
+        'day_type_label':   day_type_label,          # ← NEW
+        'start_str':        start_str,
+        'end_str':          end_str,
+        'n_bdcs_balance':   n_bdcs,
+        'n_omc_rows':       len(omc_df),
+        'depletion_mode':   depletion_mode,
+        'depletion_label':  depletion_label,
+        'exclude_tor_lpg':  exclude_tor_lpg,
     }
+
     _save_national_snapshot(forecast_df, f"{period_days}d")
     st.success("✅ Done! 2 API calls completed. Snapshot saved to history. Scroll down to see the forecast.")
     st.rerun()
+
 def _display_national_results(period_days_arg: int):
-    res = st.session_state.ns_results
-    forecast_df = res['forecast_df']
-    bal_df = res['bal_df']
-    omc_df = res['omc_df']
-    bdc_pivot = res['bdc_pivot']
-    period_days = res['period_days']
-    start_str = res['start_str']
-    end_str = res['end_str']
+    res             = st.session_state.ns_results
+    forecast_df     = res['forecast_df']
+    bal_df          = res['bal_df']
+    omc_df          = res['omc_df']
+    bdc_pivot       = res['bdc_pivot']
+    period_days     = res['period_days']
+    effective_days  = res.get('effective_days', period_days)
+    use_biz         = res.get('use_business_days', False)
+    day_type_label  = res.get('day_type_label', f"{period_days} calendar days")
+    start_str       = res['start_str']
+    end_str         = res['end_str']
     depletion_label = res.get('depletion_label', f'OMC Loadings ({period_days}d)')
-    tor_note = " (TOR excluded from LPG)" if res.get('exclude_tor_lpg') else ""
+    tor_note        = " (TOR excl. from LPG)" if res.get('exclude_tor_lpg') else ""
+
+    day_badge = (
+        "💼 Business Days" if use_biz else "📆 Calendar Days"
+    )
+
     st.markdown("---")
     st.markdown(
         f"<h3>🇬🇭 GHANA NATIONAL FUEL SUPPLY — "
-        f"{start_str} → {end_str} ({period_days} days)</h3>",
+        f"{start_str} → {end_str} ({period_days} calendar days)</h3>",
         unsafe_allow_html=True
     )
     st.caption(
         f"Balance: **{res['n_bdcs_balance']} BDCs** | "
         f"OMC Loadings: **{res['n_omc_rows']:,} records** | "
-        f"Depletion source: {depletion_label}{tor_note} (CTO excluded — internal BDC transfers)"
+        f"Depletion source: {depletion_label}{tor_note} | "
+        f"Day type: **{day_badge}** ({effective_days} days used as denominator) | "
+        f"CTO excluded — internal BDC transfers"
     )
+
+    # ── Day-type info box ─────────────────────────────────────
+    if use_biz:
+        st.info(
+            f"💼 **Business-days mode active** — daily rate computed using "
+            f"**{effective_days} business days** (Mon–Fri) instead of "
+            f"{period_days} calendar days. "
+            f"This gives a higher daily rate and therefore *fewer* days of supply, "
+            f"reflecting actual operational trading days."
+        )
+    else:
+        st.info(
+            f"📆 **Calendar-days mode active** — daily rate computed using "
+            f"**{period_days} calendar days** (including weekends). "
+            f"Switch to Business Days for a more conservative estimate."
+        )
+    # ─────────────────────────────────────────────────────────
+
     st.markdown("---")
     st.markdown("### 🛢️ DAYS OF SUPPLY — NATIONAL FORECAST")
-    ICONS = {'PREMIUM': '⛽', 'GASOIL': '🚛', 'LPG': '🔵'}
+
+    ICONS  = {'PREMIUM': '⛽', 'GASOIL': '🚛', 'LPG': '🔵'}
     COLORS = {'PREMIUM': '#00ffff', 'GASOIL': '#ffaa00', 'LPG': '#00ff88'}
+
     cols = st.columns(len(forecast_df))
     for col, (_, row) in zip(cols, forecast_df.iterrows()):
-        days = row['days_remaining']
-        prod = row['product']
+        days  = row['days_remaining']
+        prod  = row['product']
         color = COLORS.get(prod, '#ffffff')
+
         if days == float('inf'):
-            days_text = "∞"
+            days_text  = "∞"
             weeks_text = ""
         else:
-            weeks = days / 7
-            days_text = f"{days:.1f}"
+            weeks      = days / 7
+            days_text  = f"{days:.1f}"
             weeks_text = f" (~{weeks:.1f} weeks)"
+
         if days < 7:
-            days_text, status_text, border = f"{days_text}", "🔴 CRITICAL", "#ff0000"
+            days_text, status_text, border = days_text, "🔴 CRITICAL", "#ff0000"
         elif days < 14:
-            days_text, status_text, border = f"{days_text}", "🟡 WARNING", "#ffaa00"
+            days_text, status_text, border = days_text, "🟡 WARNING",  "#ffaa00"
         elif days < 30:
-            days_text, status_text, border = f"{days_text}", "🟠 MONITOR", "#ff6600"
+            days_text, status_text, border = days_text, "🟠 MONITOR",  "#ff6600"
         else:
-            days_text, status_text, border = f"{days_text}", "🟢 HEALTHY", "#00ff88"
+            days_text, status_text, border = days_text, "🟢 HEALTHY",  "#00ff88"
+
         stockout_date = (
             (datetime.now() + timedelta(days=days)).strftime('%d %b %Y')
             if days != float('inf') else "N/A"
         )
+
         with col:
             st.markdown(f"""
             <div style='background:rgba(10,14,39,0.85); padding:24px 16px; border-radius:16px;
@@ -4774,48 +5052,56 @@ def _display_national_results(period_days_arg: int):
                 </div>
             </div>
             """, unsafe_allow_html=True)
+
     st.markdown("---")
     st.markdown("### 📊 NATIONAL SUMMARY TABLE")
+
     summary_rows = []
     for _, row in forecast_df.iterrows():
         days = row['days_remaining']
         if days == float('inf'):
-            days_text = "∞"
+            days_text  = "∞"
             weeks_text = ""
         else:
-            weeks = days / 7
-            days_text = f"{days:.1f}"
+            weeks      = days / 7
+            days_text  = f"{days:.1f}"
             weeks_text = f" (~{weeks:.1f} weeks)"
-        if days < 7: status = "🔴 CRITICAL"
+
+        if days < 7:   status = "🔴 CRITICAL"
         elif days < 14: status = "🟡 WARNING"
         elif days < 30: status = "🟠 MONITOR"
-        else: status = "🟢 HEALTHY"
+        else:           status = "🟢 HEALTHY"
+
         stockout = (
             (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d')
             if days != float('inf') else "N/A"
         )
         summary_rows.append({
-            'Product': row['display_name'],
-            'National Stock (LT/KG)': f"{row['total_balance']:,.0f}",
-            f'{depletion_label} (LT)': f"{row['omc_sales']:,.0f}",
-            'Avg Daily Depletion (LT/day)': f"{row['daily_rate']:,.0f}",
-            'Days of Supply': f"{days_text} {weeks_text}",
-            'Projected Empty': stockout,
-            'Status': status,
+            'Product':                              row['display_name'],
+            'National Stock (LT/KG)':              f"{row['total_balance']:,.0f}",
+            f'{depletion_label} (LT)':             f"{row['omc_sales']:,.0f}",
+            f'Daily Rate ({day_badge}) (LT/day)':  f"{row['daily_rate']:,.0f}",  # ← shows day type
+            'Days of Supply':                       f"{days_text} {weeks_text}",
+            'Projected Empty':                      stockout,
+            'Status':                               status,
         })
     st.dataframe(pd.DataFrame(summary_rows), width='stretch', hide_index=True)
+
     st.markdown("---")
     st.markdown("### 📦 OMC LOADINGS BREAKDOWN BY PRODUCT")
     st.caption(
         f"**{depletion_label}** = fuel dispatched from BDCs to OMCs over the selected period "
-        "(or the highest single-day loading / median when that mode is active)."
+        "(or the highest single-day loading / median when that mode is active). "
+        f"Daily rate computed over **{day_type_label}**."
     )
+
     bd_cols = st.columns(3)
     COLORS = {'PREMIUM': '#00ffff', 'GASOIL': '#ffaa00', 'LPG': '#00ff88'}
-    ICONS = {'PREMIUM': '⛽', 'GASOIL': '🚛', 'LPG': '🔵'}
+    ICONS  = {'PREMIUM': '⛽',      'GASOIL': '🚛',      'LPG': '🔵'}
     total_nat_depletion = forecast_df['omc_sales'].sum()
+
     for col, (_, row) in zip(bd_cols, forecast_df.iterrows()):
-        prod = row['product']
+        prod  = row['product']
         omc_v = row['omc_sales']
         nat_pct = (omc_v / total_nat_depletion * 100) if total_nat_depletion > 0 else 0
         with col:
@@ -4835,7 +5121,7 @@ def _display_national_results(period_days_arg: int):
                         <td style='color:#00ff88; text-align:right; font-weight:700;'>{nat_pct:.1f}%</td>
                     </tr>
                     <tr style='border-top:1px solid rgba(255,255,255,0.15);'>
-                        <td style='color:#ffffff; padding:6px 0 2px; font-weight:700;'>📅 Daily avg</td>
+                        <td style='color:#ffffff; padding:6px 0 2px; font-weight:700;'>📅 Daily avg ({day_badge})</td>
                         <td style='color:#00ffff; text-align:right; font-weight:700;'>{row["daily_rate"]:,.0f} LT/day</td>
                     </tr>
                     <tr>
@@ -4845,22 +5131,27 @@ def _display_national_results(period_days_arg: int):
                 </table>
             </div>
             """, unsafe_allow_html=True)
+
     st.markdown("---")
     st.markdown("### ⚖️ NATIONAL OUTFLOW SUMMARY")
     st.caption(
         f"Outflow = {depletion_label} (fuel dispatched from BDCs to OMCs over the selected period). "
+        f"Daily rate uses **{day_type_label}**. "
         "Inflow data (vessel receipts) is not yet available in this report."
     )
+
     flow_rows = []
     for _, row in forecast_df.iterrows():
         flow_rows.append({
-            'Product': row['display_name'],
-            f'{depletion_label} (LT)': f"{row['omc_sales']:,.0f}",
-            'Daily Avg Outflow (LT/day)': f"{row['daily_rate']:,.0f}",
-            'Current Stock (LT)': f"{row['total_balance']:,.0f}",
-            'Days of Supply': f"{row['days_remaining']:.1f}" if row['days_remaining'] != float('inf') else "∞",
+            'Product':                             row['display_name'],
+            f'{depletion_label} (LT)':            f"{row['omc_sales']:,.0f}",
+            f'Daily Avg Outflow ({day_badge})':   f"{row['daily_rate']:,.0f} LT/day",
+            'Current Stock (LT)':                  f"{row['total_balance']:,.0f}",
+            'Days of Supply':
+                f"{row['days_remaining']:.1f}" if row['days_remaining'] != float('inf') else "∞",
         })
     st.dataframe(pd.DataFrame(flow_rows), width='stretch', hide_index=True)
+
     st.markdown("---")
     st.markdown("### 🏦 CURRENT STOCK BY BDC")
     display_bdc = bdc_pivot.copy()
@@ -4868,29 +5159,35 @@ def _display_national_results(period_days_arg: int):
         display_bdc[c] = display_bdc[c].apply(lambda x: f"{x:,.0f}")
     display_bdc['Market Share %'] = display_bdc['Market Share %'].apply(lambda x: f"{x:.2f}%")
     st.dataframe(display_bdc, width='stretch', hide_index=True)
+
     st.markdown("---")
     st.markdown("### 💾 EXPORT NATIONAL REPORT")
     if st.button("📄 GENERATE EXCEL REPORT", width='stretch', key='ns_export'):
-        out_dir = os.path.join(os.getcwd(), "national_stockout_reports")
+        out_dir  = os.path.join(os.getcwd(), "national_stockout_reports")
         os.makedirs(out_dir, exist_ok=True)
         filename = f"national_stockout_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
         filepath = os.path.join(out_dir, filename)
+
         summary_export = pd.DataFrame([{
-            'Product': row['display_name'],
-            'National Stock (LT/KG)': row['total_balance'],
-            f'{depletion_label} (LT)': row['omc_sales'],
-            'Daily Depletion (LT/day)': row['daily_rate'],
-            'Days of Supply': row['days_remaining'] if row['days_remaining'] != float('inf') else 9999,
+            'Product':                       row['display_name'],
+            'National Stock (LT/KG)':        row['total_balance'],
+            f'{depletion_label} (LT)':       row['omc_sales'],
+            f'Daily Depletion ({day_badge})': row['daily_rate'],
+            'Days of Supply':
+                row['days_remaining'] if row['days_remaining'] != float('inf') else 9999,
             'Projected Empty': (
                 (datetime.now() + timedelta(days=row['days_remaining'])).strftime('%Y-%m-%d')
                 if row['days_remaining'] != float('inf') else 'N/A'
             ),
+            'Day Type Used': day_badge,
         } for _, row in forecast_df.iterrows()])
+
         with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
             summary_export.to_excel(writer, sheet_name='Stockout Forecast', index=False)
-            bdc_pivot.to_excel(writer, sheet_name='Stock by BDC', index=False)
+            bdc_pivot.to_excel(writer,      sheet_name='Stock by BDC',       index=False)
             if not omc_df.empty:
-                omc_df.to_excel(writer, sheet_name='OMC Loadings Detail', index=False)
+                omc_df.to_excel(writer,     sheet_name='OMC Loadings Detail', index=False)
+
         st.success(f"✅ Report saved: {filename}")
         with open(filepath, 'rb') as f:
             st.download_button(
@@ -4898,6 +5195,7 @@ def _display_national_results(period_days_arg: int):
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 width='stretch'
             )
+
 def _parse_stock_transaction_pdf(pdf_file) -> list:
     DESCRIPTIONS = sorted([
         'Balance b/fwd', 'Stock Take', 'Sale',
