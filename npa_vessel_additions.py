@@ -165,7 +165,7 @@ def show_vessel_supply():
             help="Sheet must be shared as 'Anyone with the link \u2192 Viewer'."
         )
     with col2:
-        year_sel = st.selectbox("Data Year", ['2025', '2024', '2026'], key='vessel_year')
+        year_sel = st.selectbox("Data Year", ['2025', '2024', '2026'], key='vessel_year_input')
 
     if st.button("\U0001f504 FETCH VESSEL DATA", width='stretch', key='vessel_fetch'):
         with st.spinner("\U0001f4e1 Loading vessel data from Google Sheets\u2026"):
@@ -179,7 +179,7 @@ def show_vessel_supply():
                 st.warning("\u26a0\ufe0f No valid records found. Check the sheet format and sharing settings.")
                 return
             st.session_state.vessel_data = processed
-            st.session_state.vessel_year = year_sel
+            st.session_state['vessel_year'] = year_sel   # use bracket syntax — avoids widget-key clash
             st.success(f"\u2705 Processed **{len(processed)} vessel records**!")
             st.rerun()
 

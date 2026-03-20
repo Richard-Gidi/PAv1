@@ -1151,7 +1151,7 @@ def show_vessel_supply():
             help="Sheet must be shared as 'Anyone with the link \u2192 Viewer'."
         )
     with col2:
-        year_sel = st.selectbox("Data Year", ['2025', '2024', '2026'], key='vessel_year')
+        year_sel = st.selectbox("Data Year", ['2025', '2024', '2026'], key='vessel_year_input')
 
     if st.button("\U0001f504 FETCH VESSEL DATA", width='stretch', key='vessel_fetch'):
         with st.spinner("\U0001f4e1 Loading vessel data from Google Sheets\u2026"):
@@ -1165,7 +1165,7 @@ def show_vessel_supply():
                 st.warning("\u26a0\ufe0f No valid records found. Check the sheet format and sharing settings.")
                 return
             st.session_state.vessel_data = processed
-            st.session_state.vessel_year = year_sel
+            st.session_state['vessel_year'] = year_sel   # use bracket syntax — avoids widget-key clash
             st.success(f"\u2705 Processed **{len(processed)} vessel records**!")
             st.rerun()
 
@@ -1347,7 +1347,6 @@ def show_vessel_supply():
                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key='vessel_dl'
             )
-
 
 def main():
     st.markdown("""
@@ -3045,7 +3044,20 @@ def _fetch_national_omc_loadings(start_str: str, end_str: str,
                 progress_cb(completed, total)
     if not all_frames:
         return pd.DataFrame()
-    return pd.concat(all_frames, ignore_index=True).drop_duplicates()
+    combined = pd.concat(all_frames, ignore_index=True)
+    # Deduplicate on business-key columns (bare drop_duplicates() is non-deterministic
+    # across parallel chunk runs — float noise and ordering cause false 'unique' rows)
+    dedup_cols = [c for c in ['Date', 'Order Number', 'Truck', 'Product', 'Depot', 'BDC']
+                  if c in combined.columns]
+    if dedup_cols:
+        combined = combined.drop_duplicates(subset=dedup_cols)
+    else:
+        combined = combined.drop_duplicates()
+    # Sort deterministically so median/max/avg are stable on identical re-runs
+    sort_cols = [c for c in ['Date', 'BDC', 'Order Number'] if c in combined.columns]
+    if sort_cols:
+        combined = combined.sort_values(sort_cols).reset_index(drop=True)
+    return combined
 
 # ==========================================================
 # DEPOT NAME CLEANER (your original rules + extras)
@@ -3613,8 +3625,23 @@ def _run_national_analysis(
             prog_bar.progress(pct, text=f"Week chunk {done}/{total} fetched")
             prog_text.caption(f"✅ {done} / {total} weekly windows complete")
 
-        omc_df = _fetch_national_omc_loadings(start_str, end_str, progress_cb=_on_progress)
-        prog_bar.progress(1.0, text="✅ All chunks fetched")
+        _omc_cache_key = f"{start_str}|{end_str}"
+        _cached_omc    = st.session_state.get('_ns_omc_cache')
+        _cached_key    = st.session_state.get('_ns_omc_cache_key', '')
+
+        if _cached_omc is not None and _cached_key == _omc_cache_key:
+            omc_df = _cached_omc
+            prog_bar.progress(1.0, text="✅ Using cached data (same date range)")
+            st.info(
+                f'📋 **Cached OMC data reused** — same date range as last fetch '
+                f'({len(omc_df):,} records). Results are deterministic. '
+                'Change the date range or clear cache to re-fetch.'
+            )
+        else:
+            omc_df = _fetch_national_omc_loadings(start_str, end_str, progress_cb=_on_progress)
+            st.session_state['_ns_omc_cache']     = omc_df
+            st.session_state['_ns_omc_cache_key'] = _omc_cache_key
+            prog_bar.progress(1.0, text="✅ All chunks fetched")
 
         if omc_df.empty:
             st.warning(
@@ -3753,6 +3780,22 @@ def _display_national_results(period_days_arg: int):
         )
     else:
         vessel_note = ''
+
+    # ── Cache status + clear button ────────────────────────────────────
+    _cache_key = st.session_state.get('_ns_omc_cache_key', '')
+    if _cache_key:
+        _ck_parts = _cache_key.split('|')
+        _cache_label = f"OMC data cached for {_ck_parts[0]} → {_ck_parts[1]}" if len(_ck_parts) == 2 else 'OMC data cached'
+        _col_a, _col_b = st.columns([4, 1])
+        with _col_a:
+            st.caption(f'📋 {_cache_label}. Re-clicking Fetch & Analyse reuses this data for stability.')
+        with _col_b:
+            if st.button('🗑️ Clear Cache', key='ns_clear_omc_cache', help='Force a fresh API fetch on next run'):
+                st.session_state.pop('_ns_omc_cache', None)
+                st.session_state.pop('_ns_omc_cache_key', None)
+                st.success('Cache cleared — next fetch will pull fresh data.')
+                st.rerun()
+    # ───────────────────────────────────────────────────────────────────
 
     st.caption(
         f"Balance: **{res['n_bdcs_balance']} BDCs** | "

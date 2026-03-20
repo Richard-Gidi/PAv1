@@ -268,6 +268,22 @@ DISP_NEW = (
     "    else:\n"
     "        vessel_note = ''\n"
     "\n"
+    "    # ── Cache status + clear button ────────────────────────────────────\n"
+    "    _cache_key = st.session_state.get('_ns_omc_cache_key', '')\n"
+    "    if _cache_key:\n"
+    "        _ck_parts = _cache_key.split('|')\n"
+    "        _cache_label = f\"OMC data cached for {_ck_parts[0]} → {_ck_parts[1]}\" if len(_ck_parts) == 2 else 'OMC data cached'\n"
+    "        _col_a, _col_b = st.columns([4, 1])\n"
+    "        with _col_a:\n"
+    "            st.caption(f'📋 {_cache_label}. Re-clicking Fetch & Analyse reuses this data for stability.')\n"
+    "        with _col_b:\n"
+    "            if st.button('🗑️ Clear Cache', key='ns_clear_omc_cache', help='Force a fresh API fetch on next run'):\n"
+    "                st.session_state.pop('_ns_omc_cache', None)\n"
+    "                st.session_state.pop('_ns_omc_cache_key', None)\n"
+    "                st.success('Cache cleared — next fetch will pull fresh data.')\n"
+    "                st.rerun()\n"
+    "    # ───────────────────────────────────────────────────────────────────\n"
+    "\n"
     "    st.caption(\n"
     "        f\"Balance: **{res['n_bdcs_balance']} BDCs** | \"\n"
     "        f\"OMC Loadings: **{res['n_omc_rows']:,} records** | \"\n"
@@ -283,6 +299,57 @@ DISP_NEW = (
     "            '\U0001f6a2 **Vessel pipeline included** \u2014 pending cargo added to BDC stock:  '\n"
     "            + ' | '.join(vessel_parts)\n"
     "        )"
+)
+
+# J — deterministic deduplication in _fetch_national_omc_loadings
+# The old bare drop_duplicates() is non-deterministic across parallel runs.
+# Deduplicate on meaningful columns, then sort so every run produces
+# the same ordered DataFrame for the same date range.
+DEDUP_OLD = (
+    "    return pd.concat(all_frames, ignore_index=True).drop_duplicates()"
+)
+DEDUP_NEW = (
+    "    combined = pd.concat(all_frames, ignore_index=True)\n"
+    "    # Deduplicate on business-key columns (bare drop_duplicates() is non-deterministic\n"
+    "    # across parallel chunk runs — float noise and ordering cause false 'unique' rows)\n"
+    "    dedup_cols = [c for c in ['Date', 'Order Number', 'Truck', 'Product', 'Depot', 'BDC']\n"
+    "                  if c in combined.columns]\n"
+    "    if dedup_cols:\n"
+    "        combined = combined.drop_duplicates(subset=dedup_cols)\n"
+    "    else:\n"
+    "        combined = combined.drop_duplicates()\n"
+    "    # Sort deterministically so median/max/avg are stable on identical re-runs\n"
+    "    sort_cols = [c for c in ['Date', 'BDC', 'Order Number'] if c in combined.columns]\n"
+    "    if sort_cols:\n"
+    "        combined = combined.sort_values(sort_cols).reset_index(drop=True)\n"
+    "    return combined"
+)
+
+# K — cache OMC loadings inside _run_national_analysis so re-clicking
+#     with the same dates returns the exact same dataset every time.
+# We wrap the omc_df fetch call with a cache-hit check.
+CACHE_OLD = (
+    "        omc_df = _fetch_national_omc_loadings(start_str, end_str, progress_cb=_on_progress)\n"
+    "        prog_bar.progress(1.0, text=\"✅ All chunks fetched\")"
+)
+CACHE_NEW = (
+    "        _omc_cache_key = f\"{start_str}|{end_str}\"\n"
+    "        _cached_omc    = st.session_state.get('_ns_omc_cache')\n"
+    "        _cached_key    = st.session_state.get('_ns_omc_cache_key', '')\n"
+    "\n"
+    "        if _cached_omc is not None and _cached_key == _omc_cache_key:\n"
+    "            omc_df = _cached_omc\n"
+    "            prog_bar.progress(1.0, text=\"✅ Using cached data (same date range)\")\n"
+    "            st.info(\n"
+    "                f'📋 **Cached OMC data reused** — same date range as last fetch '\n"
+    "                f'({len(omc_df):,} records). Results are deterministic. '\n"
+    "                'Change the date range or clear cache to re-fetch.'\n"
+    "            )\n"
+    "        else:\n"
+    "            omc_df = _fetch_national_omc_loadings(start_str, end_str, progress_cb=_on_progress)\n"
+    "            st.session_state['_ns_omc_cache']     = omc_df\n"
+    "            st.session_state['_ns_omc_cache_key'] = _omc_cache_key\n"
+    "            prog_bar.progress(1.0, text=\"✅ All chunks fetched\")"
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -365,6 +432,8 @@ def main():
     src = apply(src, BAL_OLD,      BAL_NEW,      "G2 _run_national_analysis — pipeline logic")
     src = apply(src, PERSIST_OLD,  PERSIST_NEW,  "H  Session state — persist vessel info")
     src = apply(src, DISP_OLD,     DISP_NEW,     "I  _display_national_results — vessel note")
+    src = apply(src, DEDUP_OLD,    DEDUP_NEW,    "J  _fetch_national_omc_loadings — deterministic dedup+sort")
+    src = apply(src, CACHE_OLD,    CACHE_NEW,    "K  _run_national_analysis — OMC cache by date range")
 
     out_path = src_path.replace(".py", "_patched.py")
     with open(out_path, "w", encoding="utf-8") as f:
