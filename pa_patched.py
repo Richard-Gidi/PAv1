@@ -25,6 +25,11 @@ import json
 import concurrent.futures
 import io
 from streamlit_js_eval import streamlit_js_eval
+
+
+import psutil, os
+process = psutil.Process(os.getpid())
+st.caption(f"Memory: {process.memory_info().rss / 1024 / 1024:.1f} MB")
 # Load environment variables
 load_dotenv()
 # ==================== LOAD ID MAPPINGS FROM ENV ====================
@@ -5110,11 +5115,6 @@ def show_week_on_week():
     st.markdown("---")
     st.markdown("### 🏭 BDC-LEVEL COMPARISON")
     prod_wow = st.selectbox("Product", ['ALL'] + PRODUCTS, key='wow_prod')
-
-import psutil, os
-process = psutil.Process(os.getpid())
-st.caption(f"Memory: {process.memory_info().rss / 1024 / 1024:.1f} MB")
-
     def _bdc_vol(df, prod):
         if df.empty: return pd.Series(dtype=float)
         f = df if prod == 'ALL' else df[df['Product'] == prod]
