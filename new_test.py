@@ -1266,15 +1266,16 @@ def show_bdc_balance():
                  use_container_width=True, height=400, hide_index=True)
 
     st.markdown("---")
+    _bdc_dl_ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
+    _bdc_sheet_ts = datetime.now().strftime("%d%b%Y %H:%M")
     excel_bytes = _to_excel_bytes({
-        "All Records":  df,
+        f"Stock Balance {_bdc_sheet_ts}": df,
         "LPG":          df[df["Product"]=="LPG"],
         "PREMIUM":      df[df["Product"]=="PREMIUM"],
         "GASOIL":       df[df["Product"]=="GASOIL"],
-        "BDC Summary":  bdc_sum,
-        "BDC Pivot":    pivot,
     })
-    st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes, "bdc_balance.xlsx",
+    st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes,
+                       f"bdc_balance_{_bdc_dl_ts}.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
@@ -1416,19 +1417,28 @@ def show_omc_loadings():
                  use_container_width=True, height=400, hide_index=True)
 
     st.markdown("---")
-    pivot = (df.pivot_table(index="BDC", columns="Product", values="Quantity",
-                            aggfunc="sum", fill_value=0).reset_index())
-    for p in ["GASOIL","LPG","PREMIUM"]:
-        if p not in pivot.columns: pivot[p] = 0
-    pivot["TOTAL"] = pivot[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
+    # Build BDC Summary with required columns: BDC, GASOIL, LPG, PREMIUM, TOTAL
+    _omc_bdc_summary = (
+        df.pivot_table(index="BDC", columns="Product", values="Quantity",
+                       aggfunc="sum", fill_value=0)
+        .reset_index()
+    )
+    for _p in ["GASOIL","LPG","PREMIUM"]:
+        if _p not in _omc_bdc_summary.columns:
+            _omc_bdc_summary[_p] = 0
+    _omc_bdc_summary["TOTAL"] = _omc_bdc_summary[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
+    _omc_bdc_summary = _omc_bdc_summary[["BDC","GASOIL","LPG","PREMIUM","TOTAL"]].sort_values("TOTAL", ascending=False)
 
+    _omc_dl_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     excel_bytes = _to_excel_bytes({
         "All Orders":   df,
-        "BDC Summary":  bdc_sum,
-        "BDC Pivot":    pivot,
-        **{p: df[df["Product"]==p] for p in ["PREMIUM","GASOIL","LPG"]},
+        "PREMIUM":      df[df["Product"]=="PREMIUM"],
+        "GASOIL":       df[df["Product"]=="GASOIL"],
+        "LPG":          df[df["Product"]=="LPG"],
+        "BDC Summary":  _omc_bdc_summary,
     })
-    st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes, "omc_loadings.xlsx",
+    st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes,
+                       f"omc_loadings_{_omc_dl_ts}.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
@@ -1856,7 +1866,17 @@ def show_national_stockout():
     effective_days = _count_period_days(start_str, end_str, use_biz)
     day_lbl        = f"{effective_days} {'business' if use_biz else 'calendar'} days"
 
-    st.info(f"📋 **{n_total} BDCs** will be queried for both Balance and OMC Loadings  |  "
+    # ── Check if BDC balance is already in session state ─────
+    _existing_bdc_records = st.session_state.get("bdc_records", [])
+    _has_bdc_balance      = bool(_existing_bdc_records)
+
+    if _has_bdc_balance:
+        st.success(f"✅ BDC Balance already loaded — **{len(_existing_bdc_records):,} records** "
+                   f"from a previous fetch will be used. Only OMC Loadings will be fetched fresh.")
+    else:
+        st.warning("⚠️ No BDC Balance data found in session. Both Balance and Loadings will be fetched.")
+
+    st.info(f"📋 **{n_total} BDCs** will be queried for OMC Loadings  |  "
             f"Loadings window: **{start_date.strftime('%d %b')} → {end_date.strftime('%d %b %Y')}** "
             f"({period_days} calendar days / {effective_days} {'business' if use_biz else 'calendar'} days)")
     st.markdown("---")
@@ -1864,41 +1884,61 @@ def show_national_stockout():
     if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", key="ns_go"):
         col_bal = "ACTUAL BALANCE (LT\\KG)"
 
-        with st.status("📡 Step 1 / 2 — Fetching BDC stock balances…", expanded=True):
-            prog1      = st.progress(0, text="Starting…")
-            log_box1   = st.empty()
-            log_lines1 = []
-            results1   = _sequential_batch_fetch(
-                all_bdc_names, _make_balance_fetcher(),
-                prog1, log_box1, log_lines1,
-                second_pass=True,
-            )
-            prog1.progress(1.0, text="✅ Balance fetch complete")
-            all_records, bal_summary = _combine_balance_results(results1)
-            bal_df = pd.DataFrame(all_records)
+        # ── Step 1: Use existing BDC balance or fetch fresh ──
+        if _has_bdc_balance:
+            with st.status("📡 Step 1 / 2 — Using existing BDC stock balances…", expanded=True):
+                all_records = _existing_bdc_records
+                bal_df      = pd.DataFrame(all_records)
+                n_bal_bdcs  = bal_df["BDC"].nunique() if not bal_df.empty else 0
+                bal_summary = {"success": list(bal_df["BDC"].unique()) if not bal_df.empty else [],
+                               "no_data": [], "failed": []}
+                st.write(f"✅ Using cached balance — **{len(all_records):,} records** "
+                         f"from **{n_bal_bdcs} BDCs** (from BDC Balance page)")
+                if exclude_tor and not bal_df.empty:
+                    mask   = bal_df["BDC"].str.contains("TOR", case=False, na=False) & (bal_df["Product"]=="LPG")
+                    excl_v = bal_df[mask][col_bal].sum()
+                    bal_df = bal_df[~mask].copy()
+                    st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
+                balance_by_prod = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
+        else:
+            with st.status("📡 Step 1 / 2 — Fetching BDC stock balances…", expanded=True):
+                prog1      = st.progress(0, text="Starting…")
+                log_box1   = st.empty()
+                log_lines1 = []
+                results1   = _sequential_batch_fetch(
+                    all_bdc_names, _make_balance_fetcher(),
+                    prog1, log_box1, log_lines1,
+                    second_pass=True,
+                )
+                prog1.progress(1.0, text="✅ Balance fetch complete")
+                all_records, bal_summary = _combine_balance_results(results1)
+                bal_df = pd.DataFrame(all_records)
+                # Save into session state for reuse
+                st.session_state.bdc_records = all_records
 
-            n_bal_bdcs = bal_df["BDC"].nunique() if not bal_df.empty else 0
-            st.write(f"✅ **{len(all_records):,} balance records** from **{n_bal_bdcs} BDCs**  |  "
-                     f"✅ {len(bal_summary['success'])} succeeded  |  "
-                     f"⚠️ {len(bal_summary['no_data'])} no data  |  "
-                     f"❌ {len(bal_summary['failed'])} failed")
+                n_bal_bdcs = bal_df["BDC"].nunique() if not bal_df.empty else 0
+                st.write(f"✅ **{len(all_records):,} balance records** from **{n_bal_bdcs} BDCs**  |  "
+                         f"✅ {len(bal_summary['success'])} succeeded  |  "
+                         f"⚠️ {len(bal_summary['no_data'])} no data  |  "
+                         f"❌ {len(bal_summary['failed'])} failed")
 
-            if exclude_tor and not bal_df.empty:
-                mask    = bal_df["BDC"].str.contains("TOR", case=False, na=False) & (bal_df["Product"]=="LPG")
-                excl_v  = bal_df[mask][col_bal].sum()
-                bal_df  = bal_df[~mask].copy()
-                st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
+                if exclude_tor and not bal_df.empty:
+                    mask    = bal_df["BDC"].str.contains("TOR", case=False, na=False) & (bal_df["Product"]=="LPG")
+                    excl_v  = bal_df[mask][col_bal].sum()
+                    bal_df  = bal_df[~mask].copy()
+                    st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
 
-            balance_by_prod = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
+                balance_by_prod = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
 
-            if include_vessels and _vessel_loaded:
-                pend = _vessel_df[_vessel_df["Status"]=="PENDING"]
-                if not pend.empty:
-                    for prod, vol in pend.groupby("Product")["Quantity_Litres"].sum().items():
-                        balance_by_prod[prod] = balance_by_prod.get(prod, 0) + vol
-                    st.write(f"🚢 Vessel pipeline added: "
-                             + " | ".join([f"{p}: +{v:,.0f} LT" for p,v in
-                                           pend.groupby("Product")["Quantity_Litres"].sum().items()]))
+        # Apply vessel pipeline to balance (runs regardless of whether balance was cached or freshly fetched)
+        if include_vessels and _vessel_loaded:
+            pend = _vessel_df[_vessel_df["Status"]=="PENDING"]
+            if not pend.empty:
+                for prod, vol in pend.groupby("Product")["Quantity_Litres"].sum().items():
+                    balance_by_prod[prod] = balance_by_prod.get(prod, 0) + vol
+                st.write(f"🚢 Vessel pipeline added: "
+                         + " | ".join([f"{p}: +{v:,.0f} LT" for p,v in
+                                       pend.groupby("Product")["Quantity_Litres"].sum().items()]))
 
         with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings…", expanded=True):
             st.write(f"Querying {n_total} BDCs for loadings from "
