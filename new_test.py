@@ -37,16 +37,6 @@ _proc = psutil.Process(os.getpid())
 # ══════════════════════════════════════════════════════════════
 
 def load_bdc_user_map() -> dict:
-    """
-    Loads every  BDC_USER_*  key from .env and returns a clean mapping:
-        { "DISPLAY NAME": user_id_int, ... }
-
-    The env key  BDC_USER_OILCORP_ENERGIA_LIMITED=122961  becomes
-        "OILCORP ENERGIA LIMITED" → 122961
-    Special-case renames handle the handful of names whose canonical
-    forms differ from the simple underscore→space transformation.
-    """
-    # Keys that need a custom display name (env-key-suffix → canonical name)
     _FIXES = {
         "C CLEANED OIL LTD":                    "C. CLEANED OIL LTD",
         "PK JEGS ENERGY LTD":                   "P.K JEGS ENERGY LTD",
@@ -78,13 +68,11 @@ def load_bdc_user_map() -> dict:
 
 
 def load_bdc_mappings() -> dict:
-    """BDC display-name → lngBDCId  (used only by Stock Transaction page)."""
     mappings = {}
     for key, value in os.environ.items():
         if not key.startswith("BDC_") or key.startswith("BDC_USER_"):
             continue
         name = key[4:].replace("_", " ")
-        # canonical fixes
         fixes = {
             "TEMA OIL REFINERY TOR":                "TEMA OIL REFINERY (TOR)",
             "SOCIETE NATIONAL BURKINABE SONABHY":   "SOCIETE NATIONAL BURKINABE (SONABHY)",
@@ -250,43 +238,28 @@ def _fetch_pdf(url: str, params: dict, timeout: int = 60) -> bytes | None:
 
 
 # ══════════════════════════════════════════════════════════════
-# ROBUST BATCH FETCHER  — the core fix
+# ROBUST BATCH FETCHER
 # ══════════════════════════════════════════════════════════════
-# Strategy:
-#   • Work through the BDC list in small batches (BATCH_SIZE concurrent threads).
-#   • For each BDC that fails, automatically retry up to MAX_RETRIES times with a
-#     short back-off delay before giving up.
-#   • A thread-safe counter + lock drive the progress bar precisely.
-#   • Every result (success / fail / no-data) is recorded in a fetch_log list that
-#     the UI can display so the operator can see exactly what happened.
-# ──────────────────────────────────────────────────────────────
-BATCH_SIZE  = 5   # concurrent threads per batch — conservative to avoid server 429s
-MAX_RETRIES = 3   # attempts per BDC before marking as failed
-RETRY_DELAY = 2   # seconds between retry attempts
+BATCH_SIZE  = 5
+MAX_RETRIES = 3
+RETRY_DELAY = 2
 
 
 def _sequential_batch_fetch(
     bdc_list:   list,
-    fetch_fn,             # callable(bdc_name) → result-or-None
-    progress_bar,         # st.progress object
-    status_text,          # st.empty object for live text
-    log_lines: list,      # mutable list — append status strings here
+    fetch_fn,
+    progress_bar,
+    status_text,
+    log_lines: list,
 ) -> dict:
-    """
-    Drives fetch_fn over every BDC in bdc_list in controlled batches.
-    Returns {bdc_name: result} — result is None if all retries failed.
-
-    fetch_fn must be thread-safe (no shared mutable state).
-    """
     import concurrent.futures as _cf
 
     total   = len(bdc_list)
     results = {}
     lock    = threading.Lock()
-    done_n  = [0]  # wrapped in list so inner fn can mutate it
+    done_n  = [0]
 
     def _attempt(bdc_name: str):
-        """Try fetch_fn up to MAX_RETRIES times; return (bdc_name, result, attempts)."""
         last_err = None
         for attempt in range(1, MAX_RETRIES + 1):
             try:
@@ -298,7 +271,6 @@ def _sequential_batch_fetch(
                     time.sleep(RETRY_DELAY * attempt)
         return bdc_name, None, MAX_RETRIES, str(last_err)
 
-    # Process in batches so we never have all 65 threads competing at once
     batches = [bdc_list[i: i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
 
     for batch_idx, batch in enumerate(batches):
@@ -315,7 +287,6 @@ def _sequential_batch_fetch(
                         text=f"Fetched {done_n[0]} / {total} BDCs…",
                     )
 
-                # Build log entry
                 if err:
                     icon = "❌"
                     note = f"FAILED after {attempts} attempts — {err}"
@@ -335,7 +306,6 @@ def _sequential_batch_fetch(
                     unsafe_allow_html=True,
                 )
 
-        # Small pause between batches to be polite to the server
         if batch_idx < len(batches) - 1:
             time.sleep(0.5)
 
@@ -348,11 +318,6 @@ def _sequential_batch_fetch(
 
 # ── BDC Balance ──────────────────────────────────────────────
 class StockBalanceScraper:
-    """
-    Parses the NPA BDC Stock Balance PDF.
-    Extracts PREMIUM / GASOIL / LPG balances per BDC per Depot.
-    Thread-safe: create one instance per thread — do NOT share across threads.
-    """
     def __init__(self):
         self.allowed_products = {"PREMIUM", "GASOIL", "LPG"}
         _pat = "|".join(sorted(self.allowed_products))
@@ -387,8 +352,8 @@ class StockBalanceScraper:
         return None
 
     def parse_pdf_bytes(self, pdf_bytes: bytes) -> list:
-        """Returns a list of record dicts from the PDF bytes."""
         records = []
+        seen    = set()   # dedup key: (bdc, depot, product, date)
         try:
             reader   = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
             cur_bdc  = cur_depot = cur_date = None
@@ -417,10 +382,16 @@ class StockBalanceScraper:
                                 continue
                             if actual <= 0:
                                 continue
+                            norm_bdc   = self._norm_bdc(cur_bdc)
+                            norm_depot = self._ns(cur_depot)
+                            key = (norm_bdc, norm_depot, product, cur_date)
+                            if key in seen:
+                                continue
+                            seen.add(key)
                             records.append({
                                 "Date":                        cur_date,
-                                "BDC":                         self._norm_bdc(cur_bdc),
-                                "DEPOT":                       self._ns(cur_depot),
+                                "BDC":                         norm_bdc,
+                                "DEPOT":                       norm_depot,
                                 "Product":                     product,
                                 "ACTUAL BALANCE (LT\\KG)":     actual,
                                 "AVAILABLE BALANCE (LT\\KG)":  avail,
@@ -507,7 +478,9 @@ def extract_omc_loadings_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
     for col in _ONLY_COLS:
         if col not in df.columns:
             df[col] = ""
-    df = df[_ONLY_COLS].drop_duplicates()
+    df = df[_ONLY_COLS]
+    # Deduplicate within a single BDC's PDF on order + truck
+    df = df.drop_duplicates(subset=["Order Number", "Truck", "Date", "Product"])
     try:
         ds = pd.to_datetime(df["Date"], format="%Y/%m/%d", errors="coerce")
         df = df.assign(_ds=ds).sort_values("_ds").drop(columns=["_ds"]).reset_index(drop=True)
@@ -607,6 +580,8 @@ def extract_daily_orders_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
         return pd.DataFrame()
     df = pd.DataFrame(rows)
     df["BDC"] = df["BDC"].apply(lambda n: " ".join((n or "").split()[:2]).upper())
+    # Deduplicate within a single BDC's daily PDF
+    df = df.drop_duplicates(subset=["Date", "Truck", "Order Number", "Product"])
     return df
 
 
@@ -660,6 +635,7 @@ def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
                 "Account": acct, "Volume": vol or 0, "Balance": bal or 0}
 
     records = []
+    seen    = set()
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
@@ -672,7 +648,10 @@ def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
                         continue
                     row = _parse_line(line)
                     if row:
-                        records.append(row)
+                        key = (row["Date"], row["Trans #"], row["Description"], row["Volume"])
+                        if key not in seen:
+                            seen.add(key)
+                            records.append(row)
     except Exception:
         pass
     return records
@@ -680,16 +659,13 @@ def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
 
 # ══════════════════════════════════════════════════════════════
 # ROBUST PER-BDC FETCH WRAPPERS
-# These wrap the raw HTTP+parse logic into a single callable that
-# _sequential_batch_fetch can drive safely.
 # ══════════════════════════════════════════════════════════════
 
 def _make_balance_fetcher():
-    """Returns a fetch_fn(bdc_name) → list-of-records (or raises on hard failure)."""
     def _fn(bdc_name: str):
         user_id = BDC_USER_MAP.get(bdc_name)
         if not user_id:
-            return None   # BDC not in map — mark as no-data, not a hard failure
+            return None
         params = {
             "lngCompanyId":     NPA_CONFIG["COMPANY_ID"],
             "strITSfromPersol": NPA_CONFIG["ITS_FROM_PERSOL"],
@@ -702,15 +678,13 @@ def _make_balance_fetcher():
         }
         pdf_bytes = _fetch_pdf(NPA_CONFIG["BDC_BALANCE_URL"], params)
         if not pdf_bytes:
-            raise RuntimeError("No PDF returned")   # will trigger retry
-        # Each thread gets its own scraper instance — no shared state
+            raise RuntimeError("No PDF returned")
         scraper = StockBalanceScraper()
         return scraper.parse_pdf_bytes(pdf_bytes)
     return _fn
 
 
 def _make_omc_fetcher(start_str: str, end_str: str):
-    """Returns a fetch_fn(bdc_name) → DataFrame (or raises)."""
     def _fn(bdc_name: str):
         user_id = BDC_USER_MAP.get(bdc_name)
         if not user_id:
@@ -732,7 +706,6 @@ def _make_omc_fetcher(start_str: str, end_str: str):
 
 
 def _make_daily_fetcher(start_str: str, end_str: str):
-    """Returns a fetch_fn(bdc_name) → DataFrame (or raises)."""
     def _fn(bdc_name: str):
         user_id = BDC_USER_MAP.get(bdc_name)
         if not user_id:
@@ -754,10 +727,6 @@ def _make_daily_fetcher(start_str: str, end_str: str):
 
 # ── Aggregate helpers ─────────────────────────────────────────
 def _combine_balance_results(results: dict) -> tuple[list, dict]:
-    """
-    results: {bdc_name: list-of-records | None}
-    Returns (all_records, summary) where summary tracks per-BDC outcome.
-    """
     all_records = []
     summary     = {"success": [], "no_data": [], "failed": []}
     for bdc, recs in results.items():
@@ -768,14 +737,20 @@ def _combine_balance_results(results: dict) -> tuple[list, dict]:
         else:
             summary["success"].append(bdc)
             all_records.extend(recs)
+    # Cross-BDC dedup: same depot+product may appear in multiple BDC PDFs
+    # Keep the record with the highest actual balance (most likely the owning BDC's view)
+    if all_records:
+        df_tmp = pd.DataFrame(all_records)
+        col    = "ACTUAL BALANCE (LT\\KG)"
+        df_tmp = (df_tmp
+                  .sort_values(col, ascending=False)
+                  .drop_duplicates(subset=["BDC", "DEPOT", "Product", "Date"])
+                  .reset_index(drop=True))
+        all_records = df_tmp.to_dict("records")
     return all_records, summary
 
 
 def _combine_df_results(results: dict, dedup_cols: list) -> tuple[pd.DataFrame, dict]:
-    """
-    results: {bdc_name: DataFrame | None}
-    Returns (combined_df, summary).
-    """
     frames  = []
     summary = {"success": [], "no_data": [], "failed": []}
     for bdc, df in results.items():
@@ -793,14 +768,17 @@ def _combine_df_results(results: dict, dedup_cols: list) -> tuple[pd.DataFrame, 
         return pd.DataFrame(), summary
 
     combined = pd.concat(frames, ignore_index=True)
+
+    # Cross-BDC dedup: an order can appear in multiple BDC PDFs if the BDC is the
+    # seller AND the buyer's BDC also sees it.  Deduplicate on the tightest natural key.
     valid_dedup = [c for c in dedup_cols if c in combined.columns]
     if valid_dedup:
         combined = combined.drop_duplicates(subset=valid_dedup)
+
     return combined.reset_index(drop=True), summary
 
 
 def _render_fetch_summary(summary: dict, total: int, record_count: int, data_label: str):
-    """Renders a colour-coded outcome summary after a batch fetch."""
     n_ok   = len(summary["success"])
     n_none = len(summary["no_data"])
     n_fail = len(summary["failed"])
@@ -922,6 +900,7 @@ def _process_vessel_df(vdf, year="2025"):
         elif "quantity" in cl or ("mt" in cl and "quantity" not in cl): ci["q"] = i
         elif "date" in cl or "discharg" in cl:                   ci["d"] = i
     records = []
+    seen    = set()
     for _, row in vdf.dropna(how="all").iterrows():
         try:
             receivers   = str(row.iloc[ci.get("r",0)]).strip()
@@ -939,7 +918,11 @@ def _process_vessel_df(vdf, year="2025"):
             product = VESSEL_PM.get(prod_raw, prod_raw)
             if product not in VESSEL_CF: continue
             qty_lt = qty_mt * VESSEL_CF[product]
-            month, yr_, status = _parse_vessel_date(date_cell, default_year=year)
+            month, yr_, status = _parse_vessel_date(date_cell, yr=year)
+            key = (vessel_name, product, qty_mt, date_cell)
+            if key in seen:
+                continue
+            seen.add(key)
             records.append({"Receivers":receivers,"Vessel_Type":vessel_type,"Vessel_Name":vessel_name,
                             "Supplier":supplier,"Product":product,"Original_Product":prod_raw,
                             "Quantity_MT":qty_mt,"Quantity_Litres":qty_lt,"Date_Discharged":date_cell,
@@ -968,15 +951,10 @@ def show_bdc_balance():
 
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
-                border-radius:10px;padding:16px;margin-bottom:16px;'>
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
-    Queries the NPA API individually for every BDC using their assigned user credentials.
-    Each BDC's stock balance — broken down by depot, product (PREMIUM / GASOIL / LPG) and
-    actual vs. available litres — is fetched, merged and displayed as a single national view.
-    The data reflects the <b>current live balance</b> at the time of the request.<br><br>
-    <b style='color:#ff00ff;'>Fetch strategy:</b> BDCs are queried in small batches of 5
-    concurrently. Any BDC that fails is automatically retried up to 3 times before being
-    marked as failed. A live log shows every outcome so nothing is silently dropped.
+    Shows the current live stock balance for every BDC — broken down by depot and product
+    (PREMIUM / GASOIL / LPG) — giving a unified national stock picture.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1023,7 +1001,6 @@ def show_bdc_balance():
         st.info("👆 Click **FETCH BDC BALANCE DATA** to load the current stock position.")
         return
 
-    # Show last-fetch summary if available
     if st.session_state.get("bdc_fetch_summary"):
         with st.expander("📊 Last fetch outcome", expanded=False):
             _render_fetch_summary(
@@ -1106,16 +1083,10 @@ def show_omc_loadings():
 
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
-                border-radius:10px;padding:16px;margin-bottom:16px;'>
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
-    Fetches <b>released (iorderstatus=4)</b> OMC loading orders from the NPA system for
-    every BDC within the selected date range.  Each BDC is queried with its own user
-    credential, so you see the complete picture — not just orders visible to a single
-    company account.  Results are combined, de-duplicated on order-number + truck + date,
-    and presented as a unified loadings dataset.<br><br>
-    <b style='color:#ff00ff;'>Use case:</b> Understand how much fuel left BDC tanks and
-    moved to OMC trucks.  Ideal for market share analysis, daily dispatch reporting, and
-    feeding the National Stockout depletion-rate calculation.
+    Fetches released OMC loading orders for every BDC within the selected date range —
+    combined into a single de-duplicated dataset for market share and dispatch analysis.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1157,7 +1128,7 @@ def show_omc_loadings():
         prog.progress(1.0, text="✅ Fetch complete")
 
         combined, summary = _combine_df_results(
-            results, ["Date","Order Number","Truck","Product","Depot","BDC"]
+            results, ["Order Number", "Truck", "Date", "Product"]
         )
         st.session_state.omc_df              = combined
         st.session_state.omc_fetch_summary   = summary
@@ -1246,14 +1217,10 @@ def show_daily_orders():
 
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
-                border-radius:10px;padding:16px;margin-bottom:16px;'>
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
-    Fetches the <b>daily dispatch order report</b> for every BDC for a chosen date range.
-    Unlike the OMC Loadings report (which groups by BDC), the Daily Orders report is
-    grouped by <b>depot</b> and gives truck-level granularity — useful for confirming
-    actual physical movements out of specific storage facilities on a given day.<br><br>
-    <b style='color:#ff00ff;'>Tip:</b> For a single day's national picture, set both dates
-    to the same day.  For a week-on-week dispatch summary, use a 7-day window.
+    Fetches the daily dispatch order report grouped by depot, giving truck-level
+    granularity of physical fuel movements out of each storage facility.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1295,7 +1262,7 @@ def show_daily_orders():
         prog.progress(1.0, text="✅ Fetch complete")
 
         combined, summary = _combine_df_results(
-            results, ["Date","Truck","Order Number","Product","Depot","BDC"]
+            results, ["Date", "Truck", "Order Number", "Product"]
         )
         st.session_state.daily_df            = combined
         st.session_state.daily_fetch_summary = summary
@@ -1373,6 +1340,16 @@ def show_daily_orders():
 # ══════════════════════════════════════════════════════════════
 def show_market_share():
     st.markdown("<h2>📊 BDC MARKET SHARE ANALYSIS</h2>", unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
+    <b style='color:#00ffff;'>What this page does</b><br>
+    Shows a selected BDC's share of national stock and dispatch volumes per product,
+    including its ranking against all other BDCs.<br>
+    <b style='color:#ff00ff;'>Prerequisite:</b> Fetch BDC Balance and/or OMC Loadings data first.
+    </div>
+    """, unsafe_allow_html=True)
 
     has_balance  = bool(st.session_state.get("bdc_records"))
     has_loadings = not st.session_state.get("omc_df", pd.DataFrame()).empty
@@ -1474,16 +1451,11 @@ def show_stock_transaction():
 
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
-                border-radius:10px;padding:16px;margin-bottom:16px;'>
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
-    Retrieves the full <b>stock transaction ledger</b> for a specific BDC at a specific
-    depot for a chosen product and date range.  The report shows every movement —
-    inflows (Product Outturn, Custody Transfer In), outflows (Sales to OMCs, Custody
-    Transfer Out) — together with a running balance so you can reconcile stock at any
-    point in time.<br><br>
-    <b style='color:#ff00ff;'>Note:</b> This report uses the existing <b>BDC entity IDs</b>
-    (lngBDCId) from the .env, not the per-user login IDs.  Select a BDC, depot and
-    product that you have access to view.
+    Retrieves the full stock transaction ledger for a specific BDC, depot and product —
+    showing every inflow and outflow with a running balance for reconciliation.<br>
+    <b style='color:#ff00ff;'>Note:</b> Uses BDC entity IDs (lngBDCId), not per-user credentials.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1582,18 +1554,13 @@ def show_national_stockout():
 
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
-                border-radius:10px;padding:16px;margin-bottom:16px;'>
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
-    Calculates Ghana's <b>national days-of-supply</b> for PREMIUM (PMS), GASOIL (AGO)
-    and LPG by combining two live datasets:<br>
-    &nbsp;&nbsp;<b>1. BDC Balance</b> — current fuel sitting in all depots across all BDCs.<br>
-    &nbsp;&nbsp;<b>2. OMC Loadings</b> — fuel dispatched over the selected history window,
-    used to derive the daily depletion rate.<br><br>
-    Days of supply = National Stock ÷ Daily Depletion Rate.  A result below 7 days
-    triggers a <b>🔴 CRITICAL</b> alert; below 14 days a <b>🟡 WARNING</b>.<br><br>
-    <b style='color:#ff00ff;'>Fetch strategy:</b> Both datasets are pulled fresh from
-    the NPA API for every configured BDC using the same robust batch+retry logic as the
-    individual pages.  Each run is auto-saved as a snapshot for historical trend tracking.
+    Calculates Ghana's national days-of-supply for PREMIUM, GASOIL and LPG by dividing
+    current BDC stock balances by the average daily depletion rate derived from OMC
+    loadings over the selected history window.<br>
+    <b style='color:#ff00ff;'>Prerequisite:</b> Both BDC Balance and OMC Loadings are
+    fetched fresh as part of this analysis — no need to pre-load them separately.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1711,7 +1678,7 @@ def show_national_stockout():
             )
             prog2.progress(1.0, text="✅ Loadings fetch complete")
             omc_df, omc_summary = _combine_df_results(
-                results2, ["Date","Order Number","Truck","Product","Depot","BDC"]
+                results2, ["Order Number", "Truck", "Date", "Product"]
             )
             st.write(f"✅ **{len(omc_df):,} loading records**  |  "
                      f"✅ {len(omc_summary['success'])} succeeded  |  "
@@ -1795,7 +1762,6 @@ def show_national_stockout():
     st.markdown(f"<h3>🇬🇭 NATIONAL FUEL SUPPLY — {res['start_str']} → {res['end_str']}</h3>",
                 unsafe_allow_html=True)
 
-    # Fetch quality banner
     bs, os_ = res.get("bal_summary",{}), res.get("omc_summary",{})
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("Balance Records",  f"{res.get('n_bal_records',0):,}")
@@ -1886,16 +1852,11 @@ def show_world_monitor():
 
     st.markdown("""
     <div style='background:rgba(255,0,0,0.05);border:1px solid #ff000033;
-                border-radius:10px;padding:16px;margin-bottom:16px;'>
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#ff4444;'>🔴 LIVE GLOBAL INTELLIGENCE</b><br>
-    Real-time global threat intelligence aggregated from 100+ OSINT feeds and powered by
-    AI classification.  Tracks 25 overlapping data layers including active conflict zones,
-    military bases, nuclear facilities, international sanctions, weather disruptions,
-    economic indicators, inland waterway status, power outages, and more.<br><br>
-    <b style='color:#ff00ff;'>Why it matters for fuel supply:</b> Upstream supply
-    disruptions — sanctions on producers, conflict near shipping lanes, weather events
-    affecting refineries — show up here days before they affect Ghanaian pump prices.
-    Use this view for proactive procurement decisions.
+    Real-time global threat and supply-chain risk map — conflicts, sanctions, weather,
+    shipping lane disruptions, power outages and more — aggregated from 100+ OSINT feeds.
+    Use for proactive upstream procurement decisions.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1926,18 +1887,13 @@ def show_vessel_supply():
 
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
-                border-radius:10px;padding:16px;margin-bottom:16px;'>
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
-    Loads the national vessel discharge schedule from a Google Sheet maintained by the
-    supply team.  It shows every vessel that has <b>discharged</b> cargo into Ghanaian
-    terminals this year, and — crucially — every vessel that is <b>pending</b> (at
-    anchorage or en route with committed cargo).<br><br>
-    Quantities in Metric Tonnes are converted to Litres using standard NPA conversion
-    factors (PREMIUM: 1,324.5 LT/MT · GASOIL: 1,183 LT/MT · LPG: 1,000 LT/MT).<br><br>
-    <b style='color:#ff00ff;'>Integration:</b> Enable the toggle on the
-    <b>🌍 National Stockout</b> page to add pending vessel cargo to the BDC balance before
-    computing days-of-supply — giving a <em>total-available-supply</em> view rather than
-    <em>in-depot-only</em>.
+    Loads the national vessel discharge schedule from a Google Sheet — showing discharged
+    cargo and pending vessels (at anchorage or en route), with quantities converted from
+    MT to litres using standard NPA conversion factors.<br>
+    <b style='color:#ff00ff;'>Integration:</b> Enable the vessel toggle on the National Stockout
+    page to include pending cargo in the days-of-supply calculation.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1979,8 +1935,6 @@ def show_vessel_supply():
 
     st.markdown("---")
     st.markdown("### ⏳ PENDING VESSELS — Supply Pipeline")
-    st.caption("These vessels carry committed fuel not yet in depot.  Enable the toggle on "
-               "National Stockout to include this cargo in your runway calculation.")
 
     if pending.empty:
         st.success("✅ No pending vessels — all recorded vessels have discharged.")
@@ -2083,7 +2037,6 @@ def main():
         st.markdown("---")
         n_bdcs = len(BDC_USER_MAP)
 
-        # Show data availability badges
         has_bal  = bool(st.session_state.get("bdc_records"))
         has_omc  = not st.session_state.get("omc_df", pd.DataFrame()).empty
         has_dly  = not st.session_state.get("daily_df", pd.DataFrame()).empty
