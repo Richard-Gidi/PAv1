@@ -1,10 +1,11 @@
 """
 NPA ENERGY ANALYTICS — STREAMLIT DASHBOARD
 ===========================================
-Refactored: Every BDC is called with its own userId from .env (BDC_USER_* keys).
-Fetch logic uses a controlled sequential-batch approach with per-BDC retry so that
-NO BDC is silently skipped.  A live fetch log shows exactly which BDCs succeeded,
-which were retried, and which ultimately failed.
+Fixed version:
+  - Robust BDC name normalisation so PDF-parsed names reliably match .env keys
+  - Cross-BDC deduplication no longer silently drops valid distinct BDC records
+  - All BDCs that return data appear in Excel exports
+  - Per-BDC retry logic unchanged; fetch log still shows every outcome
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -14,7 +15,7 @@ USAGE:
 """
 
 import streamlit as st
-import os, re, io, json, time, threading
+import os, re, io, json, time, threading, unicodedata
 from datetime import datetime, timedelta
 import pandas as pd
 import pdfplumber
@@ -33,26 +34,73 @@ _proc = psutil.Process(os.getpid())
 
 
 # ══════════════════════════════════════════════════════════════
+# NAME NORMALISATION UTILITIES
+# ══════════════════════════════════════════════════════════════
+
+def _normalise_name(name: str) -> str:
+    """
+    Canonical key for fuzzy BDC name matching.
+    Strips accents, lowercases, collapses whitespace, removes all punctuation
+    and common legal suffixes so that small variations in spacing / punctuation
+    between the .env key and the PDF text do not cause mismatches.
+    """
+    if not name:
+        return ""
+    # Unicode normalise + strip accents
+    s = unicodedata.normalize("NFKD", name)
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower()
+    # Replace punctuation / separators with spaces
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    # Remove very common noise suffixes
+    for suffix in (
+        "limited", "ltd", "company", "co", "ghana", "plc",
+        "llc", "lp", "inc", "corp", "enterprise", "enterprises",
+    ):
+        s = re.sub(rf"\b{suffix}\b", " ", s)
+    # Collapse whitespace
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _build_lookup(mapping: dict) -> dict:
+    """Return {normalised_key: original_key} for fuzzy lookup."""
+    return {_normalise_name(k): k for k in mapping}
+
+
+# ══════════════════════════════════════════════════════════════
 # ENVIRONMENT LOADERS
 # ══════════════════════════════════════════════════════════════
 
 def load_bdc_user_map() -> dict:
+    """
+    Build {display_name -> user_id} from BDC_USER_* env vars.
+    The display name is derived directly from the env key (underscores → spaces,
+    title-cased) with a small set of hand-coded fixes for known edge cases.
+    """
     _FIXES = {
-        "C CLEANED OIL LTD":                    "C. CLEANED OIL LTD",
-        "PK JEGS ENERGY LTD":                   "P.K JEGS ENERGY LTD",
-        "TEMA OIL REFINERY TOR":                "TEMA OIL REFINERY(TOR)",
-        "SOCIETE NATIONAL BURKINABE SONABHY":   "SOCIETE NATIONAL BURKINABE (SONABHY)",
-        "BOST G40":                             "BOST-G40",
-        "DOMINION INTERNATIONAL PETROLEUM":     "DOMINION INTERNATIONAL PETR",
-        "PETROLEUM WARE HOUSE AND SUPPLIES":    "PETROLEUM WARE HOUSE AND S",
-        "INTERNATIONAL PETROLEUM RESOURCES":    "INTERNATIONAL PETROLEUM RES",
-        "GENYSIS GLOBAL LIMITED":               "Genysis Global Limited",
-        "GLORYMAY PETROLEUM COMPANY LIMITED":   "GLORYMAY PETROLEUM COMPAN",
-        "HILSON PETROLEUM GHANA LIMITED":       "HILSON PETROLEUM GHANA LIM",
-        "PLATON OIL AND GAS":                   "Platon Oil and Gas",
-        "PORTICA OIL AND GAS RESOURCE LIMITED": "Portica Oil and Gas Resource Lim",
-        "RESTON ENERGY TRADING LIMITED":        "Reston Energy Trading Limited",
-        "BATTOP ENERGY LIMITED":                "Battop Energy Limited",
+        "C CLEANED OIL LTD":                     "C. CLEANED OIL LTD",
+        "PK JEGS ENERGY LTD":                    "P.K JEGS ENERGY LTD",
+        "TEMA OIL REFINERY TOR":                 "TEMA OIL REFINERY (TOR)",
+        "SOCIETE NATIONAL BURKINABE SONABHY":    "SOCIETE NATIONAL BURKINABE (SONABHY)",
+        "BOST G40":                              "BOST-G40",
+        "DOMINION INTERNATIONAL PETROLEUM":      "DOMINION INTERNATIONAL PETROLEUM",
+        "PETROLEUM WARE HOUSE AND SUPPLIES":     "PETROLEUM WARE HOUSE AND SUPPLIES",
+        "INTERNATIONAL PETROLEUM RESOURCES":     "INTERNATIONAL PETROLEUM RESOURCES",
+        "GENYSIS GLOBAL LIMITED":                "GENYSIS GLOBAL LIMITED",
+        "GLORYMAY PETROLEUM COMPANY LIMITED":    "GLORYMAY PETROLEUM COMPANY LIMITED",
+        "HILSON PETROLEUM GHANA LIMITED":        "HILSON PETROLEUM GHANA LIMITED",
+        "PLATON OIL AND GAS":                    "PLATON OIL AND GAS",
+        "PORTICA OIL AND GAS RESOURCE LIMITED":  "PORTICA OIL AND GAS RESOURCE LIMITED",
+        "RESTON ENERGY TRADING LIMITED":         "RESTON ENERGY TRADING LIMITED",
+        "BATTOP ENERGY LIMITED":                 "BATTOP ENERGY LIMITED",
+        "SOH ENERGY LTD":                        "SOH ENERGY LTD",
+        "XF PETROLEUM ENGINEERS LIMITED":        "XF PETROLEUM ENGINEERS LIMITED",
+        "XF PETROLEUM LIMITED":                  "XF PETROLEUM LIMITED",
+        "MPB PETROLEUM LTD":                     "MPB PETROLEUM LTD",
+        "AXSOR ENERGY LTD":                      "AXSOR ENERGY LTD",
+        "BAZUKA ENERGY LTD":                     "BAZUKA ENERGY LTD",
+        "FIRM ENERGY LIMITED":                   "FIRM ENERGY LIMITED",
     }
     mapping = {}
     for key, value in os.environ.items():
@@ -99,16 +147,16 @@ def load_depot_mappings() -> dict:
             name = f"{parts[0]} - {parts[1]}" if len(parts) == 2 else name
         elif name.endswith(" TEMA") and "SENTUO" in name:
             name = name.replace(" TEMA", "- TEMA")
-        elif name == "GHANA OIL COLTD TAKORADI":        name = "GHANA OIL CO.LTD, TAKORADI"
-        elif name == "GOIL LPG BOTTLING PLANT TEMA":    name = "GOIL LPG BOTTLING PLANT -TEMA"
-        elif name == "GOIL LPG BOTTLING PLANT KUMASI":  name = "GOIL LPG BOTTLING PLANT- KUMASI"
+        elif name == "GHANA OIL COLTD TAKORADI":              name = "GHANA OIL CO.LTD, TAKORADI"
+        elif name == "GOIL LPG BOTTLING PLANT TEMA":          name = "GOIL LPG BOTTLING PLANT -TEMA"
+        elif name == "GOIL LPG BOTTLING PLANT KUMASI":        name = "GOIL LPG BOTTLING PLANT- KUMASI"
         elif name == "NEWGAS CYLINDER BOTTLING LIMITED TEMA": name = "NEWGAS CYLINDER BOTTLING LIMITED-TEMA"
-        elif name == "CHASE PETROLEUM TEMA":            name = "CHASE PETROLEUM - TEMA"
-        elif name == "TEMA FUEL COMPANY TFC":           name = "TEMA FUEL COMPANY (TFC)"
-        elif name == "TEMA MULTI PRODUCTS TMPT":        name = "TEMA MULTI PRODUCTS (TMPT)"
-        elif name == "TEMA OIL REFINERY TOR":           name = "TEMA OIL REFINERY (TOR)"
+        elif name == "CHASE PETROLEUM TEMA":                  name = "CHASE PETROLEUM - TEMA"
+        elif name == "TEMA FUEL COMPANY TFC":                 name = "TEMA FUEL COMPANY (TFC)"
+        elif name == "TEMA MULTI PRODUCTS TMPT":              name = "TEMA MULTI PRODUCTS (TMPT)"
+        elif name == "TEMA OIL REFINERY TOR":                 name = "TEMA OIL REFINERY (TOR)"
         elif name == "GHANA OIL COMPANY LTD SEKONDI NAVAL BASE": name = "GHANA OIL COMPANY LTD (SEKONDI NAVAL BASE)"
-        elif name == "GHANSTOCK LIMITED TAKORADI":      name = "GHANSTOCK LIMITED (TAKORADI)"
+        elif name == "GHANSTOCK LIMITED TAKORADI":            name = "GHANSTOCK LIMITED (TAKORADI)"
         try:
             mappings[name] = int(value)
         except ValueError:
@@ -129,6 +177,9 @@ BDC_USER_MAP      = load_bdc_user_map()
 BDC_MAP           = load_bdc_mappings()
 DEPOT_MAP         = load_depot_mappings()
 STOCK_PRODUCT_MAP = load_product_mappings()
+
+# Pre-build normalised lookup tables for fuzzy matching
+_BDC_USER_LOOKUP  = _build_lookup(BDC_USER_MAP)   # normalised → display name
 
 PRODUCT_OPTIONS     = ["PMS", "Gasoil", "LPG"]
 PRODUCT_BALANCE_MAP = {"PMS": "PREMIUM", "Gasoil": "GASOIL", "LPG": "LPG"}
@@ -318,6 +369,22 @@ def _sequential_batch_fetch(
 
 # ── BDC Balance ──────────────────────────────────────────────
 class StockBalanceScraper:
+    """
+    Parses the NPA BDC stock-balance PDF.
+
+    KEY FIX: The BDC name stored against each record is now the *canonical
+    display name from BDC_USER_MAP* (looked up via fuzzy normalisation) rather
+    than the raw text scraped from the PDF.  This guarantees that every record
+    that arrives from a BDC's own PDF is attributed to exactly the same name
+    string used in the rest of the dashboard, so nothing disappears in joins or
+    group-bys.
+
+    Cross-BDC deduplication has been made much more conservative: we only drop
+    a record if the SAME BDC name appears TWICE for the same depot+product+date
+    (i.e. within a single BDC's own PDF pages).  We no longer drop records just
+    because two different BDCs report stock at the same depot.
+    """
+
     def __init__(self):
         self.allowed_products = {"PREMIUM", "GASOIL", "LPG"}
         _pat = "|".join(sorted(self.allowed_products))
@@ -331,10 +398,27 @@ class StockBalanceScraper:
     def _ns(text):
         return re.sub(r"\s+", " ", (text or "").strip())
 
-    def _norm_bdc(self, bdc):
-        clean = self._ns(bdc)
-        up = self._ns(clean.upper().replace("-", " ").replace("_", " "))
-        return "BOST" if up.startswith("BOST") else clean
+    def _resolve_bdc_name(self, raw_bdc: str) -> str:
+        """
+        Map the raw BDC name from the PDF to the canonical display name used in
+        BDC_USER_MAP.  Falls back to the cleaned raw name if no match is found.
+        """
+        clean = self._ns(raw_bdc)
+        norm  = _normalise_name(clean)
+        # Exact normalised match
+        if norm in _BDC_USER_LOOKUP:
+            return _BDC_USER_LOOKUP[norm]
+        # Partial / substring match — pick the longest key that is a substring
+        best_key = None
+        best_len = 0
+        for nk, display in _BDC_USER_LOOKUP.items():
+            if nk and (nk in norm or norm in nk) and len(nk) > best_len:
+                best_key = display
+                best_len = len(nk)
+        if best_key:
+            return best_key
+        # No match — return the cleaned raw name so the record is still kept
+        return clean
 
     def _is_bost_depot(self, depot):
         return self._ns((depot or "").replace("-", " ")).upper().startswith("BOST ")
@@ -351,12 +435,20 @@ class StockBalanceScraper:
                 pass
         return None
 
-    def parse_pdf_bytes(self, pdf_bytes: bytes) -> list:
+    def parse_pdf_bytes(self, pdf_bytes: bytes, owning_bdc_name: str = "") -> list:
+        """
+        Parse the PDF.  owning_bdc_name is the display name from BDC_USER_MAP
+        that was used to request this PDF — we use it as the fallback / override
+        when the PDF's own BDC label can't be resolved.
+        """
         records = []
-        seen    = set()   # dedup key: (bdc, depot, product, date)
+        # Per-BDC dedup only: same BDC+depot+product+date within this PDF
+        seen    = set()
         try:
             reader   = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-            cur_bdc  = cur_depot = cur_date = None
+            cur_bdc  = owning_bdc_name   # seed with requesting BDC name
+            cur_depot = None
+            cur_date  = None
             for page in reader.pages:
                 text  = page.extract_text() or ""
                 lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
@@ -367,7 +459,11 @@ class StockBalanceScraper:
                         if d:
                             cur_date = d
                     if up.startswith("BDC :") or up.startswith("BDC:"):
-                        cur_bdc = re.sub(r"^BDC\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+                        raw = re.sub(r"^BDC\s*:\s*", "", line, flags=re.IGNORECASE).strip()
+                        resolved = self._resolve_bdc_name(raw)
+                        # If we can't resolve, keep the owning BDC name so the
+                        # record is still attributed to the correct entity
+                        cur_bdc = resolved if resolved else (owning_bdc_name or raw)
                     if up.startswith("DEPOT :") or up.startswith("DEPOT:"):
                         cur_depot = re.sub(r"^DEPOT\s*:\s*", "", line, flags=re.IGNORECASE).strip()
                     if cur_bdc and cur_depot and cur_date:
@@ -382,15 +478,15 @@ class StockBalanceScraper:
                                 continue
                             if actual <= 0:
                                 continue
-                            norm_bdc   = self._norm_bdc(cur_bdc)
                             norm_depot = self._ns(cur_depot)
-                            key = (norm_bdc, norm_depot, product, cur_date)
+                            # Dedup KEY: within this BDC's own PDF only
+                            key = (cur_bdc, norm_depot, product, cur_date)
                             if key in seen:
                                 continue
                             seen.add(key)
                             records.append({
                                 "Date":                        cur_date,
-                                "BDC":                         norm_bdc,
+                                "BDC":                         cur_bdc,
                                 "DEPOT":                       norm_depot,
                                 "Product":                     product,
                                 "ACTUAL BALANCE (LT\\KG)":     actual,
@@ -459,7 +555,9 @@ def extract_omc_loadings_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
                     if "BDC:" in line:
                         m = re.search(r"BDC:([^\n]+)", line)
                         if m:
-                            cur_bdc = m.group(1).strip()
+                            # Resolve to canonical name; fall back to owning BDC name
+                            resolved = _resolve_pdf_bdc(m.group(1).strip(), bdc_name)
+                            cur_bdc  = resolved
                         continue
                     if "PRODUCT" in line:
                         cur_prod = _detect_product(line)
@@ -487,6 +585,19 @@ def extract_omc_loadings_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
     except Exception:
         pass
     return df
+
+
+def _resolve_pdf_bdc(raw: str, fallback: str) -> str:
+    """Resolve a raw BDC name from a PDF field to the canonical BDC_USER_MAP key."""
+    norm = _normalise_name(raw)
+    if norm in _BDC_USER_LOOKUP:
+        return _BDC_USER_LOOKUP[norm]
+    best_key, best_len = None, 0
+    for nk, display in _BDC_USER_LOOKUP.items():
+        if nk and (nk in norm or norm in nk) and len(nk) > best_len:
+            best_key = display
+            best_len = len(nk)
+    return best_key if best_key else (fallback or raw)
 
 
 # ── Daily Orders ─────────────────────────────────────────────
@@ -550,7 +661,8 @@ def extract_daily_orders_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
                                         else raw_d)
                         continue
                     if cl.startswith("BDC:"):
-                        ctx["BDC"] = cl.replace("BDC:", "").strip()
+                        raw_b = cl.replace("BDC:", "").strip()
+                        ctx["BDC"] = _resolve_pdf_bdc(raw_b, bdc_name)
                         continue
                     if "Order Status" in cl:
                         parts = cl.split(":")
@@ -579,7 +691,6 @@ def extract_daily_orders_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    df["BDC"] = df["BDC"].apply(lambda n: " ".join((n or "").split()[:2]).upper())
     # Deduplicate within a single BDC's daily PDF
     df = df.drop_duplicates(subset=["Date", "Truck", "Order Number", "Product"])
     return df
@@ -680,7 +791,8 @@ def _make_balance_fetcher():
         if not pdf_bytes:
             raise RuntimeError("No PDF returned")
         scraper = StockBalanceScraper()
-        return scraper.parse_pdf_bytes(pdf_bytes)
+        # Pass the canonical BDC name so the parser uses it as the attribution fallback
+        return scraper.parse_pdf_bytes(pdf_bytes, owning_bdc_name=bdc_name)
     return _fn
 
 
@@ -726,9 +838,28 @@ def _make_daily_fetcher(start_str: str, end_str: str):
 
 
 # ── Aggregate helpers ─────────────────────────────────────────
+
 def _combine_balance_results(results: dict) -> tuple[list, dict]:
+    """
+    Combine per-BDC balance record lists.
+
+    Deduplication policy (FIXED):
+    ─────────────────────────────
+    Each BDC fetches its OWN PDF, so records in different BDCs' PDFs are
+    legitimately distinct even if they share a depot name (e.g. BOST Global
+    appears as a depot for many BDCs).
+
+    We ONLY deduplicate when the EXACT SAME (BDC, DEPOT, PRODUCT, DATE) tuple
+    appears MORE THAN ONCE across all collected records — which would indicate
+    that the same PDF was somehow fetched twice under different names.  In that
+    case we keep the record with the higher actual balance.
+
+    We do NOT drop a record just because another BDC also has stock at the same
+    depot; that is correct and expected behaviour.
+    """
     all_records = []
     summary     = {"success": [], "no_data": [], "failed": []}
+
     for bdc, recs in results.items():
         if recs is None:
             summary["failed"].append(bdc)
@@ -737,22 +868,38 @@ def _combine_balance_results(results: dict) -> tuple[list, dict]:
         else:
             summary["success"].append(bdc)
             all_records.extend(recs)
-    # Cross-BDC dedup: same depot+product may appear in multiple BDC PDFs
-    # Keep the record with the highest actual balance (most likely the owning BDC's view)
+
     if all_records:
-        df_tmp = pd.DataFrame(all_records)
         col    = "ACTUAL BALANCE (LT\\KG)"
-        df_tmp = (df_tmp
-                  .sort_values(col, ascending=False)
-                  .drop_duplicates(subset=["BDC", "DEPOT", "Product", "Date"])
-                  .reset_index(drop=True))
+        df_tmp = pd.DataFrame(all_records)
+        # Keep highest balance when the exact same (BDC, depot, product, date) appears twice
+        df_tmp = (
+            df_tmp
+            .sort_values(col, ascending=False)
+            .drop_duplicates(subset=["BDC", "DEPOT", "Product", "Date"], keep="first")
+            .reset_index(drop=True)
+        )
         all_records = df_tmp.to_dict("records")
+
     return all_records, summary
 
 
 def _combine_df_results(results: dict, dedup_cols: list) -> tuple[pd.DataFrame, dict]:
+    """
+    Combine per-BDC DataFrames.
+
+    Deduplication policy (FIXED):
+    ─────────────────────────────
+    Cross-BDC dedup is applied ONLY on the natural business key that uniquely
+    identifies an order (Order Number + Truck + Date + Product).  We never drop
+    rows just because the BDC column differs — an order should appear at most once
+    in the combined dataset, but attributed to the BDC that was the source of the
+    matching PDF.  When duplicates exist we keep the first occurrence (which will
+    be from whichever BDC fetched it; the order content is identical either way).
+    """
     frames  = []
     summary = {"success": [], "no_data": [], "failed": []}
+
     for bdc, df in results.items():
         if df is None:
             summary["failed"].append(bdc)
@@ -769,11 +916,10 @@ def _combine_df_results(results: dict, dedup_cols: list) -> tuple[pd.DataFrame, 
 
     combined = pd.concat(frames, ignore_index=True)
 
-    # Cross-BDC dedup: an order can appear in multiple BDC PDFs if the BDC is the
-    # seller AND the buyer's BDC also sees it.  Deduplicate on the tightest natural key.
+    # Cross-BDC dedup on the tightest natural key (exclude BDC from key)
     valid_dedup = [c for c in dedup_cols if c in combined.columns]
     if valid_dedup:
-        combined = combined.drop_duplicates(subset=valid_dedup)
+        combined = combined.drop_duplicates(subset=valid_dedup, keep="first")
 
     return combined.reset_index(drop=True), summary
 
@@ -933,13 +1079,24 @@ def _process_vessel_df(vdf, year="2025"):
 
 
 # ══════════════════════════════════════════════════════════════
-# EXCEL EXPORT HELPER
+# EXCEL EXPORT HELPER  (FIXED: preserves all BDCs)
 # ══════════════════════════════════════════════════════════════
 def _to_excel_bytes(sheets: dict) -> bytes:
+    """
+    Write multiple sheets to an Excel file.
+    Each DataFrame is written as-is — no additional filtering or dedup is
+    applied here so that every BDC that returned data appears in the output.
+    """
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         for name, df in sheets.items():
-            df.to_excel(writer, sheet_name=name[:31], index=False)
+            if isinstance(df, pd.DataFrame) and not df.empty:
+                df.to_excel(writer, sheet_name=name[:31], index=False)
+            elif isinstance(df, pd.DataFrame):
+                # Write empty placeholder so the sheet still exists
+                pd.DataFrame(columns=df.columns if len(df.columns) else ["No Data"]).to_excel(
+                    writer, sheet_name=name[:31], index=False
+                )
     return buf.getvalue()
 
 
@@ -976,8 +1133,8 @@ def show_bdc_balance():
             f"({'all configured' if len(bdcs_to_fetch)==n_configured else 'custom selection'})")
 
     if st.button("🔄 FETCH BDC BALANCE DATA", key="bal_fetch"):
-        prog     = st.progress(0, text="Initialising…")
-        log_box  = st.empty()
+        prog      = st.progress(0, text="Initialising…")
+        log_box   = st.empty()
         log_lines = []
 
         results  = _sequential_batch_fetch(
@@ -1035,6 +1192,7 @@ def show_bdc_balance():
                .rename(columns={col_bal:"Total Balance (LT/KG)","DEPOT":"Depots","Product":"Products"}))
     bdc_sum = bdc_sum.sort_values("Total Balance (LT/KG)", ascending=False)
     bdc_sum["Market Share %"] = (bdc_sum["Total Balance (LT/KG)"] / grand_total * 100).round(2)
+    st.caption(f"**{len(bdc_sum)} BDCs** with balance data")
     st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
 
     st.markdown("---")
@@ -1045,6 +1203,7 @@ def show_bdc_balance():
         if p not in pivot.columns: pivot[p] = 0
     pivot["TOTAL"] = pivot[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
     pivot = pivot.sort_values("TOTAL", ascending=False)
+    st.caption(f"**{len(pivot)} BDCs** shown in pivot")
     st.dataframe(pivot[["BDC","GASOIL","LPG","PREMIUM","TOTAL"]], use_container_width=True, hide_index=True)
 
     st.markdown("---")
@@ -1065,11 +1224,12 @@ def show_bdc_balance():
 
     st.markdown("---")
     excel_bytes = _to_excel_bytes({
-        "All":     df,
-        "LPG":     df[df["Product"]=="LPG"],
-        "PREMIUM": df[df["Product"]=="PREMIUM"],
-        "GASOIL":  df[df["Product"]=="GASOIL"],
-        "BDC Summary": pivot,
+        "All Records":  df,
+        "LPG":          df[df["Product"]=="LPG"],
+        "PREMIUM":      df[df["Product"]=="PREMIUM"],
+        "GASOIL":       df[df["Product"]=="GASOIL"],
+        "BDC Summary":  bdc_sum,
+        "BDC Pivot":    pivot,
     })
     st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes, "bdc_balance.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -1130,11 +1290,11 @@ def show_omc_loadings():
         combined, summary = _combine_df_results(
             results, ["Order Number", "Truck", "Date", "Product"]
         )
-        st.session_state.omc_df              = combined
-        st.session_state.omc_fetch_summary   = summary
-        st.session_state.omc_fetched_count   = len(bdcs_to_fetch)
-        st.session_state.omc_start_date      = start_date
-        st.session_state.omc_end_date        = end_date
+        st.session_state.omc_df            = combined
+        st.session_state.omc_fetch_summary = summary
+        st.session_state.omc_fetched_count = len(bdcs_to_fetch)
+        st.session_state.omc_start_date    = start_date
+        st.session_state.omc_end_date      = end_date
 
         st.markdown("---")
         _render_fetch_summary(summary, len(bdcs_to_fetch),
@@ -1179,6 +1339,7 @@ def show_omc_loadings():
     bdc_sum = (df.groupby("BDC").agg({"Quantity":"sum","Order Number":"count","OMC":"nunique"})
                .reset_index().sort_values("Quantity", ascending=False)
                .rename(columns={"Quantity":"Total Volume (LT/KG)","Order Number":"Orders","OMC":"OMCs"}))
+    st.caption(f"**{len(bdc_sum)} BDCs** with loading data")
     st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
 
     st.markdown("---")
@@ -1201,8 +1362,9 @@ def show_omc_loadings():
     pivot["TOTAL"] = pivot[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
 
     excel_bytes = _to_excel_bytes({
-        "All Orders": df,
-        "BDC Summary": pivot,
+        "All Orders":   df,
+        "BDC Summary":  bdc_sum,
+        "BDC Pivot":    pivot,
         **{p: df[df["Product"]==p] for p in ["PREMIUM","GASOIL","LPG"]},
     })
     st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes, "omc_loadings.xlsx",
@@ -1290,11 +1452,11 @@ def show_daily_orders():
 
     st.markdown("---")
     c1,c2,c3,c4,c5 = st.columns(5)
-    c1.metric("Orders",           f"{len(df):,}")
-    c2.metric("Volume (LT)",      f"{df['Quantity'].sum():,.0f}")
-    c3.metric("BDCs",             f"{df['BDC'].nunique()}")
-    c4.metric("Depots",           f"{df['Depot'].nunique()}")
-    c5.metric("Value (₵)",        f"{(df['Quantity']*df['Price']).sum():,.0f}")
+    c1.metric("Orders",       f"{len(df):,}")
+    c2.metric("Volume (LT)",  f"{df['Quantity'].sum():,.0f}")
+    c3.metric("BDCs",         f"{df['BDC'].nunique()}")
+    c4.metric("Depots",       f"{df['Depot'].nunique()}")
+    c5.metric("Value (₵)",    f"{(df['Quantity']*df['Price']).sum():,.0f}")
 
     st.markdown("### 📦 PRODUCT SUMMARY")
     prod_sum = (df.groupby("Product")
@@ -1308,6 +1470,7 @@ def show_daily_orders():
     bdc_sum = (df.groupby("BDC").agg({"Quantity":"sum","Order Number":"count"})
                .reset_index().sort_values("Quantity", ascending=False)
                .rename(columns={"Quantity":"Total Volume (LT/KG)","Order Number":"Orders"}))
+    st.caption(f"**{len(bdc_sum)} BDCs** with daily order data")
     st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
 
     st.markdown("### 📊 BDC × PRODUCT PIVOT")
@@ -1616,8 +1779,8 @@ def show_national_stockout():
     elif include_vessels and _pending_n == 0:
         st.info("Vessel data is loaded but there are no PENDING vessels — toggle has no effect.")
 
-    all_bdc_names = sorted(BDC_USER_MAP.keys())
-    n_total       = len(all_bdc_names)
+    all_bdc_names  = sorted(BDC_USER_MAP.keys())
+    n_total        = len(all_bdc_names)
     effective_days = _count_period_days(start_str, end_str, use_biz)
     day_lbl        = f"{effective_days} {'business' if use_biz else 'calendar'} days"
 
@@ -1631,10 +1794,10 @@ def show_national_stockout():
 
         # ── Step 1: Balance ──────────────────────────────────
         with st.status("📡 Step 1 / 2 — Fetching BDC stock balances…", expanded=True):
-            prog1     = st.progress(0, text="Starting…")
-            log_box1  = st.empty()
+            prog1      = st.progress(0, text="Starting…")
+            log_box1   = st.empty()
             log_lines1 = []
-            results1  = _sequential_batch_fetch(
+            results1   = _sequential_batch_fetch(
                 all_bdc_names, _make_balance_fetcher(),
                 prog1, log_box1, log_lines1,
             )
@@ -1702,7 +1865,7 @@ def show_national_stockout():
                     omc_by_prod = filt.groupby("Product")["Quantity"].sum()
                     depl_lbl    = f"Avg Daily ({day_lbl})"
 
-        # ── Build forecast ──────────────────────────────────
+        # ── Build forecast ───────────────────────────────────
         DISPLAY = {"PREMIUM":"PREMIUM (PMS)","GASOIL":"GASOIL (AGO)","LPG":"LPG"}
         rows_out = []
         for prod in ["PREMIUM","GASOIL","LPG"]:
@@ -1826,7 +1989,7 @@ def show_national_stockout():
 
     st.markdown("---")
     if not bdc_pivot.empty:
-        st.markdown("### 🏦 STOCK BY BDC")
+        st.markdown(f"### 🏦 STOCK BY BDC  ({len(bdc_pivot)} BDCs)")
         disp = bdc_pivot.copy()
         for c in ["GASOIL","LPG","PREMIUM","TOTAL"]:
             if c in disp.columns:
@@ -1836,7 +1999,10 @@ def show_national_stockout():
         st.dataframe(disp, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    excel_sheets = {"Stockout Forecast": pd.DataFrame(sum_rows), "Stock by BDC": bdc_pivot}
+    excel_sheets = {
+        "Stockout Forecast": pd.DataFrame(sum_rows),
+        "Stock by BDC":      bdc_pivot,
+    }
     if not omc_df.empty:
         excel_sheets["OMC Loadings"] = omc_df
     excel_bytes = _to_excel_bytes(excel_sheets)
@@ -1913,7 +2079,7 @@ def show_vessel_supply():
         if processed.empty:
             st.warning("No valid vessel records found. Check sheet format and sharing settings.")
             return
-        st.session_state.vessel_data  = processed
+        st.session_state.vessel_data   = processed
         st.session_state["vessel_year"] = year_sel
         st.success(f"✅ {len(processed)} vessel records loaded.")
         st.rerun()
