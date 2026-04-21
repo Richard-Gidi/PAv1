@@ -6,6 +6,13 @@ Fixed version:
   - Cross-BDC deduplication no longer silently drops valid distinct BDC records
   - All BDCs that return data appear in Excel exports
   - Per-BDC retry logic unchanged; fetch log still shows every outcome
+  - DETERMINISTIC FETCH FIX:
+      * Increased MAX_RETRIES to 5 with true exponential back-off
+      * Increased HTTP timeout to 90 s
+      * Two-pass fetch: after the first sweep, any BDC that returned None/empty
+        is retried in a slower sequential second pass
+      * "Merge with previous" option so consecutive downloads are UNIONED,
+        keeping the best (highest balance / most records) from each run
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -38,33 +45,22 @@ _proc = psutil.Process(os.getpid())
 # ══════════════════════════════════════════════════════════════
 
 def _normalise_name(name: str) -> str:
-    """
-    Canonical key for fuzzy BDC name matching.
-    Strips accents, lowercases, collapses whitespace, removes all punctuation
-    and common legal suffixes so that small variations in spacing / punctuation
-    between the .env key and the PDF text do not cause mismatches.
-    """
     if not name:
         return ""
-    # Unicode normalise + strip accents
     s = unicodedata.normalize("NFKD", name)
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = s.lower()
-    # Replace punctuation / separators with spaces
     s = re.sub(r"[^a-z0-9\s]", " ", s)
-    # Remove very common noise suffixes
     for suffix in (
         "limited", "ltd", "company", "co", "ghana", "plc",
         "llc", "lp", "inc", "corp", "enterprise", "enterprises",
     ):
         s = re.sub(rf"\b{suffix}\b", " ", s)
-    # Collapse whitespace
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
 
 def _build_lookup(mapping: dict) -> dict:
-    """Return {normalised_key: original_key} for fuzzy lookup."""
     return {_normalise_name(k): k for k in mapping}
 
 
@@ -73,11 +69,6 @@ def _build_lookup(mapping: dict) -> dict:
 # ══════════════════════════════════════════════════════════════
 
 def load_bdc_user_map() -> dict:
-    """
-    Build {display_name -> user_id} from BDC_USER_* env vars.
-    The display name is derived directly from the env key (underscores → spaces,
-    title-cased) with a small set of hand-coded fixes for known edge cases.
-    """
     _FIXES = {
         "C CLEANED OIL LTD":                     "C. CLEANED OIL LTD",
         "PK JEGS ENERGY LTD":                    "P.K JEGS ENERGY LTD",
@@ -178,8 +169,7 @@ BDC_MAP           = load_bdc_mappings()
 DEPOT_MAP         = load_depot_mappings()
 STOCK_PRODUCT_MAP = load_product_mappings()
 
-# Pre-build normalised lookup tables for fuzzy matching
-_BDC_USER_LOOKUP  = _build_lookup(BDC_USER_MAP)   # normalised → display name
+_BDC_USER_LOOKUP  = _build_lookup(BDC_USER_MAP)
 
 PRODUCT_OPTIONS     = ["PMS", "Gasoil", "LPG"]
 PRODUCT_BALANCE_MAP = {"PMS": "PREMIUM", "Gasoil": "GASOIL", "LPG": "LPG"}
@@ -277,8 +267,11 @@ _HTTP_HEADERS = {
     "Connection": "keep-alive",
 }
 
+# ── Increased timeout: 90 s (was 60 s) ───────────────────────
+_HTTP_TIMEOUT = 90
 
-def _fetch_pdf(url: str, params: dict, timeout: int = 60) -> bytes | None:
+
+def _fetch_pdf(url: str, params: dict, timeout: int = _HTTP_TIMEOUT) -> bytes | None:
     """Single HTTP GET that returns raw bytes only if a valid PDF is returned."""
     try:
         r = _requests.get(url, params=params, headers=_HTTP_HEADERS, timeout=timeout)
@@ -289,11 +282,16 @@ def _fetch_pdf(url: str, params: dict, timeout: int = 60) -> bytes | None:
 
 
 # ══════════════════════════════════════════════════════════════
-# ROBUST BATCH FETCHER
+# ROBUST BATCH FETCHER  ← KEY FIX
 # ══════════════════════════════════════════════════════════════
 BATCH_SIZE  = 5
-MAX_RETRIES = 3
-RETRY_DELAY = 2
+MAX_RETRIES = 5        # was 3 — more attempts before giving up
+RETRY_DELAY = 3        # base seconds; actual = RETRY_DELAY * 2^(attempt-1)
+
+# Second-pass: BDCs that failed / returned nothing in the first sweep
+# are retried one-at-a-time with a longer delay between requests.
+SECOND_PASS_DELAY   = 4   # seconds between sequential second-pass requests
+SECOND_PASS_RETRIES = 3   # attempts per BDC in the second pass
 
 
 def _sequential_batch_fetch(
@@ -302,6 +300,7 @@ def _sequential_batch_fetch(
     progress_bar,
     status_text,
     log_lines: list,
+    second_pass: bool = True,   # NEW — enable second-pass retry
 ) -> dict:
     import concurrent.futures as _cf
 
@@ -310,17 +309,19 @@ def _sequential_batch_fetch(
     lock    = threading.Lock()
     done_n  = [0]
 
-    def _attempt(bdc_name: str):
+    # ── exponential back-off retry ────────────────────────────
+    def _attempt(bdc_name: str, max_tries: int = MAX_RETRIES):
         last_err = None
-        for attempt in range(1, MAX_RETRIES + 1):
+        for attempt in range(1, max_tries + 1):
             try:
                 result = fetch_fn(bdc_name)
                 return bdc_name, result, attempt, None
             except Exception as exc:
                 last_err = exc
-                if attempt < MAX_RETRIES:
-                    time.sleep(RETRY_DELAY * attempt)
-        return bdc_name, None, MAX_RETRIES, str(last_err)
+                if attempt < max_tries:
+                    # Exponential back-off: 3 s, 6 s, 12 s, 24 s …
+                    time.sleep(RETRY_DELAY * (2 ** (attempt - 1)))
+        return bdc_name, None, max_tries, str(last_err)
 
     batches = [bdc_list[i: i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
 
@@ -335,7 +336,7 @@ def _sequential_batch_fetch(
                     done_n[0] += 1
                     progress_bar.progress(
                         done_n[0] / total,
-                        text=f"Fetched {done_n[0]} / {total} BDCs…",
+                        text=f"Pass 1 — fetched {done_n[0]} / {total} BDCs…",
                     )
 
                 if err:
@@ -344,6 +345,9 @@ def _sequential_batch_fetch(
                 elif result is None:
                     icon = "⚠️"
                     note = "No data / empty PDF"
+                elif _result_is_empty(result):
+                    icon = "⚠️"
+                    note = "Empty dataset"
                 elif attempts > 1:
                     icon = "🔄"
                     note = f"OK (needed {attempts} attempts)"
@@ -360,7 +364,57 @@ def _sequential_batch_fetch(
         if batch_idx < len(batches) - 1:
             time.sleep(0.5)
 
+    # ── SECOND PASS: retry failures / no-data sequentially ───
+    if second_pass:
+        retry_bdcs = [
+            b for b, r in results.items()
+            if r is None or _result_is_empty(r)
+        ]
+        if retry_bdcs:
+            log_lines.append(
+                f"━━━ Pass 2: retrying {len(retry_bdcs)} BDC(s) sequentially ━━━"
+            )
+            status_text.markdown(
+                f"<div class='fetch-log'>{'<br>'.join(log_lines[-12:])}</div>",
+                unsafe_allow_html=True,
+            )
+            for idx, bdc_name in enumerate(retry_bdcs):
+                time.sleep(SECOND_PASS_DELAY)
+                _, result, attempts, err = _attempt(bdc_name, max_tries=SECOND_PASS_RETRIES)
+                # Only update if the second pass actually got something
+                if result is not None and not _result_is_empty(result):
+                    results[bdc_name] = result
+                    icon = "🔄"
+                    note = f"Pass-2 OK (attempt {attempts})"
+                elif err:
+                    icon = "❌"
+                    note = f"Pass-2 FAILED — {err}"
+                else:
+                    icon = "⚠️"
+                    note = "Pass-2 still no data"
+
+                log_lines.append(f"{icon} [P2] {bdc_name}: {note}")
+                status_text.markdown(
+                    f"<div class='fetch-log'>{'<br>'.join(log_lines[-12:])}</div>",
+                    unsafe_allow_html=True,
+                )
+                progress_bar.progress(
+                    1.0,
+                    text=f"Pass 2 — {idx+1}/{len(retry_bdcs)} retried",
+                )
+
     return results
+
+
+def _result_is_empty(result) -> bool:
+    """Return True when a fetch result carries no usable rows."""
+    if result is None:
+        return True
+    if isinstance(result, list):
+        return len(result) == 0
+    if isinstance(result, pd.DataFrame):
+        return result.empty
+    return False
 
 
 # ══════════════════════════════════════════════════════════════
@@ -369,22 +423,6 @@ def _sequential_batch_fetch(
 
 # ── BDC Balance ──────────────────────────────────────────────
 class StockBalanceScraper:
-    """
-    Parses the NPA BDC stock-balance PDF.
-
-    KEY FIX: The BDC name stored against each record is now the *canonical
-    display name from BDC_USER_MAP* (looked up via fuzzy normalisation) rather
-    than the raw text scraped from the PDF.  This guarantees that every record
-    that arrives from a BDC's own PDF is attributed to exactly the same name
-    string used in the rest of the dashboard, so nothing disappears in joins or
-    group-bys.
-
-    Cross-BDC deduplication has been made much more conservative: we only drop
-    a record if the SAME BDC name appears TWICE for the same depot+product+date
-    (i.e. within a single BDC's own PDF pages).  We no longer drop records just
-    because two different BDCs report stock at the same depot.
-    """
-
     def __init__(self):
         self.allowed_products = {"PREMIUM", "GASOIL", "LPG"}
         _pat = "|".join(sorted(self.allowed_products))
@@ -399,16 +437,10 @@ class StockBalanceScraper:
         return re.sub(r"\s+", " ", (text or "").strip())
 
     def _resolve_bdc_name(self, raw_bdc: str) -> str:
-        """
-        Map the raw BDC name from the PDF to the canonical display name used in
-        BDC_USER_MAP.  Falls back to the cleaned raw name if no match is found.
-        """
         clean = self._ns(raw_bdc)
         norm  = _normalise_name(clean)
-        # Exact normalised match
         if norm in _BDC_USER_LOOKUP:
             return _BDC_USER_LOOKUP[norm]
-        # Partial / substring match — pick the longest key that is a substring
         best_key = None
         best_len = 0
         for nk, display in _BDC_USER_LOOKUP.items():
@@ -417,7 +449,6 @@ class StockBalanceScraper:
                 best_len = len(nk)
         if best_key:
             return best_key
-        # No match — return the cleaned raw name so the record is still kept
         return clean
 
     def _is_bost_depot(self, depot):
@@ -436,17 +467,11 @@ class StockBalanceScraper:
         return None
 
     def parse_pdf_bytes(self, pdf_bytes: bytes, owning_bdc_name: str = "") -> list:
-        """
-        Parse the PDF.  owning_bdc_name is the display name from BDC_USER_MAP
-        that was used to request this PDF — we use it as the fallback / override
-        when the PDF's own BDC label can't be resolved.
-        """
         records = []
-        # Per-BDC dedup only: same BDC+depot+product+date within this PDF
         seen    = set()
         try:
             reader   = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-            cur_bdc  = owning_bdc_name   # seed with requesting BDC name
+            cur_bdc  = owning_bdc_name
             cur_depot = None
             cur_date  = None
             for page in reader.pages:
@@ -461,8 +486,6 @@ class StockBalanceScraper:
                     if up.startswith("BDC :") or up.startswith("BDC:"):
                         raw = re.sub(r"^BDC\s*:\s*", "", line, flags=re.IGNORECASE).strip()
                         resolved = self._resolve_bdc_name(raw)
-                        # If we can't resolve, keep the owning BDC name so the
-                        # record is still attributed to the correct entity
                         cur_bdc = resolved if resolved else (owning_bdc_name or raw)
                     if up.startswith("DEPOT :") or up.startswith("DEPOT:"):
                         cur_depot = re.sub(r"^DEPOT\s*:\s*", "", line, flags=re.IGNORECASE).strip()
@@ -479,7 +502,6 @@ class StockBalanceScraper:
                             if actual <= 0:
                                 continue
                             norm_depot = self._ns(cur_depot)
-                            # Dedup KEY: within this BDC's own PDF only
                             key = (cur_bdc, norm_depot, product, cur_date)
                             if key in seen:
                                 continue
@@ -555,7 +577,6 @@ def extract_omc_loadings_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
                     if "BDC:" in line:
                         m = re.search(r"BDC:([^\n]+)", line)
                         if m:
-                            # Resolve to canonical name; fall back to owning BDC name
                             resolved = _resolve_pdf_bdc(m.group(1).strip(), bdc_name)
                             cur_bdc  = resolved
                         continue
@@ -577,7 +598,6 @@ def extract_omc_loadings_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
         if col not in df.columns:
             df[col] = ""
     df = df[_ONLY_COLS]
-    # Deduplicate within a single BDC's PDF on order + truck
     df = df.drop_duplicates(subset=["Order Number", "Truck", "Date", "Product"])
     try:
         ds = pd.to_datetime(df["Date"], format="%Y/%m/%d", errors="coerce")
@@ -588,7 +608,6 @@ def extract_omc_loadings_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
 
 
 def _resolve_pdf_bdc(raw: str, fallback: str) -> str:
-    """Resolve a raw BDC name from a PDF field to the canonical BDC_USER_MAP key."""
     norm = _normalise_name(raw)
     if norm in _BDC_USER_LOOKUP:
         return _BDC_USER_LOOKUP[norm]
@@ -691,7 +710,6 @@ def extract_daily_orders_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    # Deduplicate within a single BDC's daily PDF
     df = df.drop_duplicates(subset=["Date", "Truck", "Order Number", "Product"])
     return df
 
@@ -791,7 +809,6 @@ def _make_balance_fetcher():
         if not pdf_bytes:
             raise RuntimeError("No PDF returned")
         scraper = StockBalanceScraper()
-        # Pass the canonical BDC name so the parser uses it as the attribution fallback
         return scraper.parse_pdf_bytes(pdf_bytes, owning_bdc_name=bdc_name)
     return _fn
 
@@ -837,26 +854,54 @@ def _make_daily_fetcher(start_str: str, end_str: str):
     return _fn
 
 
+# ══════════════════════════════════════════════════════════════
+# MERGE HELPERS  ← NEW: union two runs, keep best data per BDC
+# ══════════════════════════════════════════════════════════════
+
+def _merge_balance_records(existing: list, new_records: list) -> list:
+    """
+    Union two lists of balance records.
+    When the same (BDC, DEPOT, Product, Date) appears in both, keep whichever
+    has the higher actual balance (most recent / most complete fetch wins).
+    """
+    if not existing:
+        return new_records
+    if not new_records:
+        return existing
+
+    col = "ACTUAL BALANCE (LT\\KG)"
+    df_old = pd.DataFrame(existing)
+    df_new = pd.DataFrame(new_records)
+    combined = pd.concat([df_old, df_new], ignore_index=True)
+    combined = (
+        combined
+        .sort_values(col, ascending=False)
+        .drop_duplicates(subset=["BDC", "DEPOT", "Product", "Date"], keep="first")
+        .reset_index(drop=True)
+    )
+    return combined.to_dict("records")
+
+
+def _merge_dataframes(existing: pd.DataFrame, new_df: pd.DataFrame,
+                      dedup_cols: list) -> pd.DataFrame:
+    """
+    Union two DataFrames, deduplicating on natural key columns.
+    Rows present in new_df take precedence (placed first before drop_duplicates).
+    """
+    if existing is None or existing.empty:
+        return new_df
+    if new_df is None or new_df.empty:
+        return existing
+    combined = pd.concat([new_df, existing], ignore_index=True)
+    valid_dedup = [c for c in dedup_cols if c in combined.columns]
+    if valid_dedup:
+        combined = combined.drop_duplicates(subset=valid_dedup, keep="first")
+    return combined.reset_index(drop=True)
+
+
 # ── Aggregate helpers ─────────────────────────────────────────
 
 def _combine_balance_results(results: dict) -> tuple[list, dict]:
-    """
-    Combine per-BDC balance record lists.
-
-    Deduplication policy (FIXED):
-    ─────────────────────────────
-    Each BDC fetches its OWN PDF, so records in different BDCs' PDFs are
-    legitimately distinct even if they share a depot name (e.g. BOST Global
-    appears as a depot for many BDCs).
-
-    We ONLY deduplicate when the EXACT SAME (BDC, DEPOT, PRODUCT, DATE) tuple
-    appears MORE THAN ONCE across all collected records — which would indicate
-    that the same PDF was somehow fetched twice under different names.  In that
-    case we keep the record with the higher actual balance.
-
-    We do NOT drop a record just because another BDC also has stock at the same
-    depot; that is correct and expected behaviour.
-    """
     all_records = []
     summary     = {"success": [], "no_data": [], "failed": []}
 
@@ -872,7 +917,6 @@ def _combine_balance_results(results: dict) -> tuple[list, dict]:
     if all_records:
         col    = "ACTUAL BALANCE (LT\\KG)"
         df_tmp = pd.DataFrame(all_records)
-        # Keep highest balance when the exact same (BDC, depot, product, date) appears twice
         df_tmp = (
             df_tmp
             .sort_values(col, ascending=False)
@@ -885,18 +929,6 @@ def _combine_balance_results(results: dict) -> tuple[list, dict]:
 
 
 def _combine_df_results(results: dict, dedup_cols: list) -> tuple[pd.DataFrame, dict]:
-    """
-    Combine per-BDC DataFrames.
-
-    Deduplication policy (FIXED):
-    ─────────────────────────────
-    Cross-BDC dedup is applied ONLY on the natural business key that uniquely
-    identifies an order (Order Number + Truck + Date + Product).  We never drop
-    rows just because the BDC column differs — an order should appear at most once
-    in the combined dataset, but attributed to the BDC that was the source of the
-    matching PDF.  When duplicates exist we keep the first occurrence (which will
-    be from whichever BDC fetched it; the order content is identical either way).
-    """
     frames  = []
     summary = {"success": [], "no_data": [], "failed": []}
 
@@ -915,8 +947,6 @@ def _combine_df_results(results: dict, dedup_cols: list) -> tuple[pd.DataFrame, 
         return pd.DataFrame(), summary
 
     combined = pd.concat(frames, ignore_index=True)
-
-    # Cross-BDC dedup on the tightest natural key (exclude BDC from key)
     valid_dedup = [c for c in dedup_cols if c in combined.columns]
     if valid_dedup:
         combined = combined.drop_duplicates(subset=valid_dedup, keep="first")
@@ -1079,21 +1109,15 @@ def _process_vessel_df(vdf, year="2025"):
 
 
 # ══════════════════════════════════════════════════════════════
-# EXCEL EXPORT HELPER  (FIXED: preserves all BDCs)
+# EXCEL EXPORT HELPER
 # ══════════════════════════════════════════════════════════════
 def _to_excel_bytes(sheets: dict) -> bytes:
-    """
-    Write multiple sheets to an Excel file.
-    Each DataFrame is written as-is — no additional filtering or dedup is
-    applied here so that every BDC that returned data appears in the output.
-    """
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         for name, df in sheets.items():
             if isinstance(df, pd.DataFrame) and not df.empty:
                 df.to_excel(writer, sheet_name=name[:31], index=False)
             elif isinstance(df, pd.DataFrame):
-                # Write empty placeholder so the sheet still exists
                 pd.DataFrame(columns=df.columns if len(df.columns) else ["No Data"]).to_excel(
                     writer, sheet_name=name[:31], index=False
                 )
@@ -1129,6 +1153,17 @@ def show_bdc_balance():
         fetch_all_flag = st.checkbox("Fetch ALL BDCs", value=True, key="bal_fetch_all")
 
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
+
+    # ── Merge-with-previous option ────────────────────────────
+    has_previous = bool(st.session_state.get("bdc_records"))
+    merge_prev   = False
+    if has_previous:
+        merge_prev = st.checkbox(
+            "🔀 Merge this fetch with previous results "
+            "(adds any BDCs that were missing last time, keeps best balance for duplicates)",
+            value=True, key="bal_merge_prev",
+        )
+
     st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** will be queried  "
             f"({'all configured' if len(bdcs_to_fetch)==n_configured else 'custom selection'})")
 
@@ -1141,10 +1176,18 @@ def show_bdc_balance():
             bdcs_to_fetch,
             _make_balance_fetcher(),
             prog, log_box, log_lines,
+            second_pass=True,
         )
         prog.progress(1.0, text="✅ Fetch complete")
 
         all_records, summary = _combine_balance_results(results)
+
+        # Merge with previous run if requested
+        if merge_prev and has_previous:
+            prev = st.session_state.bdc_records
+            all_records = _merge_balance_records(prev, all_records)
+            st.info(f"🔀 Merged with previous run — {len(all_records)} total records after union.")
+
         st.session_state.bdc_records          = all_records
         st.session_state.bdc_fetch_summary    = summary
         st.session_state.bdc_fetched_count    = len(bdcs_to_fetch)
@@ -1269,6 +1312,16 @@ def show_omc_loadings():
 
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
     period_days   = max((end_date - start_date).days, 1)
+
+    # ── Merge-with-previous option ────────────────────────────
+    has_previous = not st.session_state.get("omc_df", pd.DataFrame()).empty
+    merge_prev   = False
+    if has_previous:
+        merge_prev = st.checkbox(
+            "🔀 Merge this fetch with previous results",
+            value=True, key="omc_merge_prev",
+        )
+
     st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
             f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
             f"({period_days} days)")
@@ -1284,12 +1337,20 @@ def show_omc_loadings():
             bdcs_to_fetch,
             _make_omc_fetcher(start_str, end_str),
             prog, log_box, log_lines,
+            second_pass=True,
         )
         prog.progress(1.0, text="✅ Fetch complete")
 
         combined, summary = _combine_df_results(
             results, ["Order Number", "Truck", "Date", "Product"]
         )
+
+        if merge_prev and has_previous:
+            prev = st.session_state.omc_df
+            combined = _merge_dataframes(prev, combined,
+                                         ["Order Number", "Truck", "Date", "Product"])
+            st.info(f"🔀 Merged — {len(combined)} total records after union.")
+
         st.session_state.omc_df            = combined
         st.session_state.omc_fetch_summary = summary
         st.session_state.omc_fetched_count = len(bdcs_to_fetch)
@@ -1405,6 +1466,15 @@ def show_daily_orders():
 
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
     period_days   = max((end_date - start_date).days, 1)
+
+    has_previous = not st.session_state.get("daily_df", pd.DataFrame()).empty
+    merge_prev   = False
+    if has_previous:
+        merge_prev = st.checkbox(
+            "🔀 Merge this fetch with previous results",
+            value=True, key="daily_merge_prev",
+        )
+
     st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
             f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
             f"({period_days} days)")
@@ -1420,12 +1490,20 @@ def show_daily_orders():
             bdcs_to_fetch,
             _make_daily_fetcher(start_str, end_str),
             prog, log_box, log_lines,
+            second_pass=True,
         )
         prog.progress(1.0, text="✅ Fetch complete")
 
         combined, summary = _combine_df_results(
             results, ["Date", "Truck", "Order Number", "Product"]
         )
+
+        if merge_prev and has_previous:
+            prev = st.session_state.daily_df
+            combined = _merge_dataframes(prev, combined,
+                                         ["Date", "Truck", "Order Number", "Product"])
+            st.info(f"🔀 Merged — {len(combined)} total records after union.")
+
         st.session_state.daily_df            = combined
         st.session_state.daily_fetch_summary = summary
         st.session_state.daily_fetched_count = len(bdcs_to_fetch)
@@ -1743,7 +1821,6 @@ def show_national_stockout():
         "Day-type for daily rate denominator",
         ["📆 Calendar Days (default)","💼 Business Days (Mon–Fri only)"],
         horizontal=True, key="ns_day_type",
-        help="Business Days gives a higher (more conservative) daily rate → fewer days of supply.",
     )
     use_biz = "Business" in day_type
 
@@ -1751,7 +1828,6 @@ def show_national_stockout():
         "Depletion rate method",
         ["📊 Average Daily Loadings","🔥 Maximum Single-Day Loading (stress test)","📊 Median Daily Loadings"],
         index=0, key="ns_depl_mode",
-        help="Average is the standard baseline.  Maximum is a worst-case stress test.",
     )
     use_max    = "Maximum" in depl_mode
     use_median = "Median"  in depl_mode
@@ -1759,8 +1835,6 @@ def show_national_stockout():
     exclude_tor = st.checkbox(
         "❌ Exclude TEMA OIL REFINERY (TOR) from LPG stock",
         value=False, key="ns_excl_tor",
-        help="TOR LPG is often internal/strategic reserve and should not count toward "
-             "commercial supply runway.",
     )
 
     _vessel_df     = st.session_state.get("vessel_data", pd.DataFrame())
@@ -1770,8 +1844,6 @@ def show_national_stockout():
     include_vessels = st.checkbox(
         "🚢 Add pending vessel cargo to stock totals",
         value=False, key="ns_vessels",
-        help="Adds litres from every PENDING vessel in the Vessel Supply tracker to the "
-             "BDC balance before computing days of supply.",
     )
     if include_vessels and not _vessel_loaded:
         st.warning("No vessel data loaded — go to 🚢 Vessel Supply and fetch first.")
@@ -1792,7 +1864,6 @@ def show_national_stockout():
     if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", key="ns_go"):
         col_bal = "ACTUAL BALANCE (LT\\KG)"
 
-        # ── Step 1: Balance ──────────────────────────────────
         with st.status("📡 Step 1 / 2 — Fetching BDC stock balances…", expanded=True):
             prog1      = st.progress(0, text="Starting…")
             log_box1   = st.empty()
@@ -1800,6 +1871,7 @@ def show_national_stockout():
             results1   = _sequential_batch_fetch(
                 all_bdc_names, _make_balance_fetcher(),
                 prog1, log_box1, log_lines1,
+                second_pass=True,
             )
             prog1.progress(1.0, text="✅ Balance fetch complete")
             all_records, bal_summary = _combine_balance_results(results1)
@@ -1828,7 +1900,6 @@ def show_national_stockout():
                              + " | ".join([f"{p}: +{v:,.0f} LT" for p,v in
                                            pend.groupby("Product")["Quantity_Litres"].sum().items()]))
 
-        # ── Step 2: OMC Loadings ─────────────────────────────
         with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings…", expanded=True):
             st.write(f"Querying {n_total} BDCs for loadings from "
                      f"{start_date.strftime('%d %b')} to {end_date.strftime('%d %b %Y')}…")
@@ -1838,6 +1909,7 @@ def show_national_stockout():
             results2   = _sequential_batch_fetch(
                 all_bdc_names, _make_omc_fetcher(start_str, end_str),
                 prog2, log_box2, log_lines2,
+                second_pass=True,
             )
             prog2.progress(1.0, text="✅ Loadings fetch complete")
             omc_df, omc_summary = _combine_df_results(
@@ -1865,7 +1937,6 @@ def show_national_stockout():
                     omc_by_prod = filt.groupby("Product")["Quantity"].sum()
                     depl_lbl    = f"Avg Daily ({day_lbl})"
 
-        # ── Build forecast ───────────────────────────────────
         DISPLAY = {"PREMIUM":"PREMIUM (PMS)","GASOIL":"GASOIL (AGO)","LPG":"LPG"}
         rows_out = []
         for prod in ["PREMIUM","GASOIL","LPG"]:
@@ -2022,7 +2093,6 @@ def show_world_monitor():
     <b style='color:#ff4444;'>🔴 LIVE GLOBAL INTELLIGENCE</b><br>
     Real-time global threat and supply-chain risk map — conflicts, sanctions, weather,
     shipping lane disruptions, power outages and more — aggregated from 100+ OSINT feeds.
-    Use for proactive upstream procurement decisions.
     </div>
     """, unsafe_allow_html=True)
 
@@ -2055,11 +2125,7 @@ def show_vessel_supply():
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
-    Loads the national vessel discharge schedule from a Google Sheet — showing discharged
-    cargo and pending vessels (at anchorage or en route), with quantities converted from
-    MT to litres using standard NPA conversion factors.<br>
-    <b style='color:#ff00ff;'>Integration:</b> Enable the vessel toggle on the National Stockout
-    page to include pending cargo in the days-of-supply calculation.
+    Loads the national vessel discharge schedule from a Google Sheet.
     </div>
     """, unsafe_allow_html=True)
 
@@ -2077,7 +2143,7 @@ def show_vessel_supply():
             return
         processed = _process_vessel_df(raw_df, year=year_sel)
         if processed.empty:
-            st.warning("No valid vessel records found. Check sheet format and sharing settings.")
+            st.warning("No valid vessel records found.")
             return
         st.session_state.vessel_data   = processed
         st.session_state["vessel_year"] = year_sel
