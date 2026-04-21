@@ -1426,8 +1426,8 @@ def show_omc_loadings():
     for _p in ["GASOIL","LPG","PREMIUM"]:
         if _p not in _omc_bdc_summary.columns:
             _omc_bdc_summary[_p] = 0
-    _omc_bdc_summary["TOTAL"] = _omc_bdc_summary[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
-    _omc_bdc_summary = _omc_bdc_summary[["BDC","GASOIL","LPG","PREMIUM","Total"]].sort_values("TOTAL", ascending=False)
+    _omc_bdc_summary["Total"] = _omc_bdc_summary[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
+    _omc_bdc_summary = _omc_bdc_summary[["BDC","GASOIL","LPG","PREMIUM","Total"]].sort_values("Total", ascending=False)
 
     _omc_dl_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     excel_bytes = _to_excel_bytes({
