@@ -17,6 +17,11 @@ Fixed version:
       * All fetched data is saved to disk as pickle files
       * On startup, data is automatically restored into session_state
       * Survives tab switches, idle timeouts, and soft server restarts
+  - DAILY ORDERS OMC LOOKUP:
+      * New "OMC Name" column in Daily Orders derived by fuzzy-matching each
+        daily order number against order numbers collected in OMC Loadings.
+      * Matching pipeline: exact normalised → substring containment → LCS ratio
+      * Build is deferred (cached) so it only runs once per OMC dataset change.
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -320,6 +325,168 @@ def _clear_all_persisted() -> None:
             except Exception:
                 pass
         st.session_state[key] = default
+
+
+# ══════════════════════════════════════════════════════════════
+# OMC ORDER-NUMBER → OMC NAME LOOKUP
+# ══════════════════════════════════════════════════════════════
+
+def _norm_order(order_num: str) -> str:
+    """
+    Normalise an order number for fuzzy matching:
+    strip all non-alphanumeric chars, collapse whitespace, uppercase.
+    e.g. "ORD-12345/A" → "ORD12345A"
+    """
+    if not order_num:
+        return ""
+    return re.sub(r"[^A-Z0-9]", "", str(order_num).upper())
+
+
+def _lcs_ratio(a: str, b: str) -> float:
+    """
+    Longest-common-subsequence length ratio as a similarity score in [0, 1].
+    Only considers contiguous substrings (longest common substring) for speed.
+    """
+    if not a or not b:
+        return 0.0
+    # Use longest common substring (faster than full LCS for order numbers)
+    la, lb = len(a), len(b)
+    best = 0
+    # Build only if strings are short enough to be practical
+    if la > 50 or lb > 50:
+        # Fall back to simple overlap for very long strings
+        shorter, longer = (a, b) if la <= lb else (b, a)
+        for length in range(len(shorter), 0, -1):
+            for start in range(len(shorter) - length + 1):
+                if shorter[start:start+length] in longer:
+                    best = length
+                    break
+            if best:
+                break
+    else:
+        for i in range(la):
+            for j in range(lb):
+                length = 0
+                while i+length < la and j+length < lb and a[i+length] == b[j+length]:
+                    length += 1
+                if length > best:
+                    best = length
+    return best / max(la, lb)
+
+
+def _build_omc_order_lookup(omc_df: pd.DataFrame) -> dict:
+    """
+    Build a dict: normalised_order_number → OMC name.
+    When multiple OMCs share the same normalised order number, the one with
+    the highest total quantity wins (most likely the real match).
+    """
+    if omc_df is None or omc_df.empty:
+        return {}
+    if "Order Number" not in omc_df.columns or "OMC" not in omc_df.columns:
+        return {}
+
+    lookup: dict[str, str] = {}
+    # Also keep a quantity-weighted version to break ties
+    qty_map: dict[str, float] = {}
+
+    qty_col = "Quantity" if "Quantity" in omc_df.columns else None
+
+    for _, row in omc_df.iterrows():
+        raw_ord = str(row.get("Order Number", "")).strip()
+        omc     = str(row.get("OMC", "")).strip()
+        if not raw_ord or not omc:
+            continue
+        norm = _norm_order(raw_ord)
+        if not norm:
+            continue
+        qty = float(row[qty_col]) if qty_col and pd.notna(row[qty_col]) else 0.0
+        if norm not in lookup or qty > qty_map.get(norm, -1):
+            lookup[norm]  = omc
+            qty_map[norm] = qty
+
+    return lookup
+
+
+def _lookup_omc_for_order(
+    order_num: str,
+    omc_lookup: dict,
+    threshold: float = 0.75,
+) -> str:
+    """
+    Given a daily-order order number and the pre-built omc_lookup dict,
+    return the best-matching OMC name or "" if nothing passes the threshold.
+
+    Matching pipeline (fastest to slowest):
+    1. Exact normalised match
+    2. One string is a substring of the other (≥ 4 chars)
+    3. LCS ratio ≥ threshold
+    """
+    if not order_num or not omc_lookup:
+        return ""
+
+    norm_q = _norm_order(order_num)
+    if not norm_q:
+        return ""
+
+    # --- Pass 1: exact ---
+    if norm_q in omc_lookup:
+        return omc_lookup[norm_q]
+
+    # --- Pass 2: substring containment (length-guarded) ---
+    MIN_SUB = 4  # ignore very short tokens that would cause false positives
+    best_sub_key  = None
+    best_sub_len  = 0
+    for norm_key in omc_lookup:
+        if len(norm_key) < MIN_SUB or len(norm_q) < MIN_SUB:
+            continue
+        # Check mutual containment
+        if norm_key in norm_q or norm_q in norm_key:
+            # Prefer the longer matching key (more specific)
+            overlap_len = len(norm_key) if norm_key in norm_q else len(norm_q)
+            if overlap_len > best_sub_len:
+                best_sub_len = overlap_len
+                best_sub_key = norm_key
+    if best_sub_key:
+        return omc_lookup[best_sub_key]
+
+    # --- Pass 3: LCS ratio ---
+    best_score = 0.0
+    best_key   = None
+    for norm_key in omc_lookup:
+        score = _lcs_ratio(norm_q, norm_key)
+        if score > best_score:
+            best_score = score
+            best_key   = norm_key
+    if best_score >= threshold and best_key:
+        return omc_lookup[best_key]
+
+    return ""
+
+
+def _enrich_daily_with_omc(daily_df: pd.DataFrame, omc_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return a copy of daily_df with a new 'OMC Name' column populated by
+    fuzzy-matching each row's 'Order Number' against the OMC Loadings dataset.
+    Rows with no match get an empty string.
+    """
+    if daily_df is None or daily_df.empty:
+        return daily_df
+
+    df = daily_df.copy()
+
+    if omc_df is None or omc_df.empty or "Order Number" not in df.columns:
+        df["OMC Name"] = ""
+        return df
+
+    omc_lookup = _build_omc_order_lookup(omc_df)
+    if not omc_lookup:
+        df["OMC Name"] = ""
+        return df
+
+    df["OMC Name"] = df["Order Number"].apply(
+        lambda o: _lookup_omc_for_order(str(o), omc_lookup)
+    )
+    return df
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1240,7 +1407,7 @@ def show_bdc_balance():
         st.session_state.bdc_records       = all_records
         st.session_state.bdc_fetch_summary = summary
         st.session_state.bdc_fetched_count = len(bdcs_to_fetch)
-        _save_state("bdc_records", all_records)          # ← persist to disk
+        _save_state("bdc_records", all_records)
 
         st.markdown("---")
         _render_fetch_summary(summary, len(bdcs_to_fetch), len(all_records), "Balance Records")
@@ -1404,7 +1571,7 @@ def show_omc_loadings():
         st.session_state.omc_fetched_count = len(bdcs_to_fetch)
         st.session_state.omc_start_date    = start_date
         st.session_state.omc_end_date      = end_date
-        _save_state("omc_df", combined)                  # ← persist to disk
+        _save_state("omc_df", combined)
 
         st.markdown("---")
         _render_fetch_summary(summary, len(bdcs_to_fetch),
@@ -1500,7 +1667,9 @@ def show_daily_orders():
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
     Fetches the daily dispatch order report grouped by depot, giving truck-level
-    granularity of physical fuel movements out of each storage facility.
+    granularity of physical fuel movements out of each storage facility.<br>
+    <b style='color:#ff00ff;'>OMC Name column:</b> Automatically cross-referenced from OMC Loadings
+    data (if fetched) by fuzzy-matching order numbers. Fetch OMC Loadings first for best results.
     </div>
     """, unsafe_allow_html=True)
 
@@ -1532,6 +1701,23 @@ def show_daily_orders():
             value=True, key="daily_merge_prev",
         )
 
+    # ── OMC lookup status banner ──────────────────────────────
+    omc_df_for_lookup = st.session_state.get("omc_df", pd.DataFrame())
+    _has_omc = isinstance(omc_df_for_lookup, pd.DataFrame) and not omc_df_for_lookup.empty
+    if _has_omc:
+        _n_omc_orders = omc_df_for_lookup["Order Number"].nunique() \
+            if "Order Number" in omc_df_for_lookup.columns else 0
+        st.success(
+            f"✅ OMC Loadings available — **{_n_omc_orders:,} unique order numbers** "
+            f"will be used to populate the **OMC Name** column."
+        )
+    else:
+        st.warning(
+            "⚠️ No OMC Loadings data found in session. "
+            "Fetch OMC Loadings first to enable the **OMC Name** cross-reference column. "
+            "The column will still appear but will be empty."
+        )
+
     st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
             f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
             f"({period_days} days)")
@@ -1557,26 +1743,50 @@ def show_daily_orders():
 
         if merge_prev and has_previous:
             prev = st.session_state.daily_df
+            # Drop OMC Name before merging so we re-derive it cleanly after
+            if "OMC Name" in prev.columns:
+                prev = prev.drop(columns=["OMC Name"])
             combined = _merge_dataframes(prev, combined,
                                          ["Date", "Truck", "Order Number", "Product"])
             st.info(f"🔀 Merged — {len(combined)} total records after union.")
+
+        # ── Enrich with OMC names ─────────────────────────────
+        combined = _enrich_daily_with_omc(combined, omc_df_for_lookup)
 
         st.session_state.daily_df            = combined
         st.session_state.daily_fetch_summary = summary
         st.session_state.daily_fetched_count = len(bdcs_to_fetch)
         st.session_state.daily_start_date    = start_date
         st.session_state.daily_end_date      = end_date
-        _save_state("daily_df", combined)                # ← persist to disk
+        _save_state("daily_df", combined)
 
+        n_matched = int((combined["OMC Name"] != "").sum()) if not combined.empty else 0
         st.markdown("---")
         _render_fetch_summary(summary, len(bdcs_to_fetch),
                               len(combined) if not combined.empty else 0,
                               "Order Records")
+        if not combined.empty:
+            st.info(
+                f"🔗 OMC Name cross-reference: **{n_matched:,} / {len(combined):,}** orders "
+                f"matched ({n_matched/len(combined)*100:.1f}%)"
+            )
 
     df = st.session_state.get("daily_df", pd.DataFrame())
     if df.empty:
         st.info("👆 Select a date range and click **FETCH DAILY ORDERS**.")
         return
+
+    # ── Re-enrich on-the-fly if OMC data was loaded AFTER the daily fetch ──
+    # This ensures the OMC Name column is always up-to-date without re-fetching.
+    if _has_omc and ("OMC Name" not in df.columns or df["OMC Name"].eq("").all()):
+        with st.spinner("🔗 Cross-referencing OMC names from loadings data…"):
+            df = _enrich_daily_with_omc(df, omc_df_for_lookup)
+            st.session_state.daily_df = df
+            _save_state("daily_df", df)
+        n_matched = int((df["OMC Name"] != "").sum())
+        st.success(
+            f"✅ OMC Name column updated — **{n_matched:,} / {len(df):,}** orders matched."
+        )
 
     if st.session_state.get("daily_fetch_summary"):
         with st.expander("📊 Last fetch outcome", expanded=False):
@@ -1587,12 +1797,16 @@ def show_daily_orders():
             )
 
     st.markdown("---")
-    c1,c2,c3,c4,c5 = st.columns(5)
-    c1.metric("Orders",       f"{len(df):,}")
-    c2.metric("Volume (LT)",  f"{df['Quantity'].sum():,.0f}")
-    c3.metric("BDCs",         f"{df['BDC'].nunique()}")
-    c4.metric("Depots",       f"{df['Depot'].nunique()}")
-    c5.metric("Value (₵)",    f"{(df['Quantity']*df['Price']).sum():,.0f}")
+
+    # ── Summary metrics ───────────────────────────────────────
+    n_omc_matched = int((df["OMC Name"] != "").sum()) if "OMC Name" in df.columns else 0
+    c1,c2,c3,c4,c5,c6 = st.columns(6)
+    c1.metric("Orders",          f"{len(df):,}")
+    c2.metric("Volume (LT)",     f"{df['Quantity'].sum():,.0f}")
+    c3.metric("BDCs",            f"{df['BDC'].nunique()}")
+    c4.metric("Depots",          f"{df['Depot'].nunique()}")
+    c5.metric("Value (₵)",       f"{(df['Quantity']*df['Price']).sum():,.0f}")
+    c6.metric("🔗 OMC Matched",  f"{n_omc_matched:,}")
 
     st.markdown("### 📦 PRODUCT SUMMARY")
     prod_sum = (df.groupby("Product")
@@ -1609,6 +1823,23 @@ def show_daily_orders():
     st.caption(f"**{len(bdc_sum)} BDCs** with daily order data")
     st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
 
+    # ── OMC Name summary (only when matches exist) ────────────
+    if "OMC Name" in df.columns and n_omc_matched > 0:
+        st.markdown("### 🏢 TOP OMCs (via Cross-Reference)")
+        omc_name_sum = (
+            df[df["OMC Name"] != ""]
+            .groupby("OMC Name")
+            .agg(Orders=("Order Number","count"), Volume=("Quantity","sum"))
+            .reset_index()
+            .sort_values("Volume", ascending=False)
+            .rename(columns={"Volume":"Total Volume (LT/KG)"})
+        )
+        st.caption(
+            f"Derived from fuzzy order-number matching against OMC Loadings data — "
+            f"**{n_omc_matched:,}** of **{len(df):,}** orders matched."
+        )
+        st.dataframe(omc_name_sum, use_container_width=True, hide_index=True)
+
     st.markdown("### 📊 BDC × PRODUCT PIVOT")
     pivot = (df.pivot_table(index="BDC", columns="Product", values="Quantity",
                             aggfunc="sum", fill_value=0).reset_index())
@@ -1617,19 +1848,34 @@ def show_daily_orders():
     st.dataframe(pivot.sort_values("TOTAL", ascending=False), use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    ft    = st.selectbox("Filter by", ["Product","BDC","Depot","Status"], key="daily_ftype")
-    _cmap = {"Product":"Product","BDC":"BDC","Depot":"Depot","Status":"Status"}
-    opts  = ["ALL"] + sorted(df[_cmap[ft]].dropna().unique().tolist())
+    ft    = st.selectbox("Filter by", ["Product","BDC","Depot","Status","OMC Name"], key="daily_ftype")
+    _cmap = {"Product":"Product","BDC":"BDC","Depot":"Depot","Status":"Status","OMC Name":"OMC Name"}
+    col_for_filter = _cmap[ft]
+    if col_for_filter not in df.columns:
+        df[col_for_filter] = ""
+    opts  = ["ALL"] + sorted(df[col_for_filter].dropna().unique().tolist())
     fval  = st.selectbox("Value", opts, key="daily_fval")
-    filt  = df if fval=="ALL" else df[df[_cmap[ft]]==fval]
+    filt  = df if fval=="ALL" else df[df[col_for_filter]==fval]
     st.caption(f"Showing **{len(filt):,}** records | "
                f"Volume: **{filt['Quantity'].sum():,.0f} LT**")
-    st.dataframe(filt[["Date","Truck","Quantity","Order Number","BDC","Depot","Price","Product","Status"]]
-                 .sort_values(["Product","Date"]),
-                 use_container_width=True, height=400, hide_index=True)
+
+    # ── Detail table — include OMC Name column ────────────────
+    detail_cols = ["Date","Truck","Quantity","Order Number","OMC Name","BDC","Depot","Price","Product","Status"]
+    # Only keep columns that actually exist in the dataframe
+    detail_cols = [c for c in detail_cols if c in filt.columns]
+    st.dataframe(
+        filt[detail_cols].sort_values(["Product","Date"]),
+        use_container_width=True, height=400, hide_index=True,
+    )
 
     st.markdown("---")
-    excel_bytes = _to_excel_bytes({"All Orders": df, "BDC Pivot": pivot})
+    excel_sheets = {"All Orders": df, "BDC Pivot": pivot}
+    if "OMC Name" in df.columns and n_omc_matched > 0:
+        excel_sheets["Matched OMC Orders"] = df[df["OMC Name"] != ""][detail_cols]
+        excel_sheets["Unmatched Orders"]   = df[df["OMC Name"] == ""][
+            [c for c in detail_cols if c != "OMC Name"]
+        ]
+    excel_bytes = _to_excel_bytes(excel_sheets)
     st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes, "daily_orders.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
@@ -1798,7 +2044,7 @@ def show_stock_transaction():
                 st.session_state.txn_bdc      = selected_bdc
                 st.session_state.txn_depot    = selected_depot
                 st.session_state.txn_product  = selected_product
-                _save_state("stock_txn_df", df_txn)      # ← persist to disk
+                _save_state("stock_txn_df", df_txn)
                 st.success(f"✅ {len(records):,} transaction records extracted.")
             else:
                 st.warning("No transactions found. Try a different date range or BDC/depot combination.")
@@ -1964,7 +2210,7 @@ def show_national_stockout():
                 all_records, bal_summary = _combine_balance_results(results1)
                 bal_df = pd.DataFrame(all_records)
                 st.session_state.bdc_records = all_records
-                _save_state("bdc_records", all_records)  # ← persist to disk
+                _save_state("bdc_records", all_records)
 
                 n_bal_bdcs = bal_df["BDC"].nunique() if not bal_df.empty else 0
                 st.write(f"✅ **{len(all_records):,} balance records** from **{n_bal_bdcs} BDCs**  |  "
@@ -2236,7 +2482,7 @@ def show_vessel_supply():
             return
         st.session_state.vessel_data    = processed
         st.session_state["vessel_year"] = year_sel
-        _save_state("vessel_data", processed)            # ← persist to disk
+        _save_state("vessel_data", processed)
         st.success(f"✅ {len(processed)} vessel records loaded.")
         st.rerun()
 
@@ -2387,7 +2633,6 @@ def main():
 
         st.markdown("---")
 
-        # ── Clear all cached data ─────────────────────────────
         if st.button("🗑️ CLEAR ALL CACHED DATA", key="clear_cache"):
             _clear_all_persisted()
             st.success("✅ All cached data cleared.")
