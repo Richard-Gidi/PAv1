@@ -13,6 +13,10 @@ Fixed version:
         is retried in a slower sequential second pass
       * "Merge with previous" option so consecutive downloads are UNIONED,
         keeping the best (highest balance / most records) from each run
+  - PERSISTENT STATE:
+      * All fetched data is saved to disk as pickle files
+      * On startup, data is automatically restored into session_state
+      * Survives tab switches, idle timeouts, and soft server restarts
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -22,7 +26,7 @@ USAGE:
 """
 
 import streamlit as st
-import os, re, io, json, time, threading, unicodedata
+import os, re, io, json, time, threading, unicodedata, pickle
 from datetime import datetime, timedelta
 import pandas as pd
 import pdfplumber
@@ -255,6 +259,70 @@ p,span,div{font-family:'Rajdhani',sans-serif;color:#e0e0e0;}
 
 
 # ══════════════════════════════════════════════════════════════
+# PERSISTENT STATE
+# ══════════════════════════════════════════════════════════════
+PERSIST_DIR = os.path.join(os.getcwd(), ".persist_state")
+os.makedirs(PERSIST_DIR, exist_ok=True)
+
+# Keys to persist and their empty defaults
+_PERSIST_KEYS = {
+    "bdc_records":  [],
+    "omc_df":       pd.DataFrame(),
+    "daily_df":     pd.DataFrame(),
+    "stock_txn_df": pd.DataFrame(),
+    "vessel_data":  pd.DataFrame(),
+}
+
+
+def _persist_path(key: str) -> str:
+    return os.path.join(PERSIST_DIR, f"{key}.pkl")
+
+
+def _save_state(key: str, value) -> None:
+    """Persist a single session-state value to disk."""
+    try:
+        with open(_persist_path(key), "wb") as f:
+            pickle.dump(value, f)
+    except Exception:
+        pass
+
+
+def _load_state(key: str):
+    """Load a persisted value from disk; return the default if missing or corrupt."""
+    path = _persist_path(key)
+    if os.path.exists(path):
+        try:
+            with open(path, "rb") as f:
+                return pickle.load(f)
+        except Exception:
+            pass
+    return _PERSIST_KEYS[key]
+
+
+def _restore_session_state() -> None:
+    """
+    Called once at the top of main().
+    Loads every persisted key into st.session_state if it isn't already there
+    (i.e. only on a fresh page load / restart — not on every rerun).
+    """
+    for key in _PERSIST_KEYS:
+        if key not in st.session_state:
+            st.session_state[key] = _load_state(key)
+
+
+def _clear_all_persisted() -> None:
+    """Wipe all persisted state files and reset session_state."""
+    for key, default in _PERSIST_KEYS.items():
+        path = _persist_path(key)
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        st.session_state[key] = default
+
+
+# ══════════════════════════════════════════════════════════════
 # HTTP HELPER
 # ══════════════════════════════════════════════════════════════
 _HTTP_HEADERS = {
@@ -267,7 +335,6 @@ _HTTP_HEADERS = {
     "Connection": "keep-alive",
 }
 
-# ── Increased timeout: 90 s (was 60 s) ───────────────────────
 _HTTP_TIMEOUT = 90
 
 
@@ -282,16 +349,14 @@ def _fetch_pdf(url: str, params: dict, timeout: int = _HTTP_TIMEOUT) -> bytes | 
 
 
 # ══════════════════════════════════════════════════════════════
-# ROBUST BATCH FETCHER  ← KEY FIX
+# ROBUST BATCH FETCHER
 # ══════════════════════════════════════════════════════════════
 BATCH_SIZE  = 5
-MAX_RETRIES = 5        # was 3 — more attempts before giving up
-RETRY_DELAY = 3        # base seconds; actual = RETRY_DELAY * 2^(attempt-1)
+MAX_RETRIES = 5
+RETRY_DELAY = 3
 
-# Second-pass: BDCs that failed / returned nothing in the first sweep
-# are retried one-at-a-time with a longer delay between requests.
-SECOND_PASS_DELAY   = 4   # seconds between sequential second-pass requests
-SECOND_PASS_RETRIES = 3   # attempts per BDC in the second pass
+SECOND_PASS_DELAY   = 4
+SECOND_PASS_RETRIES = 3
 
 
 def _sequential_batch_fetch(
@@ -300,7 +365,7 @@ def _sequential_batch_fetch(
     progress_bar,
     status_text,
     log_lines: list,
-    second_pass: bool = True,   # NEW — enable second-pass retry
+    second_pass: bool = True,
 ) -> dict:
     import concurrent.futures as _cf
 
@@ -309,7 +374,6 @@ def _sequential_batch_fetch(
     lock    = threading.Lock()
     done_n  = [0]
 
-    # ── exponential back-off retry ────────────────────────────
     def _attempt(bdc_name: str, max_tries: int = MAX_RETRIES):
         last_err = None
         for attempt in range(1, max_tries + 1):
@@ -319,7 +383,6 @@ def _sequential_batch_fetch(
             except Exception as exc:
                 last_err = exc
                 if attempt < max_tries:
-                    # Exponential back-off: 3 s, 6 s, 12 s, 24 s …
                     time.sleep(RETRY_DELAY * (2 ** (attempt - 1)))
         return bdc_name, None, max_tries, str(last_err)
 
@@ -381,7 +444,6 @@ def _sequential_batch_fetch(
             for idx, bdc_name in enumerate(retry_bdcs):
                 time.sleep(SECOND_PASS_DELAY)
                 _, result, attempts, err = _attempt(bdc_name, max_tries=SECOND_PASS_RETRIES)
-                # Only update if the second pass actually got something
                 if result is not None and not _result_is_empty(result):
                     results[bdc_name] = result
                     icon = "🔄"
@@ -407,7 +469,6 @@ def _sequential_batch_fetch(
 
 
 def _result_is_empty(result) -> bool:
-    """Return True when a fetch result carries no usable rows."""
     if result is None:
         return True
     if isinstance(result, list):
@@ -470,8 +531,8 @@ class StockBalanceScraper:
         records = []
         seen    = set()
         try:
-            reader   = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-            cur_bdc  = owning_bdc_name
+            reader    = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
+            cur_bdc   = owning_bdc_name
             cur_depot = None
             cur_date  = None
             for page in reader.pages:
@@ -855,21 +916,15 @@ def _make_daily_fetcher(start_str: str, end_str: str):
 
 
 # ══════════════════════════════════════════════════════════════
-# MERGE HELPERS  ← NEW: union two runs, keep best data per BDC
+# MERGE HELPERS
 # ══════════════════════════════════════════════════════════════
 
 def _merge_balance_records(existing: list, new_records: list) -> list:
-    """
-    Union two lists of balance records.
-    When the same (BDC, DEPOT, Product, Date) appears in both, keep whichever
-    has the higher actual balance (most recent / most complete fetch wins).
-    """
     if not existing:
         return new_records
     if not new_records:
         return existing
-
-    col = "ACTUAL BALANCE (LT\\KG)"
+    col    = "ACTUAL BALANCE (LT\\KG)"
     df_old = pd.DataFrame(existing)
     df_new = pd.DataFrame(new_records)
     combined = pd.concat([df_old, df_new], ignore_index=True)
@@ -884,10 +939,6 @@ def _merge_balance_records(existing: list, new_records: list) -> list:
 
 def _merge_dataframes(existing: pd.DataFrame, new_df: pd.DataFrame,
                       dedup_cols: list) -> pd.DataFrame:
-    """
-    Union two DataFrames, deduplicating on natural key columns.
-    Rows present in new_df take precedence (placed first before drop_duplicates).
-    """
     if existing is None or existing.empty:
         return new_df
     if new_df is None or new_df.empty:
@@ -1154,7 +1205,6 @@ def show_bdc_balance():
 
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
 
-    # ── Merge-with-previous option ────────────────────────────
     has_previous = bool(st.session_state.get("bdc_records"))
     merge_prev   = False
     if has_previous:
@@ -1172,7 +1222,7 @@ def show_bdc_balance():
         log_box   = st.empty()
         log_lines = []
 
-        results  = _sequential_batch_fetch(
+        results = _sequential_batch_fetch(
             bdcs_to_fetch,
             _make_balance_fetcher(),
             prog, log_box, log_lines,
@@ -1182,20 +1232,19 @@ def show_bdc_balance():
 
         all_records, summary = _combine_balance_results(results)
 
-        # Merge with previous run if requested
         if merge_prev and has_previous:
             prev = st.session_state.bdc_records
             all_records = _merge_balance_records(prev, all_records)
             st.info(f"🔀 Merged with previous run — {len(all_records)} total records after union.")
 
-        st.session_state.bdc_records          = all_records
-        st.session_state.bdc_fetch_summary    = summary
-        st.session_state.bdc_fetched_count    = len(bdcs_to_fetch)
+        st.session_state.bdc_records       = all_records
+        st.session_state.bdc_fetch_summary = summary
+        st.session_state.bdc_fetched_count = len(bdcs_to_fetch)
+        _save_state("bdc_records", all_records)          # ← persist to disk
 
         st.markdown("---")
         _render_fetch_summary(summary, len(bdcs_to_fetch), len(all_records), "Balance Records")
 
-    # ── Display ──────────────────────────────────────────────
     records = st.session_state.get("bdc_records", [])
     if not records:
         st.info("👆 Click **FETCH BDC BALANCE DATA** to load the current stock position.")
@@ -1266,13 +1315,12 @@ def show_bdc_balance():
                  use_container_width=True, height=400, hide_index=True)
 
     st.markdown("---")
-    _bdc_dl_ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
-    #_bdc_sheet_ts = datetime.now().strftime("%d%b%Y %H%M") 
+    _bdc_dl_ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
     excel_bytes = _to_excel_bytes({
         "Stock Balance": df,
-        "LPG":          df[df["Product"]=="LPG"],
-        "PREMIUM":      df[df["Product"]=="PREMIUM"],
-        "GASOIL":       df[df["Product"]=="GASOIL"],
+        "LPG":           df[df["Product"]=="LPG"],
+        "PREMIUM":       df[df["Product"]=="PREMIUM"],
+        "GASOIL":        df[df["Product"]=="GASOIL"],
     })
     st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes,
                        f"bdc_balance_{_bdc_dl_ts}.xlsx",
@@ -1314,7 +1362,6 @@ def show_omc_loadings():
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
     period_days   = max((end_date - start_date).days, 1)
 
-    # ── Merge-with-previous option ────────────────────────────
     has_previous = not st.session_state.get("omc_df", pd.DataFrame()).empty
     merge_prev   = False
     if has_previous:
@@ -1357,6 +1404,7 @@ def show_omc_loadings():
         st.session_state.omc_fetched_count = len(bdcs_to_fetch)
         st.session_state.omc_start_date    = start_date
         st.session_state.omc_end_date      = end_date
+        _save_state("omc_df", combined)                  # ← persist to disk
 
         st.markdown("---")
         _render_fetch_summary(summary, len(bdcs_to_fetch),
@@ -1417,7 +1465,6 @@ def show_omc_loadings():
                  use_container_width=True, height=400, hide_index=True)
 
     st.markdown("---")
-    # Build BDC Summary with required columns: BDC, GASOIL, LPG, PREMIUM, TOTAL
     _omc_bdc_summary = (
         df.pivot_table(index="BDC", columns="Product", values="Quantity",
                        aggfunc="sum", fill_value=0)
@@ -1431,11 +1478,11 @@ def show_omc_loadings():
 
     _omc_dl_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     excel_bytes = _to_excel_bytes({
-        "All Orders":   df,
-        "PREMIUM":      df[df["Product"]=="PREMIUM"],
-        "GASOIL":       df[df["Product"]=="GASOIL"],
-        "LPG":          df[df["Product"]=="LPG"],
-        "BDC Summary":  _omc_bdc_summary,
+        "All Orders":  df,
+        "PREMIUM":     df[df["Product"]=="PREMIUM"],
+        "GASOIL":      df[df["Product"]=="GASOIL"],
+        "LPG":         df[df["Product"]=="LPG"],
+        "BDC Summary": _omc_bdc_summary,
     })
     st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes,
                        f"omc_loadings_{_omc_dl_ts}.xlsx",
@@ -1519,6 +1566,7 @@ def show_daily_orders():
         st.session_state.daily_fetched_count = len(bdcs_to_fetch)
         st.session_state.daily_start_date    = start_date
         st.session_state.daily_end_date      = end_date
+        _save_state("daily_df", combined)                # ← persist to disk
 
         st.markdown("---")
         _render_fetch_summary(summary, len(bdcs_to_fetch),
@@ -1656,9 +1704,9 @@ def show_market_share():
                 mkt = float(balance_df[balance_df["Product"]==prod][col_bal].sum())
                 bv  = float(bdc_bal[bdc_bal["Product"]==prod][col_bal].sum())
                 rows.append({"Product":prod,
-                              "BDC Stock (LT)":     f"{bv:,.0f}",
-                              "Market Total (LT)":  f"{mkt:,.0f}",
-                              "Share (%)":          f"{bv/mkt*100:.2f}" if mkt else "0.00"})
+                              "BDC Stock (LT)":    f"{bv:,.0f}",
+                              "Market Total (LT)": f"{mkt:,.0f}",
+                              "Share (%)":         f"{bv/mkt*100:.2f}" if mkt else "0.00"})
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
     with tab2:
@@ -1715,10 +1763,10 @@ def show_stock_transaction():
 
     c1, c2 = st.columns(2)
     with c1:
-        selected_bdc     = st.selectbox("BDC",     sorted(BDC_MAP.keys()),   key="txn_bdc")
-        selected_product = st.selectbox("Product",  PRODUCT_OPTIONS,          key="txn_prod")
+        selected_bdc     = st.selectbox("BDC",    sorted(BDC_MAP.keys()),   key="txn_bdc")
+        selected_product = st.selectbox("Product", PRODUCT_OPTIONS,          key="txn_prod")
     with c2:
-        selected_depot   = st.selectbox("Depot",    sorted(DEPOT_MAP.keys()), key="txn_depot")
+        selected_depot   = st.selectbox("Depot",   sorted(DEPOT_MAP.keys()), key="txn_depot")
 
     c3, c4 = st.columns(2)
     with c3:
@@ -1741,17 +1789,21 @@ def show_stock_transaction():
         if not pdf_bytes:
             st.error("❌ No PDF returned. Check BDC / depot / product combination or API availability.")
             st.session_state.stock_txn_df = pd.DataFrame()
+            _save_state("stock_txn_df", pd.DataFrame())
         else:
             records = _parse_stock_transaction_pdf(pdf_bytes)
             if records:
-                st.session_state.stock_txn_df = pd.DataFrame(records)
+                df_txn = pd.DataFrame(records)
+                st.session_state.stock_txn_df = df_txn
                 st.session_state.txn_bdc      = selected_bdc
                 st.session_state.txn_depot    = selected_depot
                 st.session_state.txn_product  = selected_product
+                _save_state("stock_txn_df", df_txn)      # ← persist to disk
                 st.success(f"✅ {len(records):,} transaction records extracted.")
             else:
-                st.warning("No transactions found.  Try a different date range or BDC/depot combination.")
+                st.warning("No transactions found. Try a different date range or BDC/depot combination.")
                 st.session_state.stock_txn_df = pd.DataFrame()
+                _save_state("stock_txn_df", pd.DataFrame())
 
     df = st.session_state.stock_txn_df
     if df.empty:
@@ -1762,10 +1814,10 @@ def show_stock_transaction():
                 f"{st.session_state.get('txn_product','')} @ "
                 f"{st.session_state.get('txn_depot','')}")
 
-    inflows  = float(df[df["Description"].isin(["Custody Transfer In","Product Outturn"])]["Volume"].sum())
-    outflows = float(df[df["Description"].isin(["Sale","Custody Transfer Out"])]["Volume"].sum())
-    sales    = float(df[df["Description"]=="Sale"]["Volume"].sum())
-    bdc_xfer = float(df[df["Description"]=="Custody Transfer Out"]["Volume"].sum())
+    inflows   = float(df[df["Description"].isin(["Custody Transfer In","Product Outturn"])]["Volume"].sum())
+    outflows  = float(df[df["Description"].isin(["Sale","Custody Transfer Out"])]["Volume"].sum())
+    sales     = float(df[df["Description"]=="Sale"]["Volume"].sum())
+    bdc_xfer  = float(df[df["Description"]=="Custody Transfer Out"]["Volume"].sum())
     final_bal = float(df["Balance"].iloc[-1]) if len(df) else 0
 
     c1,c2,c3,c4,c5 = st.columns(5)
@@ -1866,7 +1918,6 @@ def show_national_stockout():
     effective_days = _count_period_days(start_str, end_str, use_biz)
     day_lbl        = f"{effective_days} {'business' if use_biz else 'calendar'} days"
 
-    # ── Check if BDC balance is already in session state ─────
     _existing_bdc_records = st.session_state.get("bdc_records", [])
     _has_bdc_balance      = bool(_existing_bdc_records)
 
@@ -1884,7 +1935,6 @@ def show_national_stockout():
     if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", key="ns_go"):
         col_bal = "ACTUAL BALANCE (LT\\KG)"
 
-        # ── Step 1: Use existing BDC balance or fetch fresh ──
         if _has_bdc_balance:
             with st.status("📡 Step 1 / 2 — Using existing BDC stock balances…", expanded=True):
                 all_records = _existing_bdc_records
@@ -1913,8 +1963,8 @@ def show_national_stockout():
                 prog1.progress(1.0, text="✅ Balance fetch complete")
                 all_records, bal_summary = _combine_balance_results(results1)
                 bal_df = pd.DataFrame(all_records)
-                # Save into session state for reuse
                 st.session_state.bdc_records = all_records
+                _save_state("bdc_records", all_records)  # ← persist to disk
 
                 n_bal_bdcs = bal_df["BDC"].nunique() if not bal_df.empty else 0
                 st.write(f"✅ **{len(all_records):,} balance records** from **{n_bal_bdcs} BDCs**  |  "
@@ -1923,14 +1973,13 @@ def show_national_stockout():
                          f"❌ {len(bal_summary['failed'])} failed")
 
                 if exclude_tor and not bal_df.empty:
-                    mask    = bal_df["BDC"].str.contains("TOR", case=False, na=False) & (bal_df["Product"]=="LPG")
-                    excl_v  = bal_df[mask][col_bal].sum()
-                    bal_df  = bal_df[~mask].copy()
+                    mask   = bal_df["BDC"].str.contains("TOR", case=False, na=False) & (bal_df["Product"]=="LPG")
+                    excl_v = bal_df[mask][col_bal].sum()
+                    bal_df = bal_df[~mask].copy()
                     st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
 
                 balance_by_prod = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
 
-        # Apply vessel pipeline to balance (runs regardless of whether balance was cached or freshly fetched)
         if include_vessels and _vessel_loaded:
             pend = _vessel_df[_vessel_df["Status"]=="PENDING"]
             if not pend.empty:
@@ -1991,7 +2040,7 @@ def show_national_stockout():
         forecast_df = pd.DataFrame(rows_out)
 
         bdc_pivot = (bal_df.pivot_table(index="BDC", columns="Product", values=col_bal,
-                                         aggfunc="sum", fill_value=0).reset_index()
+                                        aggfunc="sum", fill_value=0).reset_index()
                      if not bal_df.empty else pd.DataFrame())
         if not bdc_pivot.empty:
             for p in ["GASOIL","LPG","PREMIUM"]:
@@ -2002,18 +2051,18 @@ def show_national_stockout():
             bdc_pivot = bdc_pivot.sort_values("TOTAL", ascending=False)
 
         st.session_state.ns_results = {
-            "forecast_df":  forecast_df,
-            "bal_df":       bal_df,
-            "omc_df":       omc_df,
-            "bdc_pivot":    bdc_pivot,
-            "period_days":  period_days,
-            "eff_days":     effective_days,
-            "day_lbl":      day_lbl,
-            "depl_lbl":     depl_lbl,
-            "start_str":    start_str,
-            "end_str":      end_str,
-            "bal_summary":  bal_summary,
-            "omc_summary":  omc_summary,
+            "forecast_df":   forecast_df,
+            "bal_df":        bal_df,
+            "omc_df":        omc_df,
+            "bdc_pivot":     bdc_pivot,
+            "period_days":   period_days,
+            "eff_days":      effective_days,
+            "day_lbl":       day_lbl,
+            "depl_lbl":      depl_lbl,
+            "start_str":     start_str,
+            "end_str":       end_str,
+            "bal_summary":   bal_summary,
+            "omc_summary":   omc_summary,
             "n_bal_records": len(all_records),
             "n_omc_records": len(omc_df),
         }
@@ -2185,8 +2234,9 @@ def show_vessel_supply():
         if processed.empty:
             st.warning("No valid vessel records found.")
             return
-        st.session_state.vessel_data   = processed
+        st.session_state.vessel_data    = processed
         st.session_state["vessel_year"] = year_sel
+        _save_state("vessel_data", processed)            # ← persist to disk
         st.success(f"✅ {len(processed)} vessel records loaded.")
         st.rerun()
 
@@ -2200,10 +2250,10 @@ def show_vessel_supply():
     pending    = df[df["Status"]=="PENDING"]
 
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Total Vessels",  len(df))
-    c2.metric("Discharged",     f"{len(discharged)}  ({discharged['Quantity_Litres'].sum()/1e6:.2f}M LT)")
-    c3.metric("⏳ Pending",     f"{len(pending)}  ({pending['Quantity_Litres'].sum()/1e6:.2f}M LT)")
-    c4.metric("Grand Total",    f"{df['Quantity_Litres'].sum()/1e6:.2f}M LT")
+    c1.metric("Total Vessels", len(df))
+    c2.metric("Discharged",    f"{len(discharged)}  ({discharged['Quantity_Litres'].sum()/1e6:.2f}M LT)")
+    c3.metric("⏳ Pending",    f"{len(pending)}  ({pending['Quantity_Litres'].sum()/1e6:.2f}M LT)")
+    c4.metric("Grand Total",   f"{df['Quantity_Litres'].sum()/1e6:.2f}M LT")
 
     st.markdown("---")
     st.markdown("### ⏳ PENDING VESSELS — Supply Pipeline")
@@ -2212,8 +2262,8 @@ def show_vessel_supply():
         st.success("✅ No pending vessels — all recorded vessels have discharged.")
     else:
         pp = pending.groupby("Product").agg(Vessels=("Vessel_Name","count"),
-                                             Volume_LT=("Quantity_Litres","sum"),
-                                             Volume_MT=("Quantity_MT","sum")).reset_index()
+                                            Volume_LT=("Quantity_Litres","sum"),
+                                            Volume_MT=("Quantity_MT","sum")).reset_index()
         pcols = st.columns(min(len(pp),4))
         for col,(_, row) in zip(pcols, pp.iterrows()):
             prod  = row["Product"]
@@ -2284,6 +2334,9 @@ def show_vessel_supply():
 # MAIN
 # ══════════════════════════════════════════════════════════════
 def main():
+    # ── Restore persisted data into session_state on every fresh load ──
+    _restore_session_state()
+
     st.markdown("""
     <div style='text-align:center;padding:28px 0;'>
         <h1 style='font-size:56px;margin:0;'>⚡ NPA ENERGY ANALYTICS ⚡</h1>
@@ -2333,6 +2386,13 @@ def main():
         "</div>", unsafe_allow_html=True)
 
         st.markdown("---")
+
+        # ── Clear all cached data ─────────────────────────────
+        if st.button("🗑️ CLEAR ALL CACHED DATA", key="clear_cache"):
+            _clear_all_persisted()
+            st.success("✅ All cached data cleared.")
+            st.rerun()
+
         st.markdown("""
         <div style='text-align:center;padding:12px;background:rgba(255,0,255,0.08);
                     border-radius:10px;border:2px solid #ff00ff;'>
