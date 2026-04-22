@@ -1267,9 +1267,9 @@ def show_bdc_balance():
 
     st.markdown("---")
     _bdc_dl_ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _bdc_sheet_ts = datetime.now().strftime("%d%b%Y %H%M") 
+    #_bdc_sheet_ts = datetime.now().strftime("%d%b%Y %H%M") 
     excel_bytes = _to_excel_bytes({
-        f"Stock Balance {_bdc_sheet_ts}": df,
+        "Stock Balance": df,
         "LPG":          df[df["Product"]=="LPG"],
         "PREMIUM":      df[df["Product"]=="PREMIUM"],
         "GASOIL":       df[df["Product"]=="GASOIL"],
