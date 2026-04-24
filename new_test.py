@@ -22,6 +22,9 @@ Fixed version:
         daily order number against order numbers collected in OMC Loadings.
       * Matching pipeline: exact normalised → substring containment → LCS ratio
       * Build is deferred (cached) so it only runs once per OMC dataset change.
+  - STOCK TRANSACTION FIX:
+      * Renamed session_state keys for txn_bdc/depot/product to txn_bdc_label
+        etc. to avoid collision with Streamlit widget keys of the same name.
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -269,7 +272,6 @@ p,span,div{font-family:'Rajdhani',sans-serif;color:#e0e0e0;}
 PERSIST_DIR = os.path.join(os.getcwd(), ".persist_state")
 os.makedirs(PERSIST_DIR, exist_ok=True)
 
-# Keys to persist and their empty defaults
 _PERSIST_KEYS = {
     "bdc_records":  [],
     "omc_df":       pd.DataFrame(),
@@ -284,7 +286,6 @@ def _persist_path(key: str) -> str:
 
 
 def _save_state(key: str, value) -> None:
-    """Persist a single session-state value to disk."""
     try:
         with open(_persist_path(key), "wb") as f:
             pickle.dump(value, f)
@@ -293,7 +294,6 @@ def _save_state(key: str, value) -> None:
 
 
 def _load_state(key: str):
-    """Load a persisted value from disk; return the default if missing or corrupt."""
     path = _persist_path(key)
     if os.path.exists(path):
         try:
@@ -305,18 +305,12 @@ def _load_state(key: str):
 
 
 def _restore_session_state() -> None:
-    """
-    Called once at the top of main().
-    Loads every persisted key into st.session_state if it isn't already there
-    (i.e. only on a fresh page load / restart — not on every rerun).
-    """
     for key in _PERSIST_KEYS:
         if key not in st.session_state:
             st.session_state[key] = _load_state(key)
 
 
 def _clear_all_persisted() -> None:
-    """Wipe all persisted state files and reset session_state."""
     for key, default in _PERSIST_KEYS.items():
         path = _persist_path(key)
         if os.path.exists(path):
@@ -332,29 +326,17 @@ def _clear_all_persisted() -> None:
 # ══════════════════════════════════════════════════════════════
 
 def _norm_order(order_num: str) -> str:
-    """
-    Normalise an order number for fuzzy matching:
-    strip all non-alphanumeric chars, collapse whitespace, uppercase.
-    e.g. "ORD-12345/A" → "ORD12345A"
-    """
     if not order_num:
         return ""
     return re.sub(r"[^A-Z0-9]", "", str(order_num).upper())
 
 
 def _lcs_ratio(a: str, b: str) -> float:
-    """
-    Longest-common-subsequence length ratio as a similarity score in [0, 1].
-    Only considers contiguous substrings (longest common substring) for speed.
-    """
     if not a or not b:
         return 0.0
-    # Use longest common substring (faster than full LCS for order numbers)
     la, lb = len(a), len(b)
     best = 0
-    # Build only if strings are short enough to be practical
     if la > 50 or lb > 50:
-        # Fall back to simple overlap for very long strings
         shorter, longer = (a, b) if la <= lb else (b, a)
         for length in range(len(shorter), 0, -1):
             for start in range(len(shorter) - length + 1):
@@ -375,20 +357,13 @@ def _lcs_ratio(a: str, b: str) -> float:
 
 
 def _build_omc_order_lookup(omc_df: pd.DataFrame) -> dict:
-    """
-    Build a dict: normalised_order_number → OMC name.
-    When multiple OMCs share the same normalised order number, the one with
-    the highest total quantity wins (most likely the real match).
-    """
     if omc_df is None or omc_df.empty:
         return {}
     if "Order Number" not in omc_df.columns or "OMC" not in omc_df.columns:
         return {}
 
     lookup: dict[str, str] = {}
-    # Also keep a quantity-weighted version to break ties
     qty_map: dict[str, float] = {}
-
     qty_col = "Quantity" if "Quantity" in omc_df.columns else None
 
     for _, row in omc_df.iterrows():
@@ -412,15 +387,6 @@ def _lookup_omc_for_order(
     omc_lookup: dict,
     threshold: float = 0.75,
 ) -> str:
-    """
-    Given a daily-order order number and the pre-built omc_lookup dict,
-    return the best-matching OMC name or "" if nothing passes the threshold.
-
-    Matching pipeline (fastest to slowest):
-    1. Exact normalised match
-    2. One string is a substring of the other (≥ 4 chars)
-    3. LCS ratio ≥ threshold
-    """
     if not order_num or not omc_lookup:
         return ""
 
@@ -428,20 +394,16 @@ def _lookup_omc_for_order(
     if not norm_q:
         return ""
 
-    # --- Pass 1: exact ---
     if norm_q in omc_lookup:
         return omc_lookup[norm_q]
 
-    # --- Pass 2: substring containment (length-guarded) ---
-    MIN_SUB = 4  # ignore very short tokens that would cause false positives
+    MIN_SUB = 4
     best_sub_key  = None
     best_sub_len  = 0
     for norm_key in omc_lookup:
         if len(norm_key) < MIN_SUB or len(norm_q) < MIN_SUB:
             continue
-        # Check mutual containment
         if norm_key in norm_q or norm_q in norm_key:
-            # Prefer the longer matching key (more specific)
             overlap_len = len(norm_key) if norm_key in norm_q else len(norm_q)
             if overlap_len > best_sub_len:
                 best_sub_len = overlap_len
@@ -449,7 +411,6 @@ def _lookup_omc_for_order(
     if best_sub_key:
         return omc_lookup[best_sub_key]
 
-    # --- Pass 3: LCS ratio ---
     best_score = 0.0
     best_key   = None
     for norm_key in omc_lookup:
@@ -464,11 +425,6 @@ def _lookup_omc_for_order(
 
 
 def _enrich_daily_with_omc(daily_df: pd.DataFrame, omc_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Return a copy of daily_df with a new 'OMC Name' column populated by
-    fuzzy-matching each row's 'Order Number' against the OMC Loadings dataset.
-    Rows with no match get an empty string.
-    """
     if daily_df is None or daily_df.empty:
         return daily_df
 
@@ -506,7 +462,6 @@ _HTTP_TIMEOUT = 90
 
 
 def _fetch_pdf(url: str, params: dict, timeout: int = _HTTP_TIMEOUT) -> bytes | None:
-    """Single HTTP GET that returns raw bytes only if a valid PDF is returned."""
     try:
         r = _requests.get(url, params=params, headers=_HTTP_HEADERS, timeout=timeout)
         r.raise_for_status()
@@ -594,7 +549,6 @@ def _sequential_batch_fetch(
         if batch_idx < len(batches) - 1:
             time.sleep(0.5)
 
-    # ── SECOND PASS: retry failures / no-data sequentially ───
     if second_pass:
         retry_bdcs = [
             b for b, r in results.items()
@@ -1701,7 +1655,6 @@ def show_daily_orders():
             value=True, key="daily_merge_prev",
         )
 
-    # ── OMC lookup status banner ──────────────────────────────
     omc_df_for_lookup = st.session_state.get("omc_df", pd.DataFrame())
     _has_omc = isinstance(omc_df_for_lookup, pd.DataFrame) and not omc_df_for_lookup.empty
     if _has_omc:
@@ -1743,14 +1696,12 @@ def show_daily_orders():
 
         if merge_prev and has_previous:
             prev = st.session_state.daily_df
-            # Drop OMC Name before merging so we re-derive it cleanly after
             if "OMC Name" in prev.columns:
                 prev = prev.drop(columns=["OMC Name"])
             combined = _merge_dataframes(prev, combined,
                                          ["Date", "Truck", "Order Number", "Product"])
             st.info(f"🔀 Merged — {len(combined)} total records after union.")
 
-        # ── Enrich with OMC names ─────────────────────────────
         combined = _enrich_daily_with_omc(combined, omc_df_for_lookup)
 
         st.session_state.daily_df            = combined
@@ -1776,8 +1727,6 @@ def show_daily_orders():
         st.info("👆 Select a date range and click **FETCH DAILY ORDERS**.")
         return
 
-    # ── Re-enrich on-the-fly if OMC data was loaded AFTER the daily fetch ──
-    # This ensures the OMC Name column is always up-to-date without re-fetching.
     if _has_omc and ("OMC Name" not in df.columns or df["OMC Name"].eq("").all()):
         with st.spinner("🔗 Cross-referencing OMC names from loadings data…"):
             df = _enrich_daily_with_omc(df, omc_df_for_lookup)
@@ -1798,7 +1747,6 @@ def show_daily_orders():
 
     st.markdown("---")
 
-    # ── Summary metrics ───────────────────────────────────────
     n_omc_matched = int((df["OMC Name"] != "").sum()) if "OMC Name" in df.columns else 0
     c1,c2,c3,c4,c5,c6 = st.columns(6)
     c1.metric("Orders",          f"{len(df):,}")
@@ -1823,7 +1771,6 @@ def show_daily_orders():
     st.caption(f"**{len(bdc_sum)} BDCs** with daily order data")
     st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
 
-    # ── OMC Name summary (only when matches exist) ────────────
     if "OMC Name" in df.columns and n_omc_matched > 0:
         st.markdown("### 🏢 TOP OMCs (via Cross-Reference)")
         omc_name_sum = (
@@ -1859,9 +1806,7 @@ def show_daily_orders():
     st.caption(f"Showing **{len(filt):,}** records | "
                f"Volume: **{filt['Quantity'].sum():,.0f} LT**")
 
-    # ── Detail table — include OMC Name column ────────────────
     detail_cols = ["Date","Truck","Quantity","Order Number","OMC Name","BDC","Depot","Price","Product","Status"]
-    # Only keep columns that actually exist in the dataframe
     detail_cols = [c for c in detail_cols if c in filt.columns]
     st.dataframe(
         filt[detail_cols].sort_values(["Product","Date"]),
@@ -1989,7 +1934,7 @@ def show_market_share():
 
 
 # ══════════════════════════════════════════════════════════════
-# PAGE: STOCK TRANSACTION
+# PAGE: STOCK TRANSACTION  ← FIXED
 # ══════════════════════════════════════════════════════════════
 def show_stock_transaction():
     st.markdown("<h2>📈 STOCK TRANSACTION ANALYZER</h2>", unsafe_allow_html=True)
@@ -2009,10 +1954,11 @@ def show_stock_transaction():
 
     c1, c2 = st.columns(2)
     with c1:
-        selected_bdc     = st.selectbox("BDC",    sorted(BDC_MAP.keys()),   key="txn_bdc")
-        selected_product = st.selectbox("Product", PRODUCT_OPTIONS,          key="txn_prod")
+        # Widget keys are "txn_bdc", "txn_prod" — we store display labels separately
+        selected_bdc     = st.selectbox("BDC",     sorted(BDC_MAP.keys()),    key="txn_bdc")
+        selected_product = st.selectbox("Product",  PRODUCT_OPTIONS,           key="txn_prod")
     with c2:
-        selected_depot   = st.selectbox("Depot",   sorted(DEPOT_MAP.keys()), key="txn_depot")
+        selected_depot   = st.selectbox("Depot",    sorted(DEPOT_MAP.keys()),  key="txn_depot")
 
     c3, c4 = st.columns(2)
     with c3:
@@ -2040,10 +1986,11 @@ def show_stock_transaction():
             records = _parse_stock_transaction_pdf(pdf_bytes)
             if records:
                 df_txn = pd.DataFrame(records)
-                st.session_state.stock_txn_df = df_txn
-                st.session_state.txn_bdc      = selected_bdc
-                st.session_state.txn_depot    = selected_depot
-                st.session_state.txn_product  = selected_product
+                st.session_state.stock_txn_df    = df_txn
+                # ── FIX: use _label suffix to avoid collision with widget keys ──
+                st.session_state.txn_bdc_label     = selected_bdc
+                st.session_state.txn_depot_label   = selected_depot
+                st.session_state.txn_product_label = selected_product
                 _save_state("stock_txn_df", df_txn)
                 st.success(f"✅ {len(records):,} transaction records extracted.")
             else:
@@ -2056,9 +2003,10 @@ def show_stock_transaction():
         st.info("👆 Configure the parameters above and click **FETCH TRANSACTION REPORT**.")
         return
 
-    st.markdown(f"### {st.session_state.get('txn_bdc','')} — "
-                f"{st.session_state.get('txn_product','')} @ "
-                f"{st.session_state.get('txn_depot','')}")
+    # ── FIX: read from _label keys ────────────────────────────
+    st.markdown(f"### {st.session_state.get('txn_bdc_label','')} — "
+                f"{st.session_state.get('txn_product_label','')} @ "
+                f"{st.session_state.get('txn_depot_label','')}")
 
     inflows   = float(df[df["Description"].isin(["Custody Transfer In","Product Outturn"])]["Volume"].sum())
     outflows  = float(df[df["Description"].isin(["Sale","Custody Transfer Out"])]["Volume"].sum())
@@ -2580,7 +2528,6 @@ def show_vessel_supply():
 # MAIN
 # ══════════════════════════════════════════════════════════════
 def main():
-    # ── Restore persisted data into session_state on every fresh load ──
     _restore_session_state()
 
     st.markdown("""
