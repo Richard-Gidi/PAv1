@@ -25,6 +25,12 @@ Fixed version:
   - STOCK TRANSACTION FIX:
       * Renamed session_state keys for txn_bdc/depot/product to txn_bdc_label
         etc. to avoid collision with Streamlit widget keys of the same name.
+  - PRODUCT OUTTURN INTELLIGENCE (NEW):
+      * Dedicated page that sweeps ALL BDCs × ALL depots × target product(s)
+        and collects every "Product Outturn" transaction line.
+      * Parses vessel name from the Account field where possible.
+      * Shows BDC, depot, product, quantity, vessel name, date and Trans #.
+      * Full pivot, top-BDC ranking, date-range filter, and Excel export.
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -262,6 +268,8 @@ h1,h2,h3{font-family:'Orbitron',sans-serif!important;color:#00ffff!important;
 p,span,div{font-family:'Rajdhani',sans-serif;color:#e0e0e0;}
 .fetch-log{font-family:monospace;font-size:12px;background:rgba(0,0,0,0.5);
     border:1px solid #00ffff33;border-radius:8px;padding:10px;max-height:180px;overflow-y:auto;}
+.outturn-card{background:rgba(10,14,39,0.9);padding:20px;border-radius:14px;
+    border:2px solid #ff6600;text-align:center;box-shadow:0 0 18px #ff660055;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -273,11 +281,12 @@ PERSIST_DIR = os.path.join(os.getcwd(), ".persist_state")
 os.makedirs(PERSIST_DIR, exist_ok=True)
 
 _PERSIST_KEYS = {
-    "bdc_records":  [],
-    "omc_df":       pd.DataFrame(),
-    "daily_df":     pd.DataFrame(),
-    "stock_txn_df": pd.DataFrame(),
-    "vessel_data":  pd.DataFrame(),
+    "bdc_records":    [],
+    "omc_df":         pd.DataFrame(),
+    "daily_df":       pd.DataFrame(),
+    "stock_txn_df":   pd.DataFrame(),
+    "vessel_data":    pd.DataFrame(),
+    "outturn_df":     pd.DataFrame(),   # ← NEW
 }
 
 
@@ -896,17 +905,31 @@ def extract_daily_orders_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
     return df
 
 
-# ── Stock Transaction ────────────────────────────────────────
-def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
+# ══════════════════════════════════════════════════════════════
+# STOCK TRANSACTION PDF PARSER  (full — keeps all descriptions)
+# ══════════════════════════════════════════════════════════════
+
+def _parse_stock_transaction_pdf_full(
+    pdf_bytes: bytes,
+    bdc_name: str = "",
+    depot_name: str = "",
+    product_name: str = "",
+) -> list:
+    """
+    Parse a Stock Transaction PDF and return ALL transaction rows,
+    now enriched with BDC / Depot / Product context fields so that
+    the Product Outturn aggregator can tag each row correctly.
+    """
     DESCRIPTIONS = sorted([
-        "Balance b/fwd","Stock Take","Sale",
-        "Custody Transfer In","Custody Transfer Out","Product Outturn",
+        "Balance b/fwd", "Stock Take", "Sale",
+        "Custody Transfer In", "Custody Transfer Out", "Product Outturn",
     ], key=len, reverse=True)
+
     SKIP_PFX = (
-        "national petroleum authority","stock transaction report",
-        "bdc :","depot :","product :","printed by","printed on",
-        "date trans #","actual stock balance","stock commitments",
-        "available stock balance","last stock update","i.t.s from",
+        "national petroleum authority", "stock transaction report",
+        "bdc :", "depot :", "product :", "printed by", "printed on",
+        "date trans #", "actual stock balance", "stock commitments",
+        "available stock balance", "last stock update", "i.t.s from",
     )
 
     def _skip(line):
@@ -917,7 +940,7 @@ def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
         s = s.strip()
         neg = s.startswith("(") and s.endswith(")")
         try:
-            v = int(s.strip("()").replace(",",""))
+            v = int(s.strip("()").replace(",", ""))
             return -v if neg else v
         except ValueError:
             return None
@@ -942,8 +965,14 @@ def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
         vol, bal = _pnum(nums[-2]), _pnum(nums[-1])
         trail = re.search(re.escape(nums[-2]) + r"\s+" + re.escape(nums[-1]) + r"\s*$", after)
         acct  = after[:trail.start()].strip() if trail else " ".join(after.split()[:-2])
-        return {"Date": date, "Trans #": trans, "Description": desc,
-                "Account": acct, "Volume": vol or 0, "Balance": bal or 0}
+        return {
+            "Date":        date,
+            "Trans #":     trans,
+            "Description": desc,
+            "Account":     acct,
+            "Volume":      vol or 0,
+            "Balance":     bal or 0,
+        }
 
     records = []
     seen    = set()
@@ -962,14 +991,116 @@ def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
                         key = (row["Date"], row["Trans #"], row["Description"], row["Volume"])
                         if key not in seen:
                             seen.add(key)
+                            row["BDC"]     = bdc_name
+                            row["Depot"]   = depot_name
+                            row["Product"] = product_name
                             records.append(row)
     except Exception:
         pass
     return records
 
 
+# Legacy wrapper used by the Stock Transaction page (unchanged behaviour)
+def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
+    return _parse_stock_transaction_pdf_full(pdf_bytes)
+
+
 # ══════════════════════════════════════════════════════════════
-# ROBUST PER-BDC FETCH WRAPPERS
+# PRODUCT OUTTURN — MULTI-BDC SWEEP HELPERS
+# ══════════════════════════════════════════════════════════════
+
+# Vessel-name patterns commonly found in the Account field of a
+# "Product Outturn" transaction line.
+_VESSEL_KEYWORDS = re.compile(
+    r"\b(M\.?T\.?\s*[A-Z][A-Z0-9 \-]{2,40}|"
+    r"MV\s+[A-Z][A-Z0-9 \-]{2,40}|"
+    r"MT\s+[A-Z][A-Z0-9 \-]{2,40}|"
+    r"[A-Z]{2,}\s+[A-Z]{2,}(?:\s+[A-Z0-9]{2,})*)\b",
+    flags=re.IGNORECASE,
+)
+
+# Words that indicate the Account field is NOT a vessel name
+_NON_VESSEL_WORDS = {
+    "SALE","TRANSFER","BDC","OUTTURN","PRODUCT","BALANCE","STOCK",
+    "CUSTODY","BOST","TEMA","ACCRA","TAKORADI","KUMASI","GHANA",
+}
+
+
+def _extract_vessel_name(account: str) -> str:
+    """
+    Try to pull a vessel name out of the Account column.
+    Returns the best candidate or empty string.
+    """
+    if not account:
+        return ""
+    account = account.strip()
+
+    # Explicit MV / MT prefix — highest confidence
+    m = re.search(r"\b(?:MV|MT|M\.T\.?)\s+([A-Z][A-Z0-9 \-]{2,40})", account, re.IGNORECASE)
+    if m:
+        return ("MV " + m.group(1).strip()).upper()
+
+    # Whole account is plausibly a vessel name (all-caps multi-word, no noise words)
+    tokens = account.upper().split()
+    if (
+        2 <= len(tokens) <= 6
+        and all(re.match(r"^[A-Z0-9\-]+$", t) for t in tokens)
+        and not any(t in _NON_VESSEL_WORDS for t in tokens)
+    ):
+        return account.upper()
+
+    return ""
+
+
+def _make_outturn_fetcher(start_str: str, end_str: str, products: list[str]):
+    """
+    Returns a fetch function that, for a given BDC name, iterates over
+    every depot × selected-product combination and collects Product Outturn rows.
+    """
+    def _fn(bdc_name: str):
+        bdc_id = BDC_MAP.get(bdc_name)
+        if not bdc_id:
+            return None
+
+        all_rows = []
+        for depot_name, depot_id in DEPOT_MAP.items():
+            for prod_label in products:
+                product_id = STOCK_PRODUCT_MAP.get(prod_label)
+                if not product_id:
+                    continue
+                params = {
+                    "lngProductId": product_id,
+                    "lngBDCId":     bdc_id,
+                    "lngDepotId":   depot_id,
+                    "dtpStartDate": start_str,
+                    "dtpEndDate":   end_str,
+                    "lngUserId":    NPA_CONFIG["USER_ID"],
+                }
+                pdf_bytes = _fetch_pdf(NPA_CONFIG["STOCK_TRANSACTION_URL"], params)
+                if not pdf_bytes:
+                    continue
+                rows = _parse_stock_transaction_pdf_full(
+                    pdf_bytes,
+                    bdc_name=bdc_name,
+                    depot_name=depot_name,
+                    product_name=prod_label,
+                )
+                # Keep ONLY Product Outturn rows
+                outturn_rows = [r for r in rows if r.get("Description") == "Product Outturn"]
+                all_rows.extend(outturn_rows)
+
+        if not all_rows:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(all_rows)
+        df["Vessel Name"] = df["Account"].apply(_extract_vessel_name)
+        return df
+
+    return _fn
+
+
+# ══════════════════════════════════════════════════════════════
+# ROBUST PER-BDC FETCH WRAPPERS  (balance / omc / daily)
 # ══════════════════════════════════════════════════════════════
 
 def _make_balance_fetcher():
@@ -1954,7 +2085,6 @@ def show_stock_transaction():
 
     c1, c2 = st.columns(2)
     with c1:
-        # Widget keys are "txn_bdc", "txn_prod" — we store display labels separately
         selected_bdc     = st.selectbox("BDC",     sorted(BDC_MAP.keys()),    key="txn_bdc")
         selected_product = st.selectbox("Product",  PRODUCT_OPTIONS,           key="txn_prod")
     with c2:
@@ -1987,7 +2117,6 @@ def show_stock_transaction():
             if records:
                 df_txn = pd.DataFrame(records)
                 st.session_state.stock_txn_df    = df_txn
-                # ── FIX: use _label suffix to avoid collision with widget keys ──
                 st.session_state.txn_bdc_label     = selected_bdc
                 st.session_state.txn_depot_label   = selected_depot
                 st.session_state.txn_product_label = selected_product
@@ -2003,7 +2132,6 @@ def show_stock_transaction():
         st.info("👆 Configure the parameters above and click **FETCH TRANSACTION REPORT**.")
         return
 
-    # ── FIX: read from _label keys ────────────────────────────
     st.markdown(f"### {st.session_state.get('txn_bdc_label','')} — "
                 f"{st.session_state.get('txn_product_label','')} @ "
                 f"{st.session_state.get('txn_depot_label','')}")
@@ -2041,6 +2169,371 @@ def show_stock_transaction():
     excel_bytes = _to_excel_bytes({"Transactions": df, "Summary": txn_sum})
     st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes, "stock_transaction.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+# ══════════════════════════════════════════════════════════════
+# PAGE: PRODUCT OUTTURN INTELLIGENCE  ← NEW
+# ══════════════════════════════════════════════════════════════
+def show_product_outturn():
+    st.markdown("<h2>⛴️ PRODUCT OUTTURN INTELLIGENCE</h2>", unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style='background:rgba(255,102,0,0.07);border:1px solid #ff660044;
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
+    <b style='color:#ff6600;'>What this page does</b><br>
+    Sweeps <b>every BDC × every depot × selected product(s)</b> and collects all
+    <b>Product Outturn</b> transactions — the moment a vessel's cargo is officially
+    received into a BDC's stock account at a depot.<br><br>
+    Each row shows: <b>Date · Trans # · BDC · Depot · Product · Volume (LT) ·
+    Running Balance · Account / Vessel Name</b>.<br>
+    The <b>Vessel Name</b> column is auto-extracted from the Account field using
+    pattern matching (MV / MT prefix, all-caps multi-word names, etc.).
+    </div>
+    """, unsafe_allow_html=True)
+
+    # ── Configuration controls ────────────────────────────────
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input(
+            "Start Date",
+            value=datetime.now() - timedelta(days=30),
+            key="ot_start",
+        )
+    with col2:
+        end_date = st.date_input("End Date", value=datetime.now(), key="ot_end")
+
+    all_bdc_names = sorted(BDC_MAP.keys())   # BDC_MAP has entity IDs required for this endpoint
+    n_total_bdcs  = len(all_bdc_names)
+    all_depots    = sorted(DEPOT_MAP.keys())
+    n_total_depots = len(all_depots)
+
+    col3, col4 = st.columns([3, 1])
+    with col3:
+        sel_bdcs = st.multiselect(
+            f"Select BDCs to sweep  (blank = all {n_total_bdcs})",
+            all_bdc_names,
+            key="ot_bdc_select",
+        )
+    with col4:
+        st.markdown("<br>", unsafe_allow_html=True)
+        fetch_all_bdcs = st.checkbox("All BDCs", value=True, key="ot_all_bdcs")
+
+    bdcs_to_sweep = all_bdc_names if (fetch_all_bdcs or not sel_bdcs) else sel_bdcs
+
+    sel_products = st.multiselect(
+        "Products to include",
+        PRODUCT_OPTIONS,
+        default=PRODUCT_OPTIONS,
+        key="ot_products",
+    )
+    if not sel_products:
+        sel_products = PRODUCT_OPTIONS
+
+    period_days = max((end_date - start_date).days, 1)
+
+    n_calls = len(bdcs_to_sweep) * n_total_depots * len(sel_products)
+    st.info(
+        f"📋 **{len(bdcs_to_sweep)} BDCs** × **{n_total_depots} depots** × "
+        f"**{len(sel_products)} product(s)** = **{n_calls:,} API calls**  |  "
+        f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
+        f"({period_days} days)"
+    )
+
+    if n_calls > 5000:
+        st.warning(
+            f"⚠️ This sweep will make **{n_calls:,} requests** which may take 20–40 minutes. "
+            "Consider narrowing the BDC or product selection to speed things up."
+        )
+
+    has_previous = not st.session_state.get("outturn_df", pd.DataFrame()).empty
+    merge_prev   = False
+    if has_previous:
+        merge_prev = st.checkbox(
+            "🔀 Merge with previous outturn results (union, deduplicated)",
+            value=True, key="ot_merge_prev",
+        )
+
+    if st.button("⛴️ SWEEP FOR PRODUCT OUTTURN", key="ot_fetch"):
+        start_str = start_date.strftime("%m/%d/%Y")
+        end_str   = end_date.strftime("%m/%d/%Y")
+        prog      = st.progress(0, text="Initialising outturn sweep…")
+        log_box   = st.empty()
+        log_lines = []
+
+        fetch_fn = _make_outturn_fetcher(start_str, end_str, sel_products)
+
+        results = _sequential_batch_fetch(
+            bdcs_to_sweep,
+            fetch_fn,
+            prog, log_box, log_lines,
+            second_pass=True,
+        )
+        prog.progress(1.0, text="✅ Outturn sweep complete")
+
+        combined, summary = _combine_df_results(
+            results,
+            dedup_cols=["Date", "Trans #", "BDC", "Depot", "Product", "Volume"],
+        )
+
+        if merge_prev and has_previous:
+            prev = st.session_state.outturn_df
+            combined = _merge_dataframes(
+                prev, combined,
+                ["Date", "Trans #", "BDC", "Depot", "Product", "Volume"],
+            )
+            st.info(f"🔀 Merged — {len(combined):,} total outturn records after union.")
+
+        st.session_state.outturn_df = combined
+        _save_state("outturn_df", combined)
+
+        st.markdown("---")
+        _render_fetch_summary(
+            summary, len(bdcs_to_sweep),
+            len(combined) if not combined.empty else 0,
+            "Outturn Records",
+        )
+
+    # ── Display ───────────────────────────────────────────────
+    df = st.session_state.get("outturn_df", pd.DataFrame())
+
+    if df is None or (isinstance(df, pd.DataFrame) and df.empty):
+        st.info("👆 Configure parameters and click **SWEEP FOR PRODUCT OUTTURN**.")
+        return
+
+    st.markdown("---")
+
+    # ── Summary metrics ───────────────────────────────────────
+    total_vol   = float(df["Volume"].sum())
+    n_vessels   = df["Vessel Name"].replace("", pd.NA).dropna().nunique()
+    n_bdcs_data = df["BDC"].nunique()
+    n_depots    = df["Depot"].nunique()
+
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("📦 Outturn Events",    f"{len(df):,}")
+    c2.metric("🛢️ Total Volume (LT)", f"{total_vol:,.0f}")
+    c3.metric("🏦 BDCs",             f"{n_bdcs_data}")
+    c4.metric("🏭 Depots",           f"{n_depots}")
+    c5.metric("🚢 Vessels ID'd",     f"{n_vessels}")
+
+    # ── Product breakdown ────────────────────────────────────
+    st.markdown("### 📦 PRODUCT BREAKDOWN")
+    prod_cols = st.columns(len(sel_products))
+    PROD_COLORS = {"PMS": "#00ffff", "Gasoil": "#ffaa00", "LPG": "#00ff88"}
+    PROD_ICONS  = {"PMS": "⛽", "Gasoil": "🚛", "LPG": "🔵"}
+
+    for col, prod in zip(prod_cols, sel_products):
+        sub = df[df["Product"] == prod]
+        vol = float(sub["Volume"].sum())
+        color = PROD_COLORS.get(prod, "#fff")
+        icon  = PROD_ICONS.get(prod, "🛢")
+        with col:
+            st.markdown(f"""
+            <div class='outturn-card' style='border-color:{color};box-shadow:0 0 18px {color}55;'>
+                <div style='font-size:30px;'>{icon}</div>
+                <div style='font-family:Orbitron,sans-serif;color:{color};
+                             font-size:14px;font-weight:700;margin:6px 0;'>{prod}</div>
+                <div style='font-size:28px;color:{color};font-weight:900;'>{vol:,.0f}</div>
+                <div style='color:#888;font-size:12px;'>Litres / KG</div>
+                <div style='color:#ccc;font-size:12px;margin-top:4px;'>{len(sub)} events · {sub["BDC"].nunique()} BDCs</div>
+            </div>""", unsafe_allow_html=True)
+
+    # ── Top BDCs by outturn volume ────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🏦 TOP BDCs BY OUTTURN VOLUME")
+    bdc_sum = (
+        df.groupby("BDC")
+        .agg(
+            Events       =("Trans #", "count"),
+            Volume_LT    =("Volume", "sum"),
+            Depots       =("Depot", "nunique"),
+            Products     =("Product", "nunique"),
+            Vessels_ID_d =("Vessel Name", lambda x: x.replace("", pd.NA).dropna().nunique()),
+        )
+        .reset_index()
+        .sort_values("Volume_LT", ascending=False)
+        .rename(columns={"Volume_LT": "Total Volume (LT)", "Vessels_ID_d": "Vessels ID'd"})
+    )
+    bdc_sum["Market Share %"] = (bdc_sum["Total Volume (LT)"] / total_vol * 100).round(2)
+    st.caption(f"**{len(bdc_sum)} BDCs** recorded outturn events in the selected period.")
+    st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
+
+    # ── Bar chart — BDC outturn volumes ──────────────────────
+    if not bdc_sum.empty:
+        fig_bdc = go.Figure(go.Bar(
+            x=bdc_sum["BDC"].head(20),
+            y=bdc_sum["Total Volume (LT)"].head(20),
+            marker=dict(
+                color=bdc_sum["Total Volume (LT)"].head(20),
+                colorscale="Turbo",
+                showscale=False,
+            ),
+            text=bdc_sum["Total Volume (LT)"].head(20).apply(lambda v: f"{v:,.0f}"),
+            textposition="outside",
+        ))
+        fig_bdc.update_layout(
+            title=dict(text="Top 20 BDCs — Product Outturn Volume",
+                       font=dict(color="#ff6600", family="Orbitron")),
+            paper_bgcolor="rgba(10,14,39,0.9)",
+            plot_bgcolor="rgba(10,14,39,0.9)",
+            font=dict(color="white"),
+            xaxis=dict(title="BDC", tickangle=-35),
+            yaxis=dict(title="Volume (LT)"),
+            height=420,
+        )
+        st.plotly_chart(fig_bdc, use_container_width=True)
+
+    # ── Depot breakdown ───────────────────────────────────────
+    st.markdown("### 🏭 OUTTURN BY DEPOT")
+    depot_sum = (
+        df.groupby(["Depot", "Product"])
+        .agg(Events=("Trans #","count"), Volume_LT=("Volume","sum"))
+        .reset_index()
+        .sort_values("Volume_LT", ascending=False)
+        .rename(columns={"Volume_LT": "Volume (LT)"})
+    )
+    st.dataframe(depot_sum, use_container_width=True, hide_index=True)
+
+    # ── Vessel name analysis ──────────────────────────────────
+    st.markdown("### 🚢 VESSEL NAME ANALYSIS")
+    vessel_df = df[df["Vessel Name"].str.strip() != ""].copy()
+    if vessel_df.empty:
+        st.info(
+            "No vessel names could be auto-extracted from the Account field in this dataset. "
+            "Check the **Full Outturn Records** table below and inspect the 'Account' column manually."
+        )
+    else:
+        vessel_sum = (
+            vessel_df.groupby(["Vessel Name", "Product"])
+            .agg(
+                Outturns =("Trans #", "count"),
+                Volume_LT=("Volume", "sum"),
+                BDCs     =("BDC", "nunique"),
+                Depots   =("Depot", "nunique"),
+                First_Date=("Date", "min"),
+                Last_Date =("Date", "max"),
+            )
+            .reset_index()
+            .sort_values("Volume_LT", ascending=False)
+            .rename(columns={"Volume_LT": "Total Volume (LT)"})
+        )
+        st.caption(f"**{vessel_df['Vessel Name'].nunique()} unique vessel identifiers** extracted. "
+                   "Name extraction is heuristic — verify against shipping records.")
+        st.dataframe(vessel_sum, use_container_width=True, hide_index=True)
+
+        # Treemap of vessel volumes
+        if len(vessel_sum) >= 2:
+            fig_vessel = go.Figure(go.Treemap(
+                labels=vessel_sum["Vessel Name"] + "<br>" + vessel_sum["Product"],
+                parents=[""] * len(vessel_sum),
+                values=vessel_sum["Total Volume (LT)"],
+                textinfo="label+value",
+                marker=dict(colorscale="Sunset"),
+            ))
+            fig_vessel.update_layout(
+                title=dict(text="Vessel Outturn Volume Treemap",
+                           font=dict(color="#ff6600", family="Orbitron")),
+                paper_bgcolor="rgba(10,14,39,0.9)",
+                font=dict(color="white"),
+                height=420,
+            )
+            st.plotly_chart(fig_vessel, use_container_width=True)
+
+    # ── Time-series of outturn events ─────────────────────────
+    st.markdown("### 📅 OUTTURN TIMELINE")
+    try:
+        df_ts = df.copy()
+        df_ts["Date_dt"] = pd.to_datetime(df_ts["Date"], dayfirst=True, errors="coerce")
+        df_ts = df_ts.dropna(subset=["Date_dt"])
+        if not df_ts.empty:
+            daily_ts = (
+                df_ts.groupby(["Date_dt", "Product"])["Volume"]
+                .sum()
+                .reset_index()
+                .rename(columns={"Date_dt": "Date", "Volume": "Volume (LT)"})
+            )
+            PROD_COLOR_MAP = {"PMS": "#00ffff", "Gasoil": "#ffaa00", "LPG": "#00ff88"}
+            fig_ts = go.Figure()
+            for prod in daily_ts["Product"].unique():
+                sub_ts = daily_ts[daily_ts["Product"] == prod].sort_values("Date")
+                fig_ts.add_trace(go.Scatter(
+                    x=sub_ts["Date"],
+                    y=sub_ts["Volume (LT)"],
+                    mode="lines+markers",
+                    name=prod,
+                    line=dict(color=PROD_COLOR_MAP.get(prod, "#fff"), width=2),
+                    marker=dict(size=6),
+                ))
+            fig_ts.update_layout(
+                title=dict(text="Daily Outturn Volume by Product",
+                           font=dict(color="#ff6600", family="Orbitron")),
+                paper_bgcolor="rgba(10,14,39,0.9)",
+                plot_bgcolor="rgba(10,14,39,0.9)",
+                font=dict(color="white"),
+                xaxis=dict(title="Date"),
+                yaxis=dict(title="Volume (LT)"),
+                legend=dict(font=dict(color="white")),
+                height=380,
+            )
+            st.plotly_chart(fig_ts, use_container_width=True)
+    except Exception:
+        pass
+
+    # ── Filter & explore ──────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🔍 FILTER & EXPLORE FULL RECORDS")
+
+    filter_by = st.selectbox(
+        "Filter by",
+        ["All Records", "BDC", "Depot", "Product", "Vessel Name"],
+        key="ot_filter_by",
+    )
+    col_map = {"BDC": "BDC", "Depot": "Depot", "Product": "Product", "Vessel Name": "Vessel Name"}
+
+    if filter_by == "All Records":
+        filt = df
+    else:
+        col_f = col_map[filter_by]
+        if col_f not in df.columns:
+            df[col_f] = ""
+        opts  = ["ALL"] + sorted(df[col_f].replace("", pd.NA).dropna().unique().tolist())
+        fval  = st.selectbox(f"Select {filter_by}", opts, key="ot_filter_val")
+        filt  = df if fval == "ALL" else df[df[col_f] == fval]
+
+    st.caption(
+        f"Showing **{len(filt):,}** records  |  "
+        f"Volume: **{filt['Volume'].sum():,.0f} LT**  |  "
+        f"BDCs: **{filt['BDC'].nunique()}**  |  "
+        f"Depots: **{filt['Depot'].nunique()}**"
+    )
+
+    display_cols = ["Date", "Trans #", "BDC", "Depot", "Product",
+                    "Volume", "Balance", "Account", "Vessel Name"]
+    display_cols = [c for c in display_cols if c in filt.columns]
+    st.dataframe(
+        filt[display_cols].sort_values(["Date", "BDC"]),
+        use_container_width=True,
+        height=450,
+        hide_index=True,
+    )
+
+    # ── Excel export ──────────────────────────────────────────
+    st.markdown("---")
+    _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    excel_sheets = {
+        "All Outturns":     df[display_cols] if display_cols else df,
+        "By BDC":           bdc_sum,
+        "By Depot":         depot_sum,
+    }
+    if not vessel_df.empty:
+        excel_sheets["By Vessel"] = vessel_sum
+
+    excel_bytes = _to_excel_bytes(excel_sheets)
+    st.download_button(
+        "⬇️ DOWNLOAD OUTTURN EXCEL",
+        excel_bytes,
+        f"product_outturn_{_ts}.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2547,6 +3040,7 @@ def main():
             "📅 DAILY ORDERS",
             "📊 MARKET SHARE",
             "📈 STOCK TRANSACTION",
+            "⛴️ PRODUCT OUTTURN",       # ← NEW
             "🌍 NATIONAL STOCKOUT",
             "🌐 WORLD RISK MONITOR",
             "🚢 VESSEL SUPPLY",
@@ -2560,6 +3054,7 @@ def main():
         has_dly  = not st.session_state.get("daily_df", pd.DataFrame()).empty
         has_txn  = not st.session_state.get("stock_txn_df", pd.DataFrame()).empty
         has_ves  = not st.session_state.get("vessel_data", pd.DataFrame()).empty
+        has_out  = not st.session_state.get("outturn_df", pd.DataFrame()).empty   # ← NEW
 
         badges = {
             "Balance":   ("🟢","✅" if has_bal  else "○"),
@@ -2567,6 +3062,7 @@ def main():
             "Daily Ord": ("🟢","✅" if has_dly  else "○"),
             "Stock Txn": ("🟢","✅" if has_txn  else "○"),
             "Vessels":   ("🟢","✅" if has_ves  else "○"),
+            "Outturn":   ("🟢","✅" if has_out  else "○"),   # ← NEW
         }
 
         st.markdown("""
@@ -2597,6 +3093,7 @@ def main():
     elif choice == "📅 DAILY ORDERS":       show_daily_orders()
     elif choice == "📊 MARKET SHARE":       show_market_share()
     elif choice == "📈 STOCK TRANSACTION":  show_stock_transaction()
+    elif choice == "⛴️ PRODUCT OUTTURN":   show_product_outturn()    # ← NEW
     elif choice == "🌍 NATIONAL STOCKOUT":  show_national_stockout()
     elif choice == "🌐 WORLD RISK MONITOR": show_world_monitor()
     elif choice == "🚢 VESSEL SUPPLY":      show_vessel_supply()
