@@ -489,6 +489,13 @@ RETRY_DELAY = 3
 SECOND_PASS_DELAY   = 4
 SECOND_PASS_RETRIES = 3
 
+# Outturn sweep — smaller concurrency to avoid server rate-limits
+# (each "task" is a single BDC×depot×product triplet, not a whole BDC)
+OUTTURN_BATCH_SIZE       = 3
+OUTTURN_INTER_REQ_DELAY  = 0.4   # seconds between requests inside a batch
+OUTTURN_MAX_RETRIES      = 3
+OUTTURN_RETRY_DELAY      = 5
+
 
 def _sequential_batch_fetch(
     bdc_list:   list,
@@ -1054,49 +1061,152 @@ def _extract_vessel_name(account: str) -> str:
 
 def _make_outturn_fetcher(start_str: str, end_str: str, products: list[str]):
     """
-    Returns a fetch function that, for a given BDC name, iterates over
-    every depot × selected-product combination and collects Product Outturn rows.
+    Returns a fetch function for a single (BDC, depot, product) TRIPLET.
+    The caller (_sweep_outturn_flat) is responsible for iterating triplets;
+    this function handles one triplet at a time so retries and progress are
+    granular — avoiding the original problem where one "BDC task" silently
+    issued 90+ sequential HTTP requests before the progress bar moved.
     """
-    def _fn(bdc_name: str):
-        bdc_id = BDC_MAP.get(bdc_name)
-        if not bdc_id:
-            return None
-
-        all_rows = []
-        for depot_name, depot_id in DEPOT_MAP.items():
-            for prod_label in products:
-                product_id = STOCK_PRODUCT_MAP.get(prod_label)
-                if not product_id:
-                    continue
-                params = {
-                    "lngProductId": product_id,
-                    "lngBDCId":     bdc_id,
-                    "lngDepotId":   depot_id,
-                    "dtpStartDate": start_str,
-                    "dtpEndDate":   end_str,
-                    "lngUserId":    NPA_CONFIG["USER_ID"],
-                }
-                pdf_bytes = _fetch_pdf(NPA_CONFIG["STOCK_TRANSACTION_URL"], params)
-                if not pdf_bytes:
-                    continue
-                rows = _parse_stock_transaction_pdf_full(
-                    pdf_bytes,
-                    bdc_name=bdc_name,
-                    depot_name=depot_name,
-                    product_name=prod_label,
-                )
-                # Keep ONLY Product Outturn rows
-                outturn_rows = [r for r in rows if r.get("Description") == "Product Outturn"]
-                all_rows.extend(outturn_rows)
-
-        if not all_rows:
+    def _fn(triplet: tuple) -> pd.DataFrame:
+        bdc_name, depot_name, prod_label = triplet
+        bdc_id     = BDC_MAP.get(bdc_name)
+        depot_id   = DEPOT_MAP.get(depot_name)
+        product_id = STOCK_PRODUCT_MAP.get(prod_label)
+        if not bdc_id or not depot_id or not product_id:
             return pd.DataFrame()
-
-        df = pd.DataFrame(all_rows)
+        params = {
+            "lngProductId": product_id,
+            "lngBDCId":     bdc_id,
+            "lngDepotId":   depot_id,
+            "dtpStartDate": start_str,
+            "dtpEndDate":   end_str,
+            "lngUserId":    NPA_CONFIG["USER_ID"],
+        }
+        pdf_bytes = _fetch_pdf(NPA_CONFIG["STOCK_TRANSACTION_URL"], params)
+        if not pdf_bytes:
+            return pd.DataFrame()
+        rows = _parse_stock_transaction_pdf_full(
+            pdf_bytes,
+            bdc_name=bdc_name,
+            depot_name=depot_name,
+            product_name=prod_label,
+        )
+        outturn_rows = [r for r in rows if r.get("Description") == "Product Outturn"]
+        if not outturn_rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(outturn_rows)
         df["Vessel Name"] = df["Account"].apply(_extract_vessel_name)
         return df
 
     return _fn
+
+
+def _sweep_outturn_flat(
+    bdcs_to_sweep: list,
+    start_str: str,
+    end_str: str,
+    sel_products: list,
+    progress_bar,
+    status_text,
+    log_lines: list,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Flat triplet sweep for Product Outturn.
+
+    Instead of one task-per-BDC (which hid 90+ HTTP calls inside a single
+    progress tick), each (BDC, depot, product) triplet is an independent
+    work unit.  This gives:
+      • granular progress updates
+      • per-triplet retry with short back-off
+      • small concurrent batch size to avoid server rate-limits
+      • an inter-request sleep to stay under API rate limits
+    """
+    import concurrent.futures as _cf
+
+    fetch_fn = _make_outturn_fetcher(start_str, end_str, sel_products)
+
+    # Build the flat list of (bdc, depot, product) triplets
+    triplets = [
+        (bdc, depot, prod)
+        for bdc   in bdcs_to_sweep
+        for depot in sorted(DEPOT_MAP.keys())
+        for prod  in sel_products
+    ]
+    total   = len(triplets)
+    done_n  = [0]
+    lock    = threading.Lock()
+    frames  = []
+    summary = {"success": [], "no_data": [], "failed": []}
+
+    def _attempt(triplet):
+        last_err = None
+        for attempt in range(1, OUTTURN_MAX_RETRIES + 1):
+            try:
+                result = fetch_fn(triplet)
+                return triplet, result, attempt, None
+            except Exception as exc:
+                last_err = exc
+                if attempt < OUTTURN_MAX_RETRIES:
+                    time.sleep(OUTTURN_RETRY_DELAY * (2 ** (attempt - 1)))
+        return triplet, pd.DataFrame(), OUTTURN_MAX_RETRIES, str(last_err)
+
+    batches = [triplets[i: i + OUTTURN_BATCH_SIZE]
+               for i in range(0, total, OUTTURN_BATCH_SIZE)]
+
+    for batch_idx, batch in enumerate(batches):
+        with _cf.ThreadPoolExecutor(max_workers=OUTTURN_BATCH_SIZE) as ex:
+            futs = {ex.submit(_attempt, t): t for t in batch}
+            for fut in _cf.as_completed(futs):
+                triplet, result, attempts, err = fut.result()
+                bdc_name, depot_name, prod_label = triplet
+
+                with lock:
+                    done_n[0] += 1
+                    pct = done_n[0] / total
+                    progress_bar.progress(
+                        pct,
+                        text=f"Sweeping triplets — {done_n[0]:,} / {total:,}  "
+                             f"({pct*100:.1f}%)",
+                    )
+
+                has_data = isinstance(result, pd.DataFrame) and not result.empty
+
+                if err:
+                    summary["failed"].append(bdc_name)
+                    icon = "❌"
+                    note = f"{bdc_name} @ {depot_name}/{prod_label}: FAILED — {err}"
+                elif has_data:
+                    summary["success"].append(bdc_name)
+                    frames.append(result)
+                    icon = "✅"
+                    note = (f"{bdc_name} @ {depot_name}/{prod_label}: "
+                            f"{len(result)} outturn row(s)")
+                else:
+                    summary["no_data"].append(f"{bdc_name}|{depot_name}|{prod_label}")
+                    icon = "·"   # silent — most triplets legitimately have no data
+                    note = None  # skip noisy "no data" lines to keep log readable
+
+                if note:
+                    log_lines.append(f"{icon} {note}")
+                    status_text.markdown(
+                        f"<div class='fetch-log'>{'<br>'.join(log_lines[-12:])}</div>",
+                        unsafe_allow_html=True,
+                    )
+
+        # Pace between batches
+        if batch_idx < len(batches) - 1:
+            time.sleep(OUTTURN_INTER_REQ_DELAY)
+
+    if not frames:
+        return pd.DataFrame(), summary
+
+    combined = pd.concat(frames, ignore_index=True)
+    dedup_cols = ["Date", "Trans #", "BDC", "Depot", "Product", "Volume"]
+    valid_dedup = [c for c in dedup_cols if c in combined.columns]
+    if valid_dedup:
+        combined = combined.drop_duplicates(subset=valid_dedup, keep="first")
+
+    return combined.reset_index(drop=True), summary
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2260,20 +2370,12 @@ def show_product_outturn():
         log_box   = st.empty()
         log_lines = []
 
-        fetch_fn = _make_outturn_fetcher(start_str, end_str, sel_products)
-
-        results = _sequential_batch_fetch(
+        combined, summary = _sweep_outturn_flat(
             bdcs_to_sweep,
-            fetch_fn,
+            start_str, end_str, sel_products,
             prog, log_box, log_lines,
-            second_pass=True,
         )
         prog.progress(1.0, text="✅ Outturn sweep complete")
-
-        combined, summary = _combine_df_results(
-            results,
-            dedup_cols=["Date", "Trans #", "BDC", "Depot", "Product", "Volume"],
-        )
 
         if merge_prev and has_previous:
             prev = st.session_state.outturn_df
