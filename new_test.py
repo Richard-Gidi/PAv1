@@ -25,12 +25,14 @@ Fixed version:
   - STOCK TRANSACTION FIX:
       * Renamed session_state keys for txn_bdc/depot/product to txn_bdc_label
         etc. to avoid collision with Streamlit widget keys of the same name.
-  - PRODUCT OUTTURN INTELLIGENCE (NEW):
-      * Dedicated page that sweeps ALL BDCs × ALL depots × target product(s)
-        and collects every "Product Outturn" transaction line.
-      * Parses vessel name from the Account field where possible.
-      * Shows BDC, depot, product, quantity, vessel name, date and Trans #.
-      * Full pivot, top-BDC ranking, date-range filter, and Excel export.
+  - PRODUCT OUTTURN INTELLIGENCE (FIXED):
+      * Default depot list pre-selected (22 key depots) — user can add/remove.
+      * Fully sequential per-BDC sweep: iterates depots one-by-one inside each
+        BDC so the progress bar moves after EVERY request, not after 90+.
+      * Circuit breaker: if a BDC fails N consecutive depots it is skipped to
+        avoid hanging the entire sweep.
+      * Per-request timeout enforced independently (no silent hang).
+      * Outturn call count shown BEFORE sweep starts so user knows what to expect.
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -219,6 +221,69 @@ VESSEL_SHEET_URL = os.getenv(
     "https://docs.google.com/spreadsheets/d/1z-L79N22rU3p6wLw1CEVWDIw6QSwA5CH/edit?rtpof=true",
 )
 
+# ══════════════════════════════════════════════════════════════
+# DEFAULT OUTTURN DEPOTS
+# These 22 depots are pre-selected when you open the Outturn page.
+# You can add or remove any depot in the UI multiselect.
+# ══════════════════════════════════════════════════════════════
+_OUTTURN_DEFAULT_DEPOT_NAMES = [
+    "BOST - ACCRA PLAINS",
+    "BOST - AKOSOMBO",
+    "BOST - BOLGATANGA",
+    "BOST - BUIPE",
+    "BOST - KUMASI",
+    "BOST GLOBAL DEPOT",
+    "CHASE PETROLEUM - TEMA",
+    "GHANA BUNKERING SERVICES",
+    "GHANA NATIONAL GAS COMPANY LIMITED",
+    "GHANSTOCK LIMITED (TAKORADI)",
+    "MATRIX GAS GHANA LIMITED",
+    "PETROLEUM HUB LIMITED",
+    "PETROLEUM WARE HOUSE AND SUPPLIES",
+    "QUANTUM LPG LOGISTICS LIMITED",
+    "QUANTUM OIL TERMINAL LIMITED",
+    "QUANTUM TERMINALS LIMITED",
+    "TAKORADI BLUE OCEAN INVESTMENT LIMITED",
+    "TEMA FUEL COMPANY (TFC)",
+    "TEMA MULTI PRODUCTS (TMPT)",
+    "TEMA OIL REFINERY (TOR)",
+    "TEMA OIL TERMINAL PLC",
+    "VANA ENERGY LIMITED TEMA",
+]
+
+
+def _resolve_default_depots() -> list[str]:
+    """
+    Return the subset of _OUTTURN_DEFAULT_DEPOT_NAMES that actually exist
+    in DEPOT_MAP (exact match first, then normalised fuzzy).
+    Unknown names are silently skipped so the app still works if the .env
+    doesn't have a particular depot configured.
+    """
+    all_depot_names = sorted(DEPOT_MAP.keys())
+    norm_map = {_normalise_name(d): d for d in all_depot_names}
+    resolved = []
+    for name in _OUTTURN_DEFAULT_DEPOT_NAMES:
+        if name in DEPOT_MAP:
+            resolved.append(name)
+            continue
+        n = _normalise_name(name)
+        if n in norm_map:
+            resolved.append(norm_map[n])
+            continue
+        # fuzzy substring
+        for nd, real in norm_map.items():
+            if n and nd and (n in nd or nd in n):
+                resolved.append(real)
+                break
+    # preserve order, deduplicate
+    seen = set()
+    out  = []
+    for d in resolved:
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
+
 
 # ══════════════════════════════════════════════════════════════
 # PAGE CONFIG & CSS
@@ -286,7 +351,7 @@ _PERSIST_KEYS = {
     "daily_df":       pd.DataFrame(),
     "stock_txn_df":   pd.DataFrame(),
     "vessel_data":    pd.DataFrame(),
-    "outturn_df":     pd.DataFrame(),   # ← NEW
+    "outturn_df":     pd.DataFrame(),
 }
 
 
@@ -480,7 +545,7 @@ def _fetch_pdf(url: str, params: dict, timeout: int = _HTTP_TIMEOUT) -> bytes | 
 
 
 # ══════════════════════════════════════════════════════════════
-# ROBUST BATCH FETCHER
+# ROBUST BATCH FETCHER  (used by Balance / OMC / Daily)
 # ══════════════════════════════════════════════════════════════
 BATCH_SIZE  = 5
 MAX_RETRIES = 5
@@ -488,13 +553,6 @@ RETRY_DELAY = 3
 
 SECOND_PASS_DELAY   = 4
 SECOND_PASS_RETRIES = 3
-
-# Outturn sweep — smaller concurrency to avoid server rate-limits
-# (each "task" is a single BDC×depot×product triplet, not a whole BDC)
-OUTTURN_BATCH_SIZE       = 3
-OUTTURN_INTER_REQ_DELAY  = 0.4   # seconds between requests inside a batch
-OUTTURN_MAX_RETRIES      = 3
-OUTTURN_RETRY_DELAY      = 5
 
 
 def _sequential_batch_fetch(
@@ -913,7 +971,7 @@ def extract_daily_orders_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
 
 
 # ══════════════════════════════════════════════════════════════
-# STOCK TRANSACTION PDF PARSER  (full — keeps all descriptions)
+# STOCK TRANSACTION PDF PARSER
 # ══════════════════════════════════════════════════════════════
 
 def _parse_stock_transaction_pdf_full(
@@ -922,11 +980,6 @@ def _parse_stock_transaction_pdf_full(
     depot_name: str = "",
     product_name: str = "",
 ) -> list:
-    """
-    Parse a Stock Transaction PDF and return ALL transaction rows,
-    now enriched with BDC / Depot / Product context fields so that
-    the Product Outturn aggregator can tag each row correctly.
-    """
     DESCRIPTIONS = sorted([
         "Balance b/fwd", "Stock Take", "Sale",
         "Custody Transfer In", "Custody Transfer Out", "Product Outturn",
@@ -1007,17 +1060,27 @@ def _parse_stock_transaction_pdf_full(
     return records
 
 
-# Legacy wrapper used by the Stock Transaction page (unchanged behaviour)
 def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
     return _parse_stock_transaction_pdf_full(pdf_bytes)
 
 
 # ══════════════════════════════════════════════════════════════
-# PRODUCT OUTTURN — MULTI-BDC SWEEP HELPERS
+# PRODUCT OUTTURN — SEQUENTIAL PER-BDC SWEEP  (FIXED)
 # ══════════════════════════════════════════════════════════════
+# Design goals:
+#   • Progress bar moves after EVERY single HTTP request (not per-BDC)
+#   • No hidden concurrency: one request at a time per depot within a BDC
+#   • Circuit breaker: after OUTTURN_CB_THRESHOLD consecutive failures for a
+#     given BDC, skip its remaining depots (server is rejecting that BDC)
+#   • Inter-request sleep to stay under server rate limits
+#   • Short per-request timeout — don't let one slow response block the sweep
 
-# Vessel-name patterns commonly found in the Account field of a
-# "Product Outturn" transaction line.
+OUTTURN_REQUEST_TIMEOUT  = 45    # seconds per individual HTTP request
+OUTTURN_INTER_REQ_SLEEP  = 0.3   # seconds between requests
+OUTTURN_CB_THRESHOLD     = 6     # consecutive failures before circuit-breaker trips
+OUTTURN_MAX_RETRIES      = 2     # retries per individual request (fast — no exponential)
+
+
 _VESSEL_KEYWORDS = re.compile(
     r"\b(M\.?T\.?\s*[A-Z][A-Z0-9 \-]{2,40}|"
     r"MV\s+[A-Z][A-Z0-9 \-]{2,40}|"
@@ -1026,7 +1089,6 @@ _VESSEL_KEYWORDS = re.compile(
     flags=re.IGNORECASE,
 )
 
-# Words that indicate the Account field is NOT a vessel name
 _NON_VESSEL_WORDS = {
     "SALE","TRANSFER","BDC","OUTTURN","PRODUCT","BALANCE","STOCK",
     "CUSTODY","BOST","TEMA","ACCRA","TAKORADI","KUMASI","GHANA",
@@ -1034,20 +1096,12 @@ _NON_VESSEL_WORDS = {
 
 
 def _extract_vessel_name(account: str) -> str:
-    """
-    Try to pull a vessel name out of the Account column.
-    Returns the best candidate or empty string.
-    """
     if not account:
         return ""
     account = account.strip()
-
-    # Explicit MV / MT prefix — highest confidence
     m = re.search(r"\b(?:MV|MT|M\.T\.?)\s+([A-Z][A-Z0-9 \-]{2,40})", account, re.IGNORECASE)
     if m:
         return ("MV " + m.group(1).strip()).upper()
-
-    # Whole account is plausibly a vessel name (all-caps multi-word, no noise words)
     tokens = account.upper().split()
     if (
         2 <= len(tokens) <= 6
@@ -1055,156 +1109,169 @@ def _extract_vessel_name(account: str) -> str:
         and not any(t in _NON_VESSEL_WORDS for t in tokens)
     ):
         return account.upper()
-
     return ""
 
 
-def _make_outturn_fetcher(start_str: str, end_str: str, products: list[str]):
-    """
-    Returns a fetch function for a single (BDC, depot, product) TRIPLET.
-    The caller (_sweep_outturn_flat) is responsible for iterating triplets;
-    this function handles one triplet at a time so retries and progress are
-    granular — avoiding the original problem where one "BDC task" silently
-    issued 90+ sequential HTTP requests before the progress bar moved.
-    """
-    def _fn(triplet: tuple) -> pd.DataFrame:
-        bdc_name, depot_name, prod_label = triplet
-        bdc_id     = BDC_MAP.get(bdc_name)
-        depot_id   = DEPOT_MAP.get(depot_name)
-        product_id = STOCK_PRODUCT_MAP.get(prod_label)
-        if not bdc_id or not depot_id or not product_id:
-            return pd.DataFrame()
-        params = {
-            "lngProductId": product_id,
-            "lngBDCId":     bdc_id,
-            "lngDepotId":   depot_id,
-            "dtpStartDate": start_str,
-            "dtpEndDate":   end_str,
-            "lngUserId":    NPA_CONFIG["USER_ID"],
-        }
-        pdf_bytes = _fetch_pdf(NPA_CONFIG["STOCK_TRANSACTION_URL"], params)
-        if not pdf_bytes:
-            return pd.DataFrame()
-        rows = _parse_stock_transaction_pdf_full(
-            pdf_bytes,
-            bdc_name=bdc_name,
-            depot_name=depot_name,
-            product_name=prod_label,
-        )
-        outturn_rows = [r for r in rows if r.get("Description") == "Product Outturn"]
-        if not outturn_rows:
-            return pd.DataFrame()
-        df = pd.DataFrame(outturn_rows)
-        df["Vessel Name"] = df["Account"].apply(_extract_vessel_name)
-        return df
-
-    return _fn
-
-
-def _sweep_outturn_flat(
-    bdcs_to_sweep: list,
+def _fetch_one_outturn_triplet(
+    bdc_name: str,
+    depot_name: str,
+    prod_label: str,
     start_str: str,
     end_str: str,
-    sel_products: list,
+) -> pd.DataFrame:
+    """
+    Fetch and parse a single (BDC, depot, product) outturn triplet.
+    Returns a DataFrame (possibly empty). Never raises.
+    """
+    bdc_id     = BDC_MAP.get(bdc_name)
+    depot_id   = DEPOT_MAP.get(depot_name)
+    product_id = STOCK_PRODUCT_MAP.get(prod_label)
+    if not bdc_id or not depot_id or not product_id:
+        return pd.DataFrame()
+
+    params = {
+        "lngProductId": product_id,
+        "lngBDCId":     bdc_id,
+        "lngDepotId":   depot_id,
+        "dtpStartDate": start_str,
+        "dtpEndDate":   end_str,
+        "lngUserId":    NPA_CONFIG["USER_ID"],
+    }
+
+    for attempt in range(1, OUTTURN_MAX_RETRIES + 1):
+        try:
+            pdf_bytes = _fetch_pdf(
+                NPA_CONFIG["STOCK_TRANSACTION_URL"],
+                params,
+                timeout=OUTTURN_REQUEST_TIMEOUT,
+            )
+            if not pdf_bytes:
+                return pd.DataFrame()
+            rows = _parse_stock_transaction_pdf_full(
+                pdf_bytes,
+                bdc_name=bdc_name,
+                depot_name=depot_name,
+                product_name=prod_label,
+            )
+            outturn_rows = [r for r in rows if r.get("Description") == "Product Outturn"]
+            if not outturn_rows:
+                return pd.DataFrame()
+            df = pd.DataFrame(outturn_rows)
+            df["Vessel Name"] = df["Account"].apply(_extract_vessel_name)
+            return df
+        except Exception:
+            if attempt < OUTTURN_MAX_RETRIES:
+                time.sleep(1.0)
+    return pd.DataFrame()
+
+
+def _sweep_outturn_sequential(
+    bdcs_to_sweep: list[str],
+    depots_to_sweep: list[str],
+    sel_products: list[str],
+    start_str: str,
+    end_str: str,
     progress_bar,
     status_text,
     log_lines: list,
 ) -> tuple[pd.DataFrame, dict]:
     """
-    Flat triplet sweep for Product Outturn.
+    Fully sequential outturn sweep.
 
-    Instead of one task-per-BDC (which hid 90+ HTTP calls inside a single
-    progress tick), each (BDC, depot, product) triplet is an independent
-    work unit.  This gives:
-      • granular progress updates
-      • per-triplet retry with short back-off
-      • small concurrent batch size to avoid server rate-limits
-      • an inter-request sleep to stay under API rate limits
+    Outer loop  : BDC
+    Middle loop : depot          ← progress bar ticks here
+    Inner loop  : product
+
+    This means the progress bar moves after every single HTTP request so
+    the user always sees forward movement regardless of how many BDCs are
+    selected.
+
+    Circuit breaker:  if OUTTURN_CB_THRESHOLD consecutive requests for a BDC
+    all return empty/failed, we skip the rest of that BDC's depots.
     """
-    import concurrent.futures as _cf
+    n_depots   = len(depots_to_sweep)
+    n_products = len(sel_products)
+    total_reqs = len(bdcs_to_sweep) * n_depots * n_products
 
-    fetch_fn = _make_outturn_fetcher(start_str, end_str, sel_products)
-
-    # Build the flat list of (bdc, depot, product) triplets
-    triplets = [
-        (bdc, depot, prod)
-        for bdc   in bdcs_to_sweep
-        for depot in sorted(DEPOT_MAP.keys())
-        for prod  in sel_products
-    ]
-    total   = len(triplets)
-    done_n  = [0]
-    lock    = threading.Lock()
+    done_n  = 0
     frames  = []
     summary = {"success": [], "no_data": [], "failed": []}
 
-    def _attempt(triplet):
-        last_err = None
-        for attempt in range(1, OUTTURN_MAX_RETRIES + 1):
-            try:
-                result = fetch_fn(triplet)
-                return triplet, result, attempt, None
-            except Exception as exc:
-                last_err = exc
-                if attempt < OUTTURN_MAX_RETRIES:
-                    time.sleep(OUTTURN_RETRY_DELAY * (2 ** (attempt - 1)))
-        return triplet, pd.DataFrame(), OUTTURN_MAX_RETRIES, str(last_err)
+    for bdc_name in bdcs_to_sweep:
+        consecutive_empty = 0
+        bdc_had_data      = False
+        bdc_failed        = False
 
-    batches = [triplets[i: i + OUTTURN_BATCH_SIZE]
-               for i in range(0, total, OUTTURN_BATCH_SIZE)]
+        for depot_name in depots_to_sweep:
+            # Circuit breaker: skip rest of depots for this BDC
+            if consecutive_empty >= OUTTURN_CB_THRESHOLD:
+                # Count remaining requests as skipped so progress stays accurate
+                remaining = (n_depots - depots_to_sweep.index(depot_name)) * n_products
+                done_n   += remaining
+                log_lines.append(
+                    f"⚡ {bdc_name}: circuit-breaker tripped after "
+                    f"{consecutive_empty} empty responses — skipping remaining depots"
+                )
+                status_text.markdown(
+                    f"<div class='fetch-log'>{'<br>'.join(log_lines[-14:])}</div>",
+                    unsafe_allow_html=True,
+                )
+                bdc_failed = True
+                break
 
-    for batch_idx, batch in enumerate(batches):
-        with _cf.ThreadPoolExecutor(max_workers=OUTTURN_BATCH_SIZE) as ex:
-            futs = {ex.submit(_attempt, t): t for t in batch}
-            for fut in _cf.as_completed(futs):
-                triplet, result, attempts, err = fut.result()
-                bdc_name, depot_name, prod_label = triplet
+            for prod_label in sel_products:
+                time.sleep(OUTTURN_INTER_REQ_SLEEP)
 
-                with lock:
-                    done_n[0] += 1
-                    pct = done_n[0] / total
-                    progress_bar.progress(
-                        pct,
-                        text=f"Sweeping triplets — {done_n[0]:,} / {total:,}  "
-                             f"({pct*100:.1f}%)",
-                    )
+                result = _fetch_one_outturn_triplet(
+                    bdc_name, depot_name, prod_label, start_str, end_str
+                )
 
-                has_data = isinstance(result, pd.DataFrame) and not result.empty
+                done_n += 1
+                pct     = min(done_n / total_reqs, 1.0)
+                progress_bar.progress(
+                    pct,
+                    text=(
+                        f"Sweeping — {done_n:,} / {total_reqs:,} requests  "
+                        f"({pct*100:.1f}%)  |  BDC: {bdc_name[:30]}…"
+                        if len(bdc_name) > 30 else
+                        f"Sweeping — {done_n:,} / {total_reqs:,} requests  "
+                        f"({pct*100:.1f}%)  |  BDC: {bdc_name}"
+                    ),
+                )
 
-                if err:
-                    summary["failed"].append(bdc_name)
-                    icon = "❌"
-                    note = f"{bdc_name} @ {depot_name}/{prod_label}: FAILED — {err}"
-                elif has_data:
-                    summary["success"].append(bdc_name)
+                if result is not None and not result.empty:
                     frames.append(result)
-                    icon = "✅"
-                    note = (f"{bdc_name} @ {depot_name}/{prod_label}: "
-                            f"{len(result)} outturn row(s)")
-                else:
-                    summary["no_data"].append(f"{bdc_name}|{depot_name}|{prod_label}")
-                    icon = "·"   # silent — most triplets legitimately have no data
-                    note = None  # skip noisy "no data" lines to keep log readable
-
-                if note:
-                    log_lines.append(f"{icon} {note}")
+                    consecutive_empty = 0
+                    bdc_had_data      = True
+                    log_lines.append(
+                        f"✅ {bdc_name} @ {depot_name}/{prod_label}: "
+                        f"{len(result)} outturn row(s)"
+                    )
                     status_text.markdown(
-                        f"<div class='fetch-log'>{'<br>'.join(log_lines[-12:])}</div>",
+                        f"<div class='fetch-log'>{'<br>'.join(log_lines[-14:])}</div>",
                         unsafe_allow_html=True,
                     )
+                else:
+                    consecutive_empty += 1
 
-        # Pace between batches
-        if batch_idx < len(batches) - 1:
-            time.sleep(OUTTURN_INTER_REQ_DELAY)
+        if bdc_had_data:
+            if bdc_name not in summary["success"]:
+                summary["success"].append(bdc_name)
+        elif bdc_failed:
+            if bdc_name not in summary["failed"]:
+                summary["failed"].append(bdc_name)
+        else:
+            if bdc_name not in summary["no_data"]:
+                summary["no_data"].append(bdc_name)
 
     if not frames:
         return pd.DataFrame(), summary
 
     combined = pd.concat(frames, ignore_index=True)
-    dedup_cols = ["Date", "Trans #", "BDC", "Depot", "Product", "Volume"]
-    valid_dedup = [c for c in dedup_cols if c in combined.columns]
-    if valid_dedup:
-        combined = combined.drop_duplicates(subset=valid_dedup, keep="first")
+    dedup_cols = [c for c in ["Date", "Trans #", "BDC", "Depot", "Product", "Volume"]
+                  if c in combined.columns]
+    if dedup_cols:
+        combined = combined.drop_duplicates(subset=dedup_cols, keep="first")
 
     return combined.reset_index(drop=True), summary
 
@@ -1311,8 +1378,6 @@ def _merge_dataframes(existing: pd.DataFrame, new_df: pd.DataFrame,
         combined = combined.drop_duplicates(subset=valid_dedup, keep="first")
     return combined.reset_index(drop=True)
 
-
-# ── Aggregate helpers ─────────────────────────────────────────
 
 def _combine_balance_results(results: dict) -> tuple[list, dict]:
     all_records = []
@@ -2175,7 +2240,7 @@ def show_market_share():
 
 
 # ══════════════════════════════════════════════════════════════
-# PAGE: STOCK TRANSACTION  ← FIXED
+# PAGE: STOCK TRANSACTION
 # ══════════════════════════════════════════════════════════════
 def show_stock_transaction():
     st.markdown("<h2>📈 STOCK TRANSACTION ANALYZER</h2>", unsafe_allow_html=True)
@@ -2282,7 +2347,7 @@ def show_stock_transaction():
 
 
 # ══════════════════════════════════════════════════════════════
-# PAGE: PRODUCT OUTTURN INTELLIGENCE  ← NEW
+# PAGE: PRODUCT OUTTURN INTELLIGENCE  (FIXED)
 # ══════════════════════════════════════════════════════════════
 def show_product_outturn():
     st.markdown("<h2>⛴️ PRODUCT OUTTURN INTELLIGENCE</h2>", unsafe_allow_html=True)
@@ -2291,17 +2356,20 @@ def show_product_outturn():
     <div style='background:rgba(255,102,0,0.07);border:1px solid #ff660044;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#ff6600;'>What this page does</b><br>
-    Sweeps <b>every BDC × every depot × selected product(s)</b> and collects all
+    Sweeps <b>selected BDCs × selected depots × selected product(s)</b> and collects all
     <b>Product Outturn</b> transactions — the moment a vessel's cargo is officially
     received into a BDC's stock account at a depot.<br><br>
     Each row shows: <b>Date · Trans # · BDC · Depot · Product · Volume (LT) ·
-    Running Balance · Account / Vessel Name</b>.<br>
-    The <b>Vessel Name</b> column is auto-extracted from the Account field using
-    pattern matching (MV / MT prefix, all-caps multi-word names, etc.).
+    Running Balance · Account / Vessel Name</b>.<br><br>
+    <b style='color:#ff6600;'>Default depots</b> are the 22 key national terminals.
+    You can add or remove depots using the multiselect below.<br>
+    The sweep runs <b>fully sequentially</b> — progress updates after every single request.
+    A <b>circuit breaker</b> skips a BDC after several consecutive empty responses so one
+    bad BDC can't hang the whole sweep.
     </div>
     """, unsafe_allow_html=True)
 
-    # ── Configuration controls ────────────────────────────────
+    # ── Date range ────────────────────────────────────────────
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input(
@@ -2312,10 +2380,9 @@ def show_product_outturn():
     with col2:
         end_date = st.date_input("End Date", value=datetime.now(), key="ot_end")
 
-    all_bdc_names = sorted(BDC_MAP.keys())   # BDC_MAP has entity IDs required for this endpoint
+    # ── BDC selection ─────────────────────────────────────────
+    all_bdc_names = sorted(BDC_MAP.keys())
     n_total_bdcs  = len(all_bdc_names)
-    all_depots    = sorted(DEPOT_MAP.keys())
-    n_total_depots = len(all_depots)
 
     col3, col4 = st.columns([3, 1])
     with col3:
@@ -2330,6 +2397,40 @@ def show_product_outturn():
 
     bdcs_to_sweep = all_bdc_names if (fetch_all_bdcs or not sel_bdcs) else sel_bdcs
 
+    # ── Depot selection (with defaults) ──────────────────────
+    all_depot_names     = sorted(DEPOT_MAP.keys())
+    n_total_depots      = len(all_depot_names)
+    default_depot_names = _resolve_default_depots()
+
+    st.markdown("**🏭 Depots to sweep**")
+    st.caption(
+        f"{len(default_depot_names)} default depots pre-selected out of {n_total_depots} configured. "
+        "Add or remove depots as needed — only depots with a configured ID will actually be queried."
+    )
+
+    # Use session_state to persist depot selection across reruns
+    if "ot_depots_selection" not in st.session_state:
+        st.session_state["ot_depots_selection"] = default_depot_names
+
+    col5, col6 = st.columns([4, 1])
+    with col5:
+        sel_depots = st.multiselect(
+            f"Depots  (default: {len(default_depot_names)}, total available: {n_total_depots})",
+            options=all_depot_names,
+            default=st.session_state["ot_depots_selection"],
+            key="ot_depot_multiselect",
+        )
+    with col6:
+        st.markdown("<br>", unsafe_allow_html=True)
+        if st.button("↩️ Reset defaults", key="ot_reset_depots"):
+            st.session_state["ot_depots_selection"] = default_depot_names
+            st.rerun()
+
+    depots_to_sweep = sel_depots if sel_depots else default_depot_names
+    # Persist current selection
+    st.session_state["ot_depots_selection"] = depots_to_sweep
+
+    # ── Product selection ─────────────────────────────────────
     sel_products = st.multiselect(
         "Products to include",
         PRODUCT_OPTIONS,
@@ -2339,20 +2440,27 @@ def show_product_outturn():
     if not sel_products:
         sel_products = PRODUCT_OPTIONS
 
+    # ── Call count estimate ───────────────────────────────────
     period_days = max((end_date - start_date).days, 1)
+    n_calls     = len(bdcs_to_sweep) * len(depots_to_sweep) * len(sel_products)
 
-    n_calls = len(bdcs_to_sweep) * n_total_depots * len(sel_products)
+    # Estimated time: ~(OUTTURN_REQUEST_TIMEOUT * fraction) per request + inter-req sleep
+    # Conservatively assume ~2 s per request on average (most return quickly)
+    est_seconds = n_calls * (OUTTURN_INTER_REQ_SLEEP + 2.0)
+    est_mins    = est_seconds / 60
+
     st.info(
-        f"📋 **{len(bdcs_to_sweep)} BDCs** × **{n_total_depots} depots** × "
+        f"📋 **{len(bdcs_to_sweep)} BDCs** × **{len(depots_to_sweep)} depots** × "
         f"**{len(sel_products)} product(s)** = **{n_calls:,} API calls**  |  "
         f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
-        f"({period_days} days)"
+        f"({period_days} days)  |  "
+        f"Est. time: **~{est_mins:.0f} min** (sequential, ~2 s/call avg)"
     )
 
-    if n_calls > 5000:
+    if n_calls > 3000:
         st.warning(
-            f"⚠️ This sweep will make **{n_calls:,} requests** which may take 20–40 minutes. "
-            "Consider narrowing the BDC or product selection to speed things up."
+            f"⚠️ **{n_calls:,} requests** estimated. Consider reducing BDCs or depots. "
+            f"The circuit breaker will skip unresponsive BDCs automatically."
         )
 
     has_previous = not st.session_state.get("outturn_df", pd.DataFrame()).empty
@@ -2370,10 +2478,15 @@ def show_product_outturn():
         log_box   = st.empty()
         log_lines = []
 
-        combined, summary = _sweep_outturn_flat(
+        combined, summary = _sweep_outturn_sequential(
             bdcs_to_sweep,
-            start_str, end_str, sel_products,
-            prog, log_box, log_lines,
+            depots_to_sweep,
+            sel_products,
+            start_str,
+            end_str,
+            prog,
+            log_box,
+            log_lines,
         )
         prog.progress(1.0, text="✅ Outturn sweep complete")
 
@@ -2522,7 +2635,6 @@ def show_product_outturn():
                    "Name extraction is heuristic — verify against shipping records.")
         st.dataframe(vessel_sum, use_container_width=True, hide_index=True)
 
-        # Treemap of vessel volumes
         if len(vessel_sum) >= 2:
             fig_vessel = go.Figure(go.Treemap(
                 labels=vessel_sum["Vessel Name"] + "<br>" + vessel_sum["Product"],
@@ -2540,7 +2652,7 @@ def show_product_outturn():
             )
             st.plotly_chart(fig_vessel, use_container_width=True)
 
-    # ── Time-series of outturn events ─────────────────────────
+    # ── Time-series ───────────────────────────────────────────
     st.markdown("### 📅 OUTTURN TIMELINE")
     try:
         df_ts = df.copy()
@@ -2622,9 +2734,9 @@ def show_product_outturn():
     st.markdown("---")
     _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     excel_sheets = {
-        "All Outturns":     df[display_cols] if display_cols else df,
-        "By BDC":           bdc_sum,
-        "By Depot":         depot_sum,
+        "All Outturns": df[display_cols] if display_cols else df,
+        "By BDC":       bdc_sum,
+        "By Depot":     depot_sum,
     }
     if not vessel_df.empty:
         excel_sheets["By Vessel"] = vessel_sum
@@ -3142,7 +3254,7 @@ def main():
             "📅 DAILY ORDERS",
             "📊 MARKET SHARE",
             "📈 STOCK TRANSACTION",
-            "⛴️ PRODUCT OUTTURN",       # ← NEW
+            "⛴️ PRODUCT OUTTURN",
             "🌍 NATIONAL STOCKOUT",
             "🌐 WORLD RISK MONITOR",
             "🚢 VESSEL SUPPLY",
@@ -3156,7 +3268,7 @@ def main():
         has_dly  = not st.session_state.get("daily_df", pd.DataFrame()).empty
         has_txn  = not st.session_state.get("stock_txn_df", pd.DataFrame()).empty
         has_ves  = not st.session_state.get("vessel_data", pd.DataFrame()).empty
-        has_out  = not st.session_state.get("outturn_df", pd.DataFrame()).empty   # ← NEW
+        has_out  = not st.session_state.get("outturn_df", pd.DataFrame()).empty
 
         badges = {
             "Balance":   ("🟢","✅" if has_bal  else "○"),
@@ -3164,7 +3276,7 @@ def main():
             "Daily Ord": ("🟢","✅" if has_dly  else "○"),
             "Stock Txn": ("🟢","✅" if has_txn  else "○"),
             "Vessels":   ("🟢","✅" if has_ves  else "○"),
-            "Outturn":   ("🟢","✅" if has_out  else "○"),   # ← NEW
+            "Outturn":   ("🟢","✅" if has_out  else "○"),
         }
 
         st.markdown("""
@@ -3195,7 +3307,7 @@ def main():
     elif choice == "📅 DAILY ORDERS":       show_daily_orders()
     elif choice == "📊 MARKET SHARE":       show_market_share()
     elif choice == "📈 STOCK TRANSACTION":  show_stock_transaction()
-    elif choice == "⛴️ PRODUCT OUTTURN":   show_product_outturn()    # ← NEW
+    elif choice == "⛴️ PRODUCT OUTTURN":   show_product_outturn()
     elif choice == "🌍 NATIONAL STOCKOUT":  show_national_stockout()
     elif choice == "🌐 WORLD RISK MONITOR": show_world_monitor()
     elif choice == "🚢 VESSEL SUPPLY":      show_vessel_supply()
