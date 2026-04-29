@@ -52,6 +52,7 @@ import plotly.graph_objects as go
 import requests as _requests
 import psutil
 import queue
+import concurrent.futures as _cf
 
 load_dotenv()
 
