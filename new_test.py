@@ -2521,7 +2521,7 @@ def show_product_outturn():
     # ── These must be imported from the main module ───────────
     # When pasting into npa_dashboard.py, all names below are
     # already in scope — nothing extra needed.
-    from datetime import datetime, timedelta  # noqa: F811
+   
  
     st.markdown("<h2>⛴️ PRODUCT OUTTURN INTELLIGENCE</h2>", unsafe_allow_html=True)
  
