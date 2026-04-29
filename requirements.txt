@@ -10,3 +10,4 @@ python-dotenv
 plotly
 streamlit_js_eval
 psutil
+queue
