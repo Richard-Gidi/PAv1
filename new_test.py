@@ -33,6 +33,11 @@ Fixed version:
         avoid hanging the entire sweep.
       * Per-request timeout enforced independently (no silent hang).
       * Outturn call count shown BEFORE sweep starts so user knows what to expect.
+  - UI FIXES:
+      * Clear cache button now requires a confirmation checkbox to prevent
+        accidental activation (e.g. from Ctrl+C keyboard shortcut).
+      * All widget selections (dates, multiselects, checkboxes) are persisted
+        in session_state so they survive menu navigation.
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -225,8 +230,6 @@ VESSEL_SHEET_URL = os.getenv(
 
 # ══════════════════════════════════════════════════════════════
 # DEFAULT OUTTURN DEPOTS
-# These 22 depots are pre-selected when you open the Outturn page.
-# You can add or remove any depot in the UI multiselect.
 # ══════════════════════════════════════════════════════════════
 _OUTTURN_DEFAULT_DEPOT_NAMES = [
     "BOST - ACCRA PLAINS",
@@ -254,13 +257,7 @@ _OUTTURN_DEFAULT_DEPOT_NAMES = [
 ]
 
 
-def _resolve_default_depots() -> list[str]:
-    """
-    Return the subset of _OUTTURN_DEFAULT_DEPOT_NAMES that actually exist
-    in DEPOT_MAP (exact match first, then normalised fuzzy).
-    Unknown names are silently skipped so the app still works if the .env
-    doesn't have a particular depot configured.
-    """
+def _resolve_default_depots() -> list:
     all_depot_names = sorted(DEPOT_MAP.keys())
     norm_map = {_normalise_name(d): d for d in all_depot_names}
     resolved = []
@@ -272,12 +269,10 @@ def _resolve_default_depots() -> list[str]:
         if n in norm_map:
             resolved.append(norm_map[n])
             continue
-        # fuzzy substring
         for nd, real in norm_map.items():
             if n and nd and (n in nd or nd in n):
                 resolved.append(real)
                 break
-    # preserve order, deduplicate
     seen = set()
     out  = []
     for d in resolved:
@@ -356,6 +351,56 @@ _PERSIST_KEYS = {
     "outturn_df":     pd.DataFrame(),
 }
 
+# ── Widget-state persistence keys (selections that survive menu nav) ──
+# Format: { session_state_key: default_value }
+_WIDGET_STATE_DEFAULTS = {
+    # BDC Balance
+    "bal_bdc_select":      [],
+    "bal_fetch_all":       True,
+    "bal_merge_prev":      True,
+    "bal_ftype":           "Product",
+    "bal_fval":            "ALL",
+    # OMC Loadings
+    "omc_start":           None,   # date — handled specially
+    "omc_end":             None,
+    "omc_bdc_select":      [],
+    "omc_fetch_all":       True,
+    "omc_merge_prev":      True,
+    "omc_ftype":           "Product",
+    "omc_fval":            "ALL",
+    # Daily Orders
+    "daily_start":         None,
+    "daily_end":           None,
+    "daily_bdc_select":    [],
+    "daily_fetch_all":     True,
+    "daily_merge_prev":    True,
+    "daily_ftype":         "Product",
+    "daily_fval":          "ALL",
+    # Stock Transaction
+    "txn_start":           None,
+    "txn_end":             None,
+    # Market Share
+    "ms_bdc":              None,
+    # Product Outturn
+    "ot_start":            None,
+    "ot_end":              None,
+    "ot_bdc_select":       [],
+    "ot_all_bdcs":         True,
+    "ot_depots_selection": None,   # list — handled specially
+    "ot_products":         None,   # list — handled specially
+    "ot_merge_prev":       True,
+    # National Stockout
+    "ns_start":            None,
+    "ns_end":              None,
+    "ns_day_type":         "📆 Calendar Days (default)",
+    "ns_depl_mode":        "📊 Average Daily Loadings",
+    "ns_excl_tor":         False,
+    "ns_vessels":          False,
+    # Vessel Supply
+    "vessel_url":          VESSEL_SHEET_URL,
+    "vessel_year_sel":     "2025",
+}
+
 
 def _persist_path(key: str) -> str:
     return os.path.join(PERSIST_DIR, f"{key}.pkl")
@@ -381,9 +426,39 @@ def _load_state(key: str):
 
 
 def _restore_session_state() -> None:
+    # Restore data blobs
     for key in _PERSIST_KEYS:
         if key not in st.session_state:
             st.session_state[key] = _load_state(key)
+
+    # Restore widget selections (only set default if key not already in state)
+    _today = datetime.now().date()
+    _date_defaults = {
+        "omc_start":   _today - timedelta(days=7),
+        "omc_end":     _today,
+        "daily_start": _today - timedelta(days=1),
+        "daily_end":   _today,
+        "txn_start":   _today - timedelta(days=30),
+        "txn_end":     _today,
+        "ot_start":    _today - timedelta(days=30),
+        "ot_end":      _today,
+        "ns_start":    _today - timedelta(days=30),
+        "ns_end":      _today,
+    }
+    for key, default in _WIDGET_STATE_DEFAULTS.items():
+        if key not in st.session_state:
+            if key in _date_defaults:
+                st.session_state[key] = _date_defaults[key]
+            elif default is None:
+                pass   # will be handled in the page itself on first render
+            else:
+                st.session_state[key] = default
+
+    # Special defaults that need runtime values
+    if "ot_depots_selection" not in st.session_state or st.session_state["ot_depots_selection"] is None:
+        st.session_state["ot_depots_selection"] = _resolve_default_depots()
+    if "ot_products" not in st.session_state or st.session_state["ot_products"] is None:
+        st.session_state["ot_products"] = PRODUCT_OPTIONS[:]
 
 
 def _clear_all_persisted() -> None:
@@ -438,8 +513,8 @@ def _build_omc_order_lookup(omc_df: pd.DataFrame) -> dict:
     if "Order Number" not in omc_df.columns or "OMC" not in omc_df.columns:
         return {}
 
-    lookup: dict[str, str] = {}
-    qty_map: dict[str, float] = {}
+    lookup: dict = {}
+    qty_map: dict = {}
     qty_col = "Quantity" if "Quantity" in omc_df.columns else None
 
     for _, row in omc_df.iterrows():
@@ -537,7 +612,7 @@ _HTTP_HEADERS = {
 _HTTP_TIMEOUT = 90
 
 
-def _fetch_pdf(url: str, params: dict, timeout: int = _HTTP_TIMEOUT) -> bytes | None:
+def _fetch_pdf(url: str, params: dict, timeout: int = _HTTP_TIMEOUT) -> bytes:
     try:
         r = _requests.get(url, params=params, headers=_HTTP_HEADERS, timeout=timeout)
         r.raise_for_status()
@@ -566,23 +641,11 @@ def _sequential_batch_fetch(
     log_lines: list,
     second_pass: bool = True,
 ) -> dict:
-    """
-    Patched version of _sequential_batch_fetch.
- 
-    Key changes vs original:
-      • Per-future hard timeout (BATCH_HARD_TIMEOUT / batch_size per future)
-        — no single future can hang the whole batch indefinitely.
-      • Exponential back-off is capped at MAX_RETRY_SLEEP.
-      • Progress bar updates after every completed future (not after batch).
-      • BDCs whose future timed out go straight to the second pass.
-      • No Streamlit calls happen inside worker threads.
-    """
     total   = len(bdc_list)
     results = {}
     lock    = threading.Lock()
     done_n  = [0]
- 
-    # ── Single-BDC attempt with capped back-off ───────────────
+
     def _attempt(bdc_name: str, max_tries: int = MAX_RETRIES):
         last_err = None
         for attempt in range(1, max_tries + 1):
@@ -595,14 +658,12 @@ def _sequential_batch_fetch(
                     sleep_t = min(RETRY_DELAY * (2 ** (attempt - 1)), MAX_RETRY_SLEEP)
                     time.sleep(sleep_t)
         return bdc_name, None, max_tries, str(last_err)
- 
-    # ── Helper: update progress + log safely ─────────────────
+
     def _update(bdc_name, result, attempts, err):
         with lock:
             done_n[0] += 1
             pct = done_n[0] / total
- 
-        # Determine icon/note
+
         if err:
             icon, note = "❌", f"FAILED after {attempts} tries — {err[:80]}"
         elif result is None:
@@ -613,10 +674,9 @@ def _sequential_batch_fetch(
             icon, note = "🔄", f"OK (needed {attempts} tries)"
         else:
             icon, note = "✅", "OK"
- 
+
         log_lines.append(f"{icon} {bdc_name}: {note}")
- 
-        # These Streamlit calls are on the main thread, so they're safe
+
         progress_bar.progress(
             pct,
             text=f"Pass 1 — {done_n[0]} / {total} BDCs fetched…",
@@ -627,22 +687,19 @@ def _sequential_batch_fetch(
             "</div>",
             unsafe_allow_html=True,
         )
- 
-    # ── PASS 1 — parallel batches ─────────────────────────────
+
     batches = [bdc_list[i: i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
     per_future_timeout = max(BATCH_HARD_TIMEOUT // BATCH_SIZE, 30)
- 
+
     for batch_idx, batch in enumerate(batches):
         with _cf.ThreadPoolExecutor(max_workers=BATCH_SIZE) as ex:
             futs = {ex.submit(_attempt, b): b for b in batch}
- 
-            # Use wait() with timeout so a hung future doesn't stall forever
+
             done_futs, pending_futs = _cf.wait(
                 futs,
                 timeout=per_future_timeout * len(batch),
             )
- 
-            # Process completed futures
+
             for fut in done_futs:
                 bdc_name = futs[fut]
                 try:
@@ -651,8 +708,7 @@ def _sequential_batch_fetch(
                     result, attempts, err = None, MAX_RETRIES, str(exc)
                 results[bdc_name] = result
                 _update(bdc_name, result, attempts, err)
- 
-            # Handle timed-out futures — mark as None (will go to pass 2)
+
             for fut in pending_futs:
                 bdc_name = futs[fut]
                 results[bdc_name] = None
@@ -663,15 +719,11 @@ def _sequential_batch_fetch(
                     done_n[0] / total,
                     text=f"Pass 1 — {done_n[0]} / {total} BDCs fetched…",
                 )
-                # Cancel the future if possible (Python can't kill threads,
-                # but future.cancel() prevents it starting if queued)
                 fut.cancel()
- 
-        # Small inter-batch sleep to avoid hammering the server
+
         if batch_idx < len(batches) - 1:
             time.sleep(0.3)
- 
-    # ── PASS 2 — sequential retry for empty/failed ────────────
+
     if second_pass:
         retry_bdcs = [
             b for b, r in results.items()
@@ -687,11 +739,11 @@ def _sequential_batch_fetch(
                 "</div>",
                 unsafe_allow_html=True,
             )
- 
+
             for idx, bdc_name in enumerate(retry_bdcs):
                 time.sleep(SECOND_PASS_DELAY)
                 _, result, attempts, err = _attempt(bdc_name, max_tries=SECOND_PASS_RETRIES)
- 
+
                 if result is not None and not _result_is_empty(result):
                     results[bdc_name] = result
                     icon, note = "🔄", f"Pass-2 OK (attempt {attempts})"
@@ -699,7 +751,7 @@ def _sequential_batch_fetch(
                     icon, note = "❌", f"Pass-2 FAILED — {err[:80]}"
                 else:
                     icon, note = "⚠️", "Pass-2 still no data"
- 
+
                 log_lines.append(f"{icon} [P2] {bdc_name}: {note}")
                 status_text.markdown(
                     "<div class='fetch-log'>" +
@@ -711,17 +763,15 @@ def _sequential_batch_fetch(
                     1.0,
                     text=f"Pass 2 — {idx+1}/{len(retry_bdcs)} retried",
                 )
- 
+
     return results
 
 
 def _result_is_empty(result) -> bool:
-    """Unchanged helper — repeated here for completeness."""
     if result is None:
         return True
     if isinstance(result, list):
         return len(result) == 0
-    import pandas as pd
     if isinstance(result, pd.DataFrame):
         return result.empty
     return False
@@ -1119,23 +1169,15 @@ def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
 
 
 # ══════════════════════════════════════════════════════════════
-# PRODUCT OUTTURN — SEQUENTIAL PER-BDC SWEEP  (FIXED)
+# PRODUCT OUTTURN — SEQUENTIAL PER-BDC SWEEP
 # ══════════════════════════════════════════════════════════════
-# Design goals:
-#   • Progress bar moves after EVERY single HTTP request (not per-BDC)
-#   • No hidden concurrency: one request at a time per depot within a BDC
-#   • Circuit breaker: after OUTTURN_CB_THRESHOLD consecutive failures for a
-#     given BDC, skip its remaining depots (server is rejecting that BDC)
-#   • Inter-request sleep to stay under server rate limits
-#   • Short per-request timeout — don't let one slow response block the sweep
-
 
 OUTTURN_WORKERS         = 8
-OUTTURN_REQUEST_TIMEOUT  = 45    # seconds per individual HTTP request
-OUTTURN_INTER_REQ_SLEEP  = 0.15   # seconds between requests
-OUTTURN_CB_THRESHOLD     = 10     # consecutive failures before circuit-breaker trips
-OUTTURN_MAX_RETRIES      = 3     # retries per individual request (fast — no exponential)
-OUTTURN_RATE_LIMIT_BACK = 2.0   # seconds to back off when we detect rate-limiting (via circuit-breaker)
+OUTTURN_REQUEST_TIMEOUT  = 45
+OUTTURN_INTER_REQ_SLEEP  = 0.15
+OUTTURN_CB_THRESHOLD     = 10
+OUTTURN_MAX_RETRIES      = 3
+OUTTURN_RATE_LIMIT_BACK = 2.0
 
 _VESSEL_KEYWORDS = re.compile(
     r"\b(M\.?T\.?\s*[A-Z][A-Z0-9 \-]{2,40}|"
@@ -1183,17 +1225,13 @@ def _fetch_one_outturn_triplet(
     fetch_pdf_fn,
     parse_fn,
     extract_vessel_fn,
-) -> tuple[pd.DataFrame, bool]:
-    """
-    Returns (df, was_rate_limited).
-    df may be empty. Never raises.
-    """
+) -> tuple:
     bdc_id     = bdc_map.get(bdc_name)
     depot_id   = depot_map.get(depot_name)
     product_id = product_map.get(prod_label)
     if not bdc_id or not depot_id or not product_id:
         return pd.DataFrame(), False
- 
+
     params = {
         "lngProductId": product_id,
         "lngBDCId":     bdc_id,
@@ -1202,7 +1240,7 @@ def _fetch_one_outturn_triplet(
         "dtpEndDate":   end_str,
         "lngUserId":    user_id,
     }
- 
+
     rate_limited = False
     for attempt in range(1, OUTTURN_MAX_RETRIES + 1):
         try:
@@ -1228,7 +1266,7 @@ def _fetch_one_outturn_triplet(
             pdf_bytes = r.content
             if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
                 return pd.DataFrame(), rate_limited
- 
+
             rows = parse_fn(
                 pdf_bytes,
                 bdc_name=bdc_name,
@@ -1238,41 +1276,28 @@ def _fetch_one_outturn_triplet(
             outturn_rows = [row for row in rows if row.get("Description") == "Product Outturn"]
             if not outturn_rows:
                 return pd.DataFrame(), rate_limited
- 
+
             df = pd.DataFrame(outturn_rows)
             df["Vessel Name"] = df["Account"].apply(extract_vessel_fn)
             return df, rate_limited
- 
+
         except Exception:
             if attempt < OUTTURN_MAX_RETRIES:
                 time.sleep(1.0 * attempt)
- 
+
     return pd.DataFrame(), rate_limited
+
 
 # ══════════════════════════════════════════════════════════════
 # BACKGROUND SWEEP WORKER
 # ══════════════════════════════════════════════════════════════
- 
+
 class _OutturnSweepWorker:
-    """
-    Runs the full BDC × depot × product sweep on a daemon thread.
-    Progress is pushed to a thread-safe queue so the Streamlit main
-    thread can poll without blocking.
- 
-    Message format (dict):
-        {"type": "progress", "done": int, "total": int, "pct": float,
-         "bdc": str, "depot": str, "prod": str}
-        {"type": "log",      "text": str}
-        {"type": "result",   "df": pd.DataFrame, "summary": dict}
-        {"type": "done"}
-        {"type": "error",    "text": str}
-    """
- 
     def __init__(
         self,
-        bdcs:        list[str],
-        depots:      list[str],
-        products:    list[str],
+        bdcs:        list,
+        depots:      list,
+        products:    list,
         start_str:   str,
         end_str:     str,
         bdc_map:     dict,
@@ -1295,16 +1320,16 @@ class _OutturnSweepWorker:
         self.parse_fn         = parse_fn
         self.extract_vessel_fn= extract_vessel_fn
         self.cancel_event     = cancel_event
-        self.q: queue.Queue   = queue.Queue()
- 
+        self.q                = queue.Queue()
+
     def start(self) -> threading.Thread:
         t = threading.Thread(target=self._run, daemon=True)
         t.start()
         return t
- 
+
     def _log(self, text: str):
         self.q.put({"type": "log", "text": text})
- 
+
     def _progress(self, done: int, total: int, bdc: str, depot: str, prod: str):
         self.q.put({
             "type": "progress",
@@ -1312,42 +1337,40 @@ class _OutturnSweepWorker:
             "pct":  min(done / total, 1.0),
             "bdc":  bdc, "depot": depot, "prod": prod,
         })
- 
+
     def _run(self):
         try:
             self._sweep()
         except Exception as exc:
             self.q.put({"type": "error", "text": str(exc)})
- 
+
     def _sweep(self):
         n_bdcs     = len(self.bdcs)
         n_depots   = len(self.depots)
         n_prods    = len(self.products)
         total_reqs = n_bdcs * n_depots * n_prods
- 
+
         done_n  = 0
         frames  = []
         summary = {"success": [], "no_data": [], "failed": []}
- 
+
         for bdc_name in self.bdcs:
             if self.cancel_event.is_set():
                 self._log("🛑 Sweep cancelled by user.")
                 break
- 
+
             consecutive_empty = 0
             rate_limit_streak = 0
             bdc_had_data      = False
             bdc_tripped       = False
- 
-            # ── Process depots in parallel batches ───────────
+
             for depot_chunk_start in range(0, n_depots, OUTTURN_WORKERS):
                 if self.cancel_event.is_set():
                     break
- 
+
                 chunk = self.depots[depot_chunk_start: depot_chunk_start + OUTTURN_WORKERS]
- 
+
                 if consecutive_empty >= OUTTURN_CB_THRESHOLD:
-                    # circuit breaker: count skipped as done
                     skipped = (n_depots - depot_chunk_start) * n_prods
                     done_n += skipped
                     self._log(
@@ -1357,15 +1380,13 @@ class _OutturnSweepWorker:
                     self._progress(done_n, total_reqs, bdc_name, "—", "—")
                     bdc_tripped = True
                     break
- 
-                # adaptive sleep
+
                 sleep_t = OUTTURN_INTER_REQ_SLEEP
                 if rate_limit_streak >= 3:
                     sleep_t = OUTTURN_RATE_LIMIT_BACK
                     rate_limit_streak = 0
                 time.sleep(sleep_t)
- 
-                # submit all (depot, product) combos in this chunk concurrently
+
                 futures = {}
                 with _cf.ThreadPoolExecutor(max_workers=OUTTURN_WORKERS) as ex:
                     for depot_name in chunk:
@@ -1379,27 +1400,27 @@ class _OutturnSweepWorker:
                                 product_map=self.product_map,
                                 stock_txn_url=self.config["STOCK_TRANSACTION_URL"],
                                 user_id=self.config["USER_ID"],
-                                fetch_pdf_fn=None,   # unused — requests inline
+                                fetch_pdf_fn=None,
                                 parse_fn=self.parse_fn,
                                 extract_vessel_fn=self.extract_vessel_fn,
                             )
                             futures[fut] = (depot_name, prod_label)
- 
+
                     for fut in _cf.as_completed(futures):
                         depot_name, prod_label = futures[fut]
                         try:
                             result_df, was_rl = fut.result()
                         except Exception:
                             result_df, was_rl = pd.DataFrame(), False
- 
+
                         done_n += 1
                         self._progress(done_n, total_reqs, bdc_name, depot_name, prod_label)
- 
+
                         if was_rl:
                             rate_limit_streak += 1
                         else:
                             rate_limit_streak = max(0, rate_limit_streak - 1)
- 
+
                         if result_df is not None and not result_df.empty:
                             frames.append(result_df)
                             consecutive_empty = 0
@@ -1410,8 +1431,7 @@ class _OutturnSweepWorker:
                             )
                         else:
                             consecutive_empty += 1
- 
-            # summarise this BDC
+
             if bdc_had_data:
                 if bdc_name not in summary["success"]:
                     summary["success"].append(bdc_name)
@@ -1421,8 +1441,7 @@ class _OutturnSweepWorker:
             else:
                 if bdc_name not in summary["no_data"]:
                     summary["no_data"].append(bdc_name)
- 
-        # ── Assemble final DataFrame ──────────────────────────
+
         if not frames:
             combined = pd.DataFrame()
         else:
@@ -1432,14 +1451,13 @@ class _OutturnSweepWorker:
             if dedup_cols:
                 combined = combined.drop_duplicates(subset=dedup_cols, keep="first")
             combined = combined.reset_index(drop=True)
- 
+
         self.q.put({"type": "result", "df": combined, "summary": summary})
         self.q.put({"type": "done"})
-        
 
 
 # ══════════════════════════════════════════════════════════════
-# ROBUST PER-BDC FETCH WRAPPERS  (balance / omc / daily)
+# ROBUST PER-BDC FETCH WRAPPERS
 # ══════════════════════════════════════════════════════════════
 
 def _make_balance_fetcher():
@@ -1541,7 +1559,7 @@ def _merge_dataframes(existing: pd.DataFrame, new_df: pd.DataFrame,
     return combined.reset_index(drop=True)
 
 
-def _combine_balance_results(results: dict) -> tuple[list, dict]:
+def _combine_balance_results(results: dict) -> tuple:
     all_records = []
     summary     = {"success": [], "no_data": [], "failed": []}
 
@@ -1568,7 +1586,7 @@ def _combine_balance_results(results: dict) -> tuple[list, dict]:
     return all_records, summary
 
 
-def _combine_df_results(results: dict, dedup_cols: list) -> tuple[pd.DataFrame, dict]:
+def _combine_df_results(results: dict, dedup_cols: list) -> tuple:
     frames  = []
     summary = {"success": [], "no_data": [], "failed": []}
 
@@ -1790,7 +1808,7 @@ def show_bdc_balance():
         )
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
-        fetch_all_flag = st.checkbox("Fetch ALL BDCs", value=True, key="bal_fetch_all")
+        fetch_all_flag = st.checkbox("Fetch ALL BDCs", value=st.session_state.get("bal_fetch_all", True), key="bal_fetch_all")
 
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
 
@@ -1800,7 +1818,7 @@ def show_bdc_balance():
         merge_prev = st.checkbox(
             "🔀 Merge this fetch with previous results "
             "(adds any BDCs that were missing last time, keeps best balance for duplicates)",
-            value=True, key="bal_merge_prev",
+            value=st.session_state.get("bal_merge_prev", True), key="bal_merge_prev",
         )
 
     st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** will be queried  "
@@ -1936,9 +1954,9 @@ def show_omc_loadings():
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start Date", value=datetime.now()-timedelta(days=7), key="omc_start")
+        start_date = st.date_input("Start Date", value=st.session_state.get("omc_start", datetime.now()-timedelta(days=7)), key="omc_start")
     with col2:
-        end_date = st.date_input("End Date", value=datetime.now(), key="omc_end")
+        end_date = st.date_input("End Date", value=st.session_state.get("omc_end", datetime.now()), key="omc_end")
 
     col3, col4 = st.columns([3,1])
     with col3:
@@ -1946,7 +1964,7 @@ def show_omc_loadings():
                                   all_bdc_names, key="omc_bdc_select")
     with col4:
         st.markdown("<br>", unsafe_allow_html=True)
-        fetch_all_flag = st.checkbox("Fetch ALL", value=True, key="omc_fetch_all")
+        fetch_all_flag = st.checkbox("Fetch ALL", value=st.session_state.get("omc_fetch_all", True), key="omc_fetch_all")
 
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
     period_days   = max((end_date - start_date).days, 1)
@@ -1956,7 +1974,7 @@ def show_omc_loadings():
     if has_previous:
         merge_prev = st.checkbox(
             "🔀 Merge this fetch with previous results",
-            value=True, key="omc_merge_prev",
+            value=st.session_state.get("omc_merge_prev", True), key="omc_merge_prev",
         )
 
     st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
@@ -2100,9 +2118,9 @@ def show_daily_orders():
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start Date", value=datetime.now()-timedelta(days=1), key="daily_start")
+        start_date = st.date_input("Start Date", value=st.session_state.get("daily_start", datetime.now()-timedelta(days=1)), key="daily_start")
     with col2:
-        end_date = st.date_input("End Date", value=datetime.now(), key="daily_end")
+        end_date = st.date_input("End Date", value=st.session_state.get("daily_end", datetime.now()), key="daily_end")
 
     col3, col4 = st.columns([3,1])
     with col3:
@@ -2110,7 +2128,7 @@ def show_daily_orders():
                                   all_bdc_names, key="daily_bdc_select")
     with col4:
         st.markdown("<br>", unsafe_allow_html=True)
-        fetch_all_flag = st.checkbox("Fetch ALL", value=True, key="daily_fetch_all")
+        fetch_all_flag = st.checkbox("Fetch ALL", value=st.session_state.get("daily_fetch_all", True), key="daily_fetch_all")
 
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
     period_days   = max((end_date - start_date).days, 1)
@@ -2120,7 +2138,7 @@ def show_daily_orders():
     if has_previous:
         merge_prev = st.checkbox(
             "🔀 Merge this fetch with previous results",
-            value=True, key="daily_merge_prev",
+            value=st.session_state.get("daily_merge_prev", True), key="daily_merge_prev",
         )
 
     omc_df_for_lookup = st.session_state.get("omc_df", pd.DataFrame())
@@ -2332,7 +2350,12 @@ def show_market_share():
         set(balance_df["BDC"].unique()  if not balance_df.empty  else []) |
         set(loadings_df["BDC"].unique() if not loadings_df.empty else [])
     )
-    selected_bdc = st.selectbox("Choose BDC to analyse:", all_bdcs, key="ms_bdc")
+
+    # Restore previous selection if available
+    prev_bdc = st.session_state.get("ms_bdc")
+    default_idx = all_bdcs.index(prev_bdc) if prev_bdc and prev_bdc in all_bdcs else 0
+
+    selected_bdc = st.selectbox("Choose BDC to analyse:", all_bdcs, index=default_idx, key="ms_bdc")
     if not selected_bdc:
         return
 
@@ -2420,18 +2443,29 @@ def show_stock_transaction():
     if "stock_txn_df" not in st.session_state:
         st.session_state.stock_txn_df = pd.DataFrame()
 
+    all_bdcs   = sorted(BDC_MAP.keys())
+    all_depots = sorted(DEPOT_MAP.keys())
+
+    # Restore previous selections
+    prev_bdc     = st.session_state.get("txn_bdc_label")
+    prev_depot   = st.session_state.get("txn_depot_label")
+    prev_product = st.session_state.get("txn_product_label")
+    bdc_idx      = all_bdcs.index(prev_bdc)     if prev_bdc     and prev_bdc     in all_bdcs   else 0
+    depot_idx    = all_depots.index(prev_depot)  if prev_depot   and prev_depot   in all_depots else 0
+    prod_idx     = PRODUCT_OPTIONS.index(prev_product) if prev_product and prev_product in PRODUCT_OPTIONS else 0
+
     c1, c2 = st.columns(2)
     with c1:
-        selected_bdc     = st.selectbox("BDC",     sorted(BDC_MAP.keys()),    key="txn_bdc")
-        selected_product = st.selectbox("Product",  PRODUCT_OPTIONS,           key="txn_prod")
+        selected_bdc     = st.selectbox("BDC",     all_bdcs,         index=bdc_idx,  key="txn_bdc")
+        selected_product = st.selectbox("Product",  PRODUCT_OPTIONS,  index=prod_idx, key="txn_prod")
     with c2:
-        selected_depot   = st.selectbox("Depot",    sorted(DEPOT_MAP.keys()),  key="txn_depot")
+        selected_depot   = st.selectbox("Depot",    all_depots,       index=depot_idx, key="txn_depot")
 
     c3, c4 = st.columns(2)
     with c3:
-        start_date = st.date_input("Start Date", value=datetime.now()-timedelta(days=30), key="txn_start")
+        start_date = st.date_input("Start Date", value=st.session_state.get("txn_start", datetime.now()-timedelta(days=30)), key="txn_start")
     with c4:
-        end_date   = st.date_input("End Date",   value=datetime.now(),                    key="txn_end")
+        end_date   = st.date_input("End Date",   value=st.session_state.get("txn_end",   datetime.now()),                    key="txn_end")
 
     if st.button("📊 FETCH TRANSACTION REPORT", key="txn_fetch"):
         bdc_id     = BDC_MAP[selected_bdc]
@@ -2509,23 +2543,12 @@ def show_stock_transaction():
 
 
 # ══════════════════════════════════════════════════════════════
-# STREAMLIT PAGE  (replaces show_product_outturn)
+# PAGE: PRODUCT OUTTURN
 # ══════════════════════════════════════════════════════════════
- 
+
 def show_product_outturn():
-    """
-    Drop-in replacement for show_product_outturn() in npa_dashboard.py.
- 
-    Uses a background thread + polling loop so the sweep never blocks the
-    Streamlit main thread and the tab stays alive for the full duration.
-    """
-    # ── These must be imported from the main module ───────────
-    # When pasting into npa_dashboard.py, all names below are
-    # already in scope — nothing extra needed.
-   
- 
     st.markdown("<h2>⛴️ PRODUCT OUTTURN INTELLIGENCE</h2>", unsafe_allow_html=True)
- 
+
     st.markdown("""
     <div style='background:rgba(255,102,0,0.07);border:1px solid #ff660044;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
@@ -2543,8 +2566,7 @@ def show_product_outturn():
     </ul>
     </div>
     """, unsafe_allow_html=True)
- 
-    # ── Init sweep state ──────────────────────────────────────
+
     for _k, _v in [
         ("ot_sweep_running",  False),
         ("ot_sweep_thread",   None),
@@ -2557,22 +2579,20 @@ def show_product_outturn():
     ]:
         if _k not in st.session_state:
             st.session_state[_k] = _v
- 
-    # ── Date range ────────────────────────────────────────────
+
     col1, col2 = st.columns(2)
     with col1:
         start_date = st.date_input(
             "Start Date",
-            value=datetime.now() - timedelta(days=30),
+            value=st.session_state.get("ot_start", datetime.now() - timedelta(days=30)),
             key="ot_start",
         )
     with col2:
-        end_date = st.date_input("End Date", value=datetime.now(), key="ot_end")
- 
-    # ── BDC selection ─────────────────────────────────────────
+        end_date = st.date_input("End Date", value=st.session_state.get("ot_end", datetime.now()), key="ot_end")
+
     all_bdc_names = sorted(BDC_MAP.keys())
     n_total_bdcs  = len(all_bdc_names)
- 
+
     col3, col4 = st.columns([3, 1])
     with col3:
         sel_bdcs = st.multiselect(
@@ -2582,49 +2602,44 @@ def show_product_outturn():
         )
     with col4:
         st.markdown("<br>", unsafe_allow_html=True)
-        fetch_all_bdcs = st.checkbox("All BDCs", value=True, key="ot_all_bdcs")
- 
+        fetch_all_bdcs = st.checkbox("All BDCs", value=st.session_state.get("ot_all_bdcs", True), key="ot_all_bdcs")
+
     bdcs_to_sweep = all_bdc_names if (fetch_all_bdcs or not sel_bdcs) else sel_bdcs
- 
-    # ── Depot selection ───────────────────────────────────────
+
     all_depot_names     = sorted(DEPOT_MAP.keys())
     n_total_depots      = len(all_depot_names)
-    default_depot_names = _resolve_default_depots()
- 
+
     st.markdown("**🏭 Depots to sweep**")
-    if "ot_depots_selection" not in st.session_state:
-        st.session_state["ot_depots_selection"] = default_depot_names
- 
+
     col5, col6 = st.columns([4, 1])
     with col5:
         sel_depots = st.multiselect(
-            f"Depots  (default {len(default_depot_names)}, total {n_total_depots})",
+            f"Depots  (default {len(st.session_state.get('ot_depots_selection', []))}, total {n_total_depots})",
             options=all_depot_names,
-            default=st.session_state["ot_depots_selection"],
+            default=st.session_state.get("ot_depots_selection", _resolve_default_depots()),
             key="ot_depot_multiselect",
         )
     with col6:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("↩️ Reset", key="ot_reset_depots"):
-            st.session_state["ot_depots_selection"] = default_depot_names
+            st.session_state["ot_depots_selection"] = _resolve_default_depots()
             st.rerun()
- 
-    depots_to_sweep = sel_depots if sel_depots else default_depot_names
+
+    depots_to_sweep = sel_depots if sel_depots else st.session_state.get("ot_depots_selection", _resolve_default_depots())
     st.session_state["ot_depots_selection"] = depots_to_sweep
- 
-    # ── Product selection ─────────────────────────────────────
+
     sel_products = st.multiselect(
-        "Products", PRODUCT_OPTIONS, default=PRODUCT_OPTIONS, key="ot_products"
+        "Products", PRODUCT_OPTIONS,
+        default=st.session_state.get("ot_products", PRODUCT_OPTIONS[:]),
+        key="ot_products",
     )
     if not sel_products:
         sel_products = PRODUCT_OPTIONS
- 
-    # ── Call count & estimate ─────────────────────────────────
+
     n_calls    = len(bdcs_to_sweep) * len(depots_to_sweep) * len(sel_products)
-    # With 8 workers and ~1.5 s avg per request (network + parse):
     est_secs   = (n_calls / OUTTURN_WORKERS) * 1.5 + len(bdcs_to_sweep) * 0.5
     est_mins   = est_secs / 60
- 
+
     st.info(
         f"📋 **{len(bdcs_to_sweep)} BDCs** × **{len(depots_to_sweep)} depots** × "
         f"**{len(sel_products)} products** = **{n_calls:,} API calls**  |  "
@@ -2635,18 +2650,17 @@ def show_product_outturn():
             f"⚠️ {n_calls:,} requests. Large sweep — circuit-breaker will skip "
             f"unresponsive BDCs automatically. You can stop at any time."
         )
- 
+
     merge_prev = False
     has_prev   = not st.session_state.get("outturn_df", pd.DataFrame()).empty
     if has_prev:
         merge_prev = st.checkbox(
             "🔀 Merge with previous outturn results",
-            value=True, key="ot_merge_prev",
+            value=st.session_state.get("ot_merge_prev", True), key="ot_merge_prev",
         )
- 
-    # ── Control buttons ───────────────────────────────────────
+
     running = st.session_state.ot_sweep_running
- 
+
     btn_col1, btn_col2 = st.columns([3, 1])
     with btn_col1:
         start_btn = st.button(
@@ -2660,15 +2674,13 @@ def show_product_outturn():
             key="ot_stop",
             disabled=not running,
         )
- 
-    # ── Handle stop ───────────────────────────────────────────
+
     if stop_btn and running:
         if st.session_state.ot_cancel_event:
             st.session_state.ot_cancel_event.set()
         st.session_state.ot_sweep_running = False
         st.warning("🛑 Stop signal sent — sweep will finish its current batch then halt.")
- 
-    # ── Handle start ─────────────────────────────────────────
+
     if start_btn and not running:
         cancel_ev = threading.Event()
         worker    = _OutturnSweepWorker(
@@ -2686,7 +2698,7 @@ def show_product_outturn():
             cancel_event= cancel_ev,
         )
         thread = worker.start()
- 
+
         st.session_state.ot_sweep_running  = True
         st.session_state.ot_sweep_thread   = thread
         st.session_state.ot_sweep_worker   = worker
@@ -2696,25 +2708,23 @@ def show_product_outturn():
         st.session_state.ot_total_n        = max(n_calls, 1)
         st.session_state.ot_last_bdc       = ""
         st.rerun()
- 
-    # ── Live progress polling loop ────────────────────────────
+
     if st.session_state.ot_sweep_running:
-        worker: _OutturnSweepWorker = st.session_state.ot_sweep_worker
-        thread: threading.Thread    = st.session_state.ot_sweep_thread
- 
+        worker = st.session_state.ot_sweep_worker
+        thread = st.session_state.ot_sweep_thread
+
         prog_bar  = st.progress(0.0, text="Starting sweep…")
         log_area  = st.empty()
         status_ph = st.empty()
- 
+
         sweep_done = False
         poll_start = time.time()
- 
+
         while True:
-            # Drain the queue
             try:
                 while True:
                     msg = worker.q.get_nowait()
- 
+
                     if msg["type"] == "progress":
                         st.session_state.ot_done_n   = msg["done"]
                         st.session_state.ot_total_n  = msg["total"]
@@ -2738,10 +2748,9 @@ def show_product_outturn():
                                 f"ETA: **~{eta/60:.1f} min**  |  "
                                 f"Done: **{done:,} / {tot:,}**"
                             )
- 
+
                     elif msg["type"] == "log":
                         st.session_state.ot_log_lines.append(msg["text"])
-                        # Keep last 18 lines
                         lines = st.session_state.ot_log_lines[-18:]
                         log_area.markdown(
                             "<div class='fetch-log'>" +
@@ -2749,42 +2758,40 @@ def show_product_outturn():
                             "</div>",
                             unsafe_allow_html=True,
                         )
- 
+
                     elif msg["type"] == "result":
                         new_df  = msg["df"]
                         summary = msg["summary"]
- 
+
                         if merge_prev and has_prev:
                             prev = st.session_state.outturn_df
                             new_df = _merge_dataframes(
                                 prev, new_df,
                                 ["Date", "Trans #", "BDC", "Depot", "Product", "Volume"],
                             )
- 
+
                         st.session_state.outturn_df = new_df
                         _save_state("outturn_df", new_df)
                         st.session_state.ot_last_summary = summary
                         st.session_state.ot_last_record_count = len(new_df)
- 
+
                     elif msg["type"] in ("done", "error"):
                         sweep_done = True
                         if msg["type"] == "error":
                             st.error(f"❌ Sweep error: {msg['text']}")
                         break
- 
+
             except queue.Empty:
                 pass
- 
+
             if sweep_done or not thread.is_alive():
                 break
- 
-            # Poll every 1.5 s — keeps UI responsive without hammering CPU
+
             time.sleep(1.5)
- 
-        # ── Sweep finished ────────────────────────────────────
+
         prog_bar.progress(1.0, text="✅ Outturn sweep complete")
         st.session_state.ot_sweep_running = False
- 
+
         if "ot_last_summary" in st.session_state:
             _render_fetch_summary(
                 st.session_state.ot_last_summary,
@@ -2792,10 +2799,9 @@ def show_product_outturn():
                 st.session_state.get("ot_last_record_count", 0),
                 "Outturn Records",
             )
- 
+
         st.rerun()
- 
-    # ── Show last sweep stats if not running ──────────────────
+
     elif "ot_last_summary" in st.session_state and not running:
         with st.expander("📊 Last sweep outcome", expanded=False):
             _render_fetch_summary(
@@ -2804,30 +2810,27 @@ def show_product_outturn():
                 st.session_state.get("ot_last_record_count", 0),
                 "Outturn Records",
             )
- 
-    # ══════════════════════════════════════════════════════════
-    # RESULTS DISPLAY  (unchanged from original)
-    # ══════════════════════════════════════════════════════════
+
     df = st.session_state.get("outturn_df", pd.DataFrame())
     if df is None or (isinstance(df, pd.DataFrame) and df.empty):
         if not running:
             st.info("👆 Configure parameters and click **SWEEP FOR PRODUCT OUTTURN**.")
         return
- 
+
     st.markdown("---")
- 
+
     total_vol   = float(df["Volume"].sum())
     n_vessels   = df["Vessel Name"].replace("", pd.NA).dropna().nunique()
     n_bdcs_data = df["BDC"].nunique()
     n_depots    = df["Depot"].nunique()
- 
+
     c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("📦 Outturn Events",    f"{len(df):,}")
     c2.metric("🛢️ Total Volume (LT)", f"{total_vol:,.0f}")
     c3.metric("🏦 BDCs",             f"{n_bdcs_data}")
     c4.metric("🏭 Depots",           f"{n_depots}")
     c5.metric("🚢 Vessels ID'd",     f"{n_vessels}")
- 
+
     st.markdown("### 📦 PRODUCT BREAKDOWN")
     prod_cols = st.columns(len(sel_products))
     PROD_COLORS = {"PMS": "#00ffff", "Gasoil": "#ffaa00", "LPG": "#00ff88"}
@@ -2848,7 +2851,7 @@ def show_product_outturn():
                 <div style='color:#ccc;font-size:12px;margin-top:4px;'>
                     {len(sub)} events · {sub['BDC'].nunique()} BDCs</div>
             </div>""", unsafe_allow_html=True)
- 
+
     st.markdown("---")
     st.markdown("### 🏦 TOP BDCs BY OUTTURN VOLUME")
     bdc_sum = (
@@ -2866,8 +2869,7 @@ def show_product_outturn():
     )
     bdc_sum["Market Share %"] = (bdc_sum["Total Volume (LT)"] / total_vol * 100).round(2)
     st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
- 
-    import plotly.graph_objects as go
+
     if not bdc_sum.empty:
         fig_bdc = go.Figure(go.Bar(
             x=bdc_sum["BDC"].head(20),
@@ -2886,7 +2888,7 @@ def show_product_outturn():
             height=420,
         )
         st.plotly_chart(fig_bdc, use_container_width=True)
- 
+
     st.markdown("### 🏭 OUTTURN BY DEPOT")
     depot_sum = (
         df.groupby(["Depot", "Product"])
@@ -2895,7 +2897,7 @@ def show_product_outturn():
         .rename(columns={"Volume_LT": "Volume (LT)"})
     )
     st.dataframe(depot_sum, use_container_width=True, hide_index=True)
- 
+
     st.markdown("### 🚢 VESSEL NAME ANALYSIS")
     vessel_df = df[df["Vessel Name"].str.strip() != ""].copy()
     if vessel_df.empty:
@@ -2915,7 +2917,7 @@ def show_product_outturn():
             .rename(columns={"Volume_LT": "Total Volume (LT)"})
         )
         st.dataframe(vessel_sum, use_container_width=True, hide_index=True)
- 
+
         if len(vessel_sum) >= 2:
             fig_v = go.Figure(go.Treemap(
                 labels=vessel_sum["Vessel Name"] + "<br>" + vessel_sum["Product"],
@@ -2930,7 +2932,7 @@ def show_product_outturn():
                 paper_bgcolor="rgba(10,14,39,0.9)", font=dict(color="white"), height=420,
             )
             st.plotly_chart(fig_v, use_container_width=True)
- 
+
     st.markdown("### 📅 OUTTURN TIMELINE")
     try:
         df_ts = df.copy()
@@ -2959,14 +2961,14 @@ def show_product_outturn():
             st.plotly_chart(fig_ts, use_container_width=True)
     except Exception:
         pass
- 
+
     st.markdown("---")
     st.markdown("### 🔍 FILTER & EXPLORE")
     filter_by = st.selectbox(
         "Filter by", ["All Records","BDC","Depot","Product","Vessel Name"], key="ot_filter_by"
     )
     col_map = {"BDC":"BDC","Depot":"Depot","Product":"Product","Vessel Name":"Vessel Name"}
- 
+
     if filter_by == "All Records":
         filt = df
     else:
@@ -2976,7 +2978,7 @@ def show_product_outturn():
         opts  = ["ALL"] + sorted(df[col_f].replace("",pd.NA).dropna().unique().tolist())
         fval  = st.selectbox(f"Select {filter_by}", opts, key="ot_filter_val")
         filt  = df if fval=="ALL" else df[df[col_f]==fval]
- 
+
     st.caption(
         f"**{len(filt):,}** records | Volume: **{filt['Volume'].sum():,.0f} LT** | "
         f"BDCs: **{filt['BDC'].nunique()}** | Depots: **{filt['Depot'].nunique()}**"
@@ -2987,7 +2989,7 @@ def show_product_outturn():
         filt[display_cols].sort_values(["Date","BDC"]),
         use_container_width=True, height=450, hide_index=True,
     )
- 
+
     st.markdown("---")
     _ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
     excel_sheets = {
@@ -2997,14 +2999,14 @@ def show_product_outturn():
     }
     if not vessel_df.empty:
         excel_sheets["By Vessel"] = vessel_sum
- 
+
     excel_bytes = _to_excel_bytes(excel_sheets)
     st.download_button(
         "⬇️ DOWNLOAD OUTTURN EXCEL", excel_bytes,
         f"product_outturn_{_ts_str}.xlsx",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
- 
+
 
 # ══════════════════════════════════════════════════════════════
 # PAGE: NATIONAL STOCKOUT
@@ -3027,10 +3029,10 @@ def show_national_stockout():
     c1, c2 = st.columns(2)
     with c1:
         start_date = st.date_input("Loadings History — From",
-                                   value=datetime.now()-timedelta(days=30), key="ns_start")
+                                   value=st.session_state.get("ns_start", datetime.now()-timedelta(days=30)), key="ns_start")
     with c2:
         end_date   = st.date_input("Loadings History — To",
-                                   value=datetime.now(), key="ns_end")
+                                   value=st.session_state.get("ns_end", datetime.now()), key="ns_end")
 
     start_str   = start_date.strftime("%m/%d/%Y")
     end_str     = end_date.strftime("%m/%d/%Y")
@@ -3039,6 +3041,9 @@ def show_national_stockout():
     day_type = st.radio(
         "Day-type for daily rate denominator",
         ["📆 Calendar Days (default)","💼 Business Days (Mon–Fri only)"],
+        index=["📆 Calendar Days (default)","💼 Business Days (Mon–Fri only)"].index(
+            st.session_state.get("ns_day_type", "📆 Calendar Days (default)")
+        ),
         horizontal=True, key="ns_day_type",
     )
     use_biz = "Business" in day_type
@@ -3046,14 +3051,17 @@ def show_national_stockout():
     depl_mode = st.radio(
         "Depletion rate method",
         ["📊 Average Daily Loadings","🔥 Maximum Single-Day Loading (stress test)","📊 Median Daily Loadings"],
-        index=0, key="ns_depl_mode",
+        index=["📊 Average Daily Loadings","🔥 Maximum Single-Day Loading (stress test)","📊 Median Daily Loadings"].index(
+            st.session_state.get("ns_depl_mode", "📊 Average Daily Loadings")
+        ),
+        key="ns_depl_mode",
     )
     use_max    = "Maximum" in depl_mode
     use_median = "Median"  in depl_mode
 
     exclude_tor = st.checkbox(
         "❌ Exclude TEMA OIL REFINERY (TOR) from LPG stock",
-        value=False, key="ns_excl_tor",
+        value=st.session_state.get("ns_excl_tor", False), key="ns_excl_tor",
     )
 
     _vessel_df     = st.session_state.get("vessel_data", pd.DataFrame())
@@ -3062,7 +3070,7 @@ def show_national_stockout():
 
     include_vessels = st.checkbox(
         "🚢 Add pending vessel cargo to stock totals",
-        value=False, key="ns_vessels",
+        value=st.session_state.get("ns_vessels", False), key="ns_vessels",
     )
     if include_vessels and not _vessel_loaded:
         st.warning("No vessel data loaded — go to 🚢 Vessel Supply and fetch first.")
@@ -3377,9 +3385,14 @@ def show_vessel_supply():
 
     col1, col2 = st.columns([3,1])
     with col1:
-        sheet_url = st.text_input("Google Sheets URL or File ID", value=VESSEL_SHEET_URL, key="vessel_url")
+        sheet_url = st.text_input("Google Sheets URL or File ID",
+                                  value=st.session_state.get("vessel_url", VESSEL_SHEET_URL),
+                                  key="vessel_url")
     with col2:
-        year_sel = st.selectbox("Data Year", ["2025","2024","2026"], key="vessel_year_sel")
+        year_opts = ["2025","2024","2026"]
+        prev_year = st.session_state.get("vessel_year_sel", "2025")
+        year_idx  = year_opts.index(prev_year) if prev_year in year_opts else 0
+        year_sel  = st.selectbox("Data Year", year_opts, index=year_idx, key="vessel_year_sel")
 
     if st.button("🔄 FETCH VESSEL DATA", key="vessel_fetch"):
         with st.spinner("Loading vessel schedule from Google Sheets…"):
@@ -3546,8 +3559,28 @@ def main():
 
         st.markdown("---")
 
-        if st.button("🗑️ CLEAR ALL CACHED DATA", key="clear_cache"):
+        # ── SAFE CLEAR CACHE — requires confirmation to prevent accidental trigger ──
+        st.markdown(
+            "<div style='background:rgba(255,0,0,0.08);padding:10px;border-radius:8px;"
+            "border:1px solid #ff000044;'>"
+            "<b style='color:#ff4444;font-size:12px;'>⚠️ DANGER ZONE</b>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        confirm_clear = st.checkbox(
+            "✔ Confirm: I want to clear all cached data",
+            value=False,
+            key="confirm_clear_cache",
+        )
+        clear_btn = st.button(
+            "🗑️ CLEAR ALL CACHED DATA",
+            key="clear_cache_btn",
+            disabled=not confirm_clear,
+        )
+        if clear_btn and confirm_clear:
             _clear_all_persisted()
+            # Reset the confirmation checkbox
+            st.session_state["confirm_clear_cache"] = False
             st.success("✅ All cached data cleared.")
             st.rerun()
 
