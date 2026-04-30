@@ -183,11 +183,18 @@ def load_depot_mappings() -> dict:
 
 
 def load_product_mappings() -> dict:
-    return {
-        "PMS":    int(os.getenv("PRODUCT_PREMIUM_ID", "12")),
-        "Gasoil": int(os.getenv("PRODUCT_GASOIL_ID",  "14")),
-        "LPG":    int(os.getenv("PRODUCT_LPG_ID",     "28")),
+    mapping = {
+        "PMS":       int(os.getenv("PRODUCT_PREMIUM_ID",   "12")),
+        "Gasoil":    int(os.getenv("PRODUCT_GASOIL_ID",    "14")),
+        "LPG":       int(os.getenv("PRODUCT_LPG_ID",       "28")),
     }
+    crude_id_str = os.getenv("PRODUCT_CRUDE_OIL_ID", "")
+    if crude_id_str:
+        try:
+            mapping["Crude Oil"] = int(crude_id_str)
+        except ValueError:
+            pass
+    return mapping
 
 
 # ── Load all mappings once at startup ───────────────────────
@@ -199,7 +206,11 @@ STOCK_PRODUCT_MAP = load_product_mappings()
 _BDC_USER_LOOKUP  = _build_lookup(BDC_USER_MAP)
 
 PRODUCT_OPTIONS     = ["PMS", "Gasoil", "LPG"]
-PRODUCT_BALANCE_MAP = {"PMS": "PREMIUM", "Gasoil": "GASOIL", "LPG": "LPG"}
+# Crude Oil is appended only when PRODUCT_CRUDE_OIL_ID is set in .env
+if "Crude Oil" in STOCK_PRODUCT_MAP:
+    PRODUCT_OPTIONS = PRODUCT_OPTIONS + ["Crude Oil"]
+
+PRODUCT_BALANCE_MAP = {"PMS": "PREMIUM", "Gasoil": "GASOIL", "LPG": "LPG", "Crude Oil": "CRUDE OIL"}
 
 NPA_CONFIG = {
     "COMPANY_ID":            os.getenv("NPA_COMPANY_ID",    "1"),
@@ -399,6 +410,10 @@ _WIDGET_STATE_DEFAULTS = {
     # Vessel Supply
     "vessel_url":          VESSEL_SHEET_URL,
     "vessel_year_sel":     "2025",
+    # Crude Oil toggles (per-page)
+    "bal_show_crude":      False,
+    "ot_show_crude":       False,
+    "vessel_show_crude":   False,
 }
 
 
@@ -1664,9 +1679,10 @@ def _count_period_days(start_str: str, end_str: str, use_biz: bool) -> int:
 # ══════════════════════════════════════════════════════════════
 # VESSEL SUPPLY HELPERS
 # ══════════════════════════════════════════════════════════════
-VESSEL_CF  = {"PREMIUM":1324.50,"GASOIL":1183.00,"LPG":1000.00,"NAPHTHA":800.00}
+VESSEL_CF  = {"PREMIUM":1324.50,"GASOIL":1183.00,"LPG":1000.00,"NAPHTHA":800.00,"CRUDE OIL":1165.00}
 VESSEL_PM  = {"PMS":"PREMIUM","GASOLINE":"PREMIUM","AGO":"GASOIL",
-              "GASOIL":"GASOIL","LPG":"LPG","BUTANE":"LPG","NAPHTHA":"NAPHTHA"}
+              "GASOIL":"GASOIL","LPG":"LPG","BUTANE":"LPG","NAPHTHA":"NAPHTHA",
+              "CRUDE OIL":"CRUDE OIL","CRUDE":"CRUDE OIL"}
 VESSEL_MM  = {m[:3].title():m[:3].upper() for m in
               ["January","February","March","April","May","June",
                "July","August","September","October","November","December"]}
@@ -1749,7 +1765,11 @@ def _process_vessel_df(vdf, year="2025"):
             try: qty_mt = float(qty_str)
             except ValueError: continue
             if qty_mt <= 0: continue
-            product = VESSEL_PM.get(prod_raw, prod_raw)
+            # Normalise any "crude" variant (e.g. LIGHT CRUDE OIL, BONNY LIGHT CRUDE) to CRUDE OIL
+            if "CRUDE" in prod_raw:
+                product = "CRUDE OIL"
+            else:
+                product = VESSEL_PM.get(prod_raw, prod_raw)
             if product not in VESSEL_CF: continue
             qty_lt = qty_mt * VESSEL_CF[product]
             month, yr_, status = _parse_vessel_date(date_cell, yr=year)
@@ -1867,12 +1887,30 @@ def show_bdc_balance():
 
     df      = pd.DataFrame(records)
     col_bal = "ACTUAL BALANCE (LT\\KG)"
+
+    # ── Crude Oil toggle ──────────────────────────────────────
+    _bal_has_crude = "CRUDE OIL" in df["Product"].values
+    _bal_show_crude = False
+    if _bal_has_crude:
+        _bal_show_crude = st.toggle(
+            "🛢️ Include Crude Oil in view",
+            value=st.session_state.get("bal_show_crude", False),
+            key="bal_show_crude",
+            help="Toggle to show or hide Crude Oil records in all balance totals, pivot and tables below.",
+        )
+    if not _bal_show_crude:
+        df = df[df["Product"] != "CRUDE OIL"]
+    # ─────────────────────────────────────────────────────────
+
     summary = df.groupby("Product")[col_bal].sum()
 
     st.markdown("---")
     st.markdown("### 🛢️ NATIONAL STOCK TOTALS")
-    cols = st.columns(3)
-    for idx, prod in enumerate(["PREMIUM","GASOIL","LPG"]):
+    core_products = [p for p in ["PREMIUM","GASOIL","LPG"] if p in summary.index]
+    crude_products = [p for p in ["CRUDE OIL"] if _bal_show_crude and p in summary.index]
+    display_products = core_products + crude_products
+    cols = st.columns(max(len(display_products), 1))
+    for idx, prod in enumerate(display_products):
         with cols[idx]:
             val = summary.get(prod, 0)
             st.markdown(f"<div class='metric-card'><h2>{prod}</h2><h1>{val:,.0f}</h1>"
@@ -1898,12 +1936,16 @@ def show_bdc_balance():
     st.markdown("### 📊 PRODUCT × BDC PIVOT")
     pivot = (df.pivot_table(index="BDC", columns="Product", values=col_bal,
                             aggfunc="sum", fill_value=0).reset_index())
+    _pivot_core = [p for p in ["GASOIL","LPG","PREMIUM"] if p in pivot.columns]
     for p in ["GASOIL","LPG","PREMIUM"]:
         if p not in pivot.columns: pivot[p] = 0
-    pivot["TOTAL"] = pivot[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
+    _pivot_cols = ["GASOIL","LPG","PREMIUM"]
+    if _bal_show_crude and "CRUDE OIL" in pivot.columns:
+        _pivot_cols = _pivot_cols + ["CRUDE OIL"]
+    pivot["TOTAL"] = pivot[_pivot_cols].sum(axis=1)
     pivot = pivot.sort_values("TOTAL", ascending=False)
     st.caption(f"**{len(pivot)} BDCs** shown in pivot")
-    st.dataframe(pivot[["BDC","GASOIL","LPG","PREMIUM","TOTAL"]], use_container_width=True, hide_index=True)
+    st.dataframe(pivot[["BDC"] + _pivot_cols + ["TOTAL"]], use_container_width=True, hide_index=True)
 
     st.markdown("---")
     st.markdown("### 🔍 FILTER & EXPLORE")
@@ -1923,12 +1965,15 @@ def show_bdc_balance():
 
     st.markdown("---")
     _bdc_dl_ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    excel_bytes = _to_excel_bytes({
+    _excel_bdc_sheets = {
         "Stock Balance": df,
         "LPG":           df[df["Product"]=="LPG"],
         "PREMIUM":       df[df["Product"]=="PREMIUM"],
         "GASOIL":        df[df["Product"]=="GASOIL"],
-    })
+    }
+    if _bal_show_crude and "CRUDE OIL" in df["Product"].values:
+        _excel_bdc_sheets["CRUDE OIL"] = df[df["Product"]=="CRUDE OIL"]
+    excel_bytes = _to_excel_bytes(_excel_bdc_sheets)
     st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes,
                        f"bdc_balance_{_bdc_dl_ts}.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -2458,6 +2503,8 @@ def show_stock_transaction():
     with c1:
         selected_bdc     = st.selectbox("BDC",     all_bdcs,         index=bdc_idx,  key="txn_bdc")
         selected_product = st.selectbox("Product",  PRODUCT_OPTIONS,  index=prod_idx, key="txn_prod")
+        if selected_product == "Crude Oil" and "Crude Oil" not in STOCK_PRODUCT_MAP:
+            st.warning("⚠️ Crude Oil not configured — set **PRODUCT_CRUDE_OIL_ID** in your .env file.")
     with c2:
         selected_depot   = st.selectbox("Depot",    all_depots,       index=depot_idx, key="txn_depot")
 
@@ -2819,6 +2866,20 @@ def show_product_outturn():
 
     st.markdown("---")
 
+    # ── Crude Oil toggle ──────────────────────────────────────
+    _ot_has_crude  = "Crude Oil" in df["Product"].values if "Product" in df.columns else False
+    _ot_show_crude = False
+    if _ot_has_crude:
+        _ot_show_crude = st.toggle(
+            "🛢️ Include Crude Oil in view",
+            value=st.session_state.get("ot_show_crude", False),
+            key="ot_show_crude",
+            help="Toggle to show or hide Crude Oil outturn records in all metrics, charts and tables below.",
+        )
+    if not _ot_show_crude:
+        df = df[df["Product"] != "Crude Oil"] if "Product" in df.columns else df
+    # ─────────────────────────────────────────────────────────
+
     total_vol   = float(df["Volume"].sum())
     n_vessels   = df["Vessel Name"].replace("", pd.NA).dropna().nunique()
     n_bdcs_data = df["BDC"].nunique()
@@ -2832,10 +2893,11 @@ def show_product_outturn():
     c5.metric("🚢 Vessels ID'd",     f"{n_vessels}")
 
     st.markdown("### 📦 PRODUCT BREAKDOWN")
-    prod_cols = st.columns(len(sel_products))
-    PROD_COLORS = {"PMS": "#00ffff", "Gasoil": "#ffaa00", "LPG": "#00ff88"}
-    PROD_ICONS  = {"PMS": "⛽", "Gasoil": "🚛", "LPG": "🔵"}
-    for col, prod in zip(prod_cols, sel_products):
+    _visible_products = [p for p in sel_products if p != "Crude Oil" or _ot_show_crude]
+    prod_cols = st.columns(max(len(_visible_products), 1))
+    PROD_COLORS = {"PMS": "#00ffff", "Gasoil": "#ffaa00", "LPG": "#00ff88", "Crude Oil": "#cc6600"}
+    PROD_ICONS  = {"PMS": "⛽", "Gasoil": "🚛", "LPG": "🔵", "Crude Oil": "🛢️"}
+    for col, prod in zip(prod_cols, _visible_products):
         sub   = df[df["Product"] == prod]
         vol   = float(sub["Volume"].sum())
         color = PROD_COLORS.get(prod, "#fff")
@@ -2943,7 +3005,7 @@ def show_product_outturn():
                 df_ts.groupby(["Date_dt","Product"])["Volume"].sum().reset_index()
                 .rename(columns={"Date_dt":"Date","Volume":"Volume (LT)"})
             )
-            PCMAP = {"PMS":"#00ffff","Gasoil":"#ffaa00","LPG":"#00ff88"}
+            PCMAP = {"PMS":"#00ffff","Gasoil":"#ffaa00","LPG":"#00ff88","Crude Oil":"#cc6600"}
             fig_ts = go.Figure()
             for prod in daily_ts["Product"].unique():
                 sub_ts = daily_ts[daily_ts["Product"]==prod].sort_values("Date")
@@ -3369,8 +3431,8 @@ def show_world_monitor():
 # PAGE: VESSEL SUPPLY
 # ══════════════════════════════════════════════════════════════
 def show_vessel_supply():
-    VCOLS  = {"PREMIUM":"#00ffff","GASOIL":"#ffaa00","LPG":"#00ff88","NAPHTHA":"#ff6600"}
-    VICONS = {"PREMIUM":"⛽","GASOIL":"🚛","LPG":"🔵","NAPHTHA":"🟠"}
+    VCOLS  = {"PREMIUM":"#00ffff","GASOIL":"#ffaa00","LPG":"#00ff88","NAPHTHA":"#ff6600","CRUDE OIL":"#cc6600"}
+    VICONS = {"PREMIUM":"⛽","GASOIL":"🚛","LPG":"🔵","NAPHTHA":"🟠","CRUDE OIL":"🛢️"}
     MONTH_ORDER = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
 
     st.markdown("<h2>🚢 VESSEL SUPPLY TRACKER</h2>", unsafe_allow_html=True)
@@ -3418,6 +3480,23 @@ def show_vessel_supply():
     yr_lbl     = st.session_state.get("vessel_year","2025")
     discharged = df[df["Status"]=="DISCHARGED"]
     pending    = df[df["Status"]=="PENDING"]
+
+    # ── Crude Oil toggle ─────────────────────────────────────
+    all_prods     = df["Product"].unique().tolist()
+    has_crude     = "CRUDE OIL" in all_prods
+    show_crude    = False
+    if has_crude:
+        show_crude = st.toggle(
+            "🛢️ Include Crude Oil in view",
+            value=st.session_state.get("vessel_show_crude", False),
+            key="vessel_show_crude",
+            help="Toggle to show or hide Crude Oil vessels in all counts, charts and tables below.",
+        )
+    if not show_crude:
+        df         = df[df["Product"] != "CRUDE OIL"]
+        discharged = discharged[discharged["Product"] != "CRUDE OIL"]
+        pending    = pending[pending["Product"] != "CRUDE OIL"]
+    # ─────────────────────────────────────────────────────────
 
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("Total Vessels", len(df))
