@@ -34,8 +34,9 @@ Fixed version:
       * Per-request timeout enforced independently (no silent hang).
       * Outturn call count shown BEFORE sweep starts so user knows what to expect.
   - UI FIXES:
-      * Clear cache button now requires a confirmation checkbox to prevent
-        accidental activation (e.g. from Ctrl+C keyboard shortcut).
+      * Clear cache now uses a two-click arm/confirm pattern — no checkbox that
+        can be accidentally triggered by Ctrl+C or other keyboard shortcuts.
+      * Removed widget-key mutation that caused StreamlitAPIException on clear.
       * All widget selections (dates, multiselects, checkboxes) are persisted
         in session_state so they survive menu navigation.
 
@@ -43,7 +44,7 @@ INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
 
 USAGE:
-    streamlit run npa_dashboard.py
+    streamlit run new_test.py
 """
 
 import streamlit as st
@@ -352,7 +353,6 @@ _PERSIST_KEYS = {
 }
 
 # ── Widget-state persistence keys (selections that survive menu nav) ──
-# Format: { session_state_key: default_value }
 _WIDGET_STATE_DEFAULTS = {
     # BDC Balance
     "bal_bdc_select":      [],
@@ -361,7 +361,7 @@ _WIDGET_STATE_DEFAULTS = {
     "bal_ftype":           "Product",
     "bal_fval":            "ALL",
     # OMC Loadings
-    "omc_start":           None,   # date — handled specially
+    "omc_start":           None,
     "omc_end":             None,
     "omc_bdc_select":      [],
     "omc_fetch_all":       True,
@@ -386,8 +386,8 @@ _WIDGET_STATE_DEFAULTS = {
     "ot_end":              None,
     "ot_bdc_select":       [],
     "ot_all_bdcs":         True,
-    "ot_depots_selection": None,   # list — handled specially
-    "ot_products":         None,   # list — handled specially
+    "ot_depots_selection": None,
+    "ot_products":         None,
     "ot_merge_prev":       True,
     # National Stockout
     "ns_start":            None,
@@ -431,7 +431,7 @@ def _restore_session_state() -> None:
         if key not in st.session_state:
             st.session_state[key] = _load_state(key)
 
-    # Restore widget selections (only set default if key not already in state)
+    # Restore widget selections
     _today = datetime.now().date()
     _date_defaults = {
         "omc_start":   _today - timedelta(days=7),
@@ -450,15 +450,18 @@ def _restore_session_state() -> None:
             if key in _date_defaults:
                 st.session_state[key] = _date_defaults[key]
             elif default is None:
-                pass   # will be handled in the page itself on first render
+                pass
             else:
                 st.session_state[key] = default
 
-    # Special defaults that need runtime values
     if "ot_depots_selection" not in st.session_state or st.session_state["ot_depots_selection"] is None:
         st.session_state["ot_depots_selection"] = _resolve_default_depots()
     if "ot_products" not in st.session_state or st.session_state["ot_products"] is None:
         st.session_state["ot_products"] = PRODUCT_OPTIONS[:]
+
+    # Internal flags (never widget keys)
+    if "_clear_cache_armed" not in st.session_state:
+        st.session_state["_clear_cache_armed"] = False
 
 
 def _clear_all_persisted() -> None:
@@ -622,7 +625,7 @@ def _fetch_pdf(url: str, params: dict, timeout: int = _HTTP_TIMEOUT) -> bytes:
 
 
 # ══════════════════════════════════════════════════════════════
-# ROBUST BATCH FETCHER  (used by Balance / OMC / Daily)
+# ROBUST BATCH FETCHER
 # ══════════════════════════════════════════════════════════════
 BATCH_SIZE          = 6
 MAX_RETRIES         = 3
@@ -2351,7 +2354,6 @@ def show_market_share():
         set(loadings_df["BDC"].unique() if not loadings_df.empty else [])
     )
 
-    # Restore previous selection if available
     prev_bdc = st.session_state.get("ms_bdc")
     default_idx = all_bdcs.index(prev_bdc) if prev_bdc and prev_bdc in all_bdcs else 0
 
@@ -2446,7 +2448,6 @@ def show_stock_transaction():
     all_bdcs   = sorted(BDC_MAP.keys())
     all_depots = sorted(DEPOT_MAP.keys())
 
-    # Restore previous selections
     prev_bdc     = st.session_state.get("txn_bdc_label")
     prev_depot   = st.session_state.get("txn_depot_label")
     prev_product = st.session_state.get("txn_product_label")
@@ -3559,7 +3560,11 @@ def main():
 
         st.markdown("---")
 
-        # ── SAFE CLEAR CACHE — requires confirmation to prevent accidental trigger ──
+        # ── SAFE CLEAR CACHE — two-click arm/confirm, no checkbox ──
+        # A checkbox was used here previously but it was accidentally triggered
+        # by Ctrl+C (copy). This two-button pattern avoids that entirely and
+        # also fixes the StreamlitAPIException caused by manually mutating a
+        # widget-owned session_state key after render.
         st.markdown(
             "<div style='background:rgba(255,0,0,0.08);padding:10px;border-radius:8px;"
             "border:1px solid #ff000044;'>"
@@ -3567,25 +3572,29 @@ def main():
             "</div>",
             unsafe_allow_html=True,
         )
-        confirm_clear = st.checkbox(
-            "✔ Confirm: I want to clear all cached data",
-            value=False,
-            key="confirm_clear_cache",
-        )
-        clear_btn = st.button(
-            "🗑️ CLEAR ALL CACHED DATA",
-            key="clear_cache_btn",
-            disabled=not confirm_clear,
-        )
-        if clear_btn and confirm_clear:
-            _clear_all_persisted()
-            # Reset the confirmation checkbox
-            st.session_state["confirm_clear_cache"] = False
-            st.success("✅ All cached data cleared.")
-            st.rerun()
+
+        armed = st.session_state.get("_clear_cache_armed", False)
+
+        if not armed:
+            if st.button("🗑️ CLEAR ALL CACHED DATA", key="clear_cache_btn"):
+                st.session_state["_clear_cache_armed"] = True
+                st.rerun()
+        else:
+            st.warning("⚠️ This will wipe all fetched data. Are you sure?")
+            col_y, col_n = st.columns(2)
+            with col_y:
+                if st.button("✅ Yes, clear", key="clear_confirm_yes"):
+                    _clear_all_persisted()
+                    st.session_state["_clear_cache_armed"] = False
+                    st.success("✅ All cached data cleared.")
+                    st.rerun()
+            with col_n:
+                if st.button("❌ Cancel", key="clear_confirm_no"):
+                    st.session_state["_clear_cache_armed"] = False
+                    st.rerun()
 
         st.markdown("""
-        <div style='text-align:center;padding:12px;background:rgba(255,0,255,0.08);
+        <div style='text-align:center;padding:12px;background:rgba(255,0,0,0.08);
                     border-radius:10px;border:2px solid #ff00ff;'>
             <b style='color:#ff00ff;'>⚙️ SYSTEM STATUS</b><br>
             <span style='color:#00ff88;font-size:16px;'>🟢 OPERATIONAL</span>
