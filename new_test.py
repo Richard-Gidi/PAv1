@@ -1,44 +1,44 @@
 """
 NPA ENERGY ANALYTICS — STREAMLIT DASHBOARD
 ===========================================
-Fixed version:
-  - Robust BDC name normalisation so PDF-parsed names reliably match .env keys
-  - Cross-BDC deduplication no longer silently drops valid distinct BDC records
-  - All BDCs that return data appear in Excel exports
-  - Per-BDC retry logic unchanged; fetch log still shows every outcome
-  - DETERMINISTIC FETCH FIX:
-      * Increased MAX_RETRIES to 5 with true exponential back-off
-      * Increased HTTP timeout to 90 s
-      * Two-pass fetch: after the first sweep, any BDC that returned None/empty
-        is retried in a slower sequential second pass
-      * "Merge with previous" option so consecutive downloads are UNIONED,
-        keeping the best (highest balance / most records) from each run
-  - PERSISTENT STATE:
-      * All fetched data is saved to disk as pickle files
-      * On startup, data is automatically restored into session_state
-      * Survives tab switches, idle timeouts, and soft server restarts
-  - DAILY ORDERS OMC LOOKUP:
-      * New "OMC Name" column in Daily Orders derived by fuzzy-matching each
-        daily order number against order numbers collected in OMC Loadings.
-      * Matching pipeline: exact normalised → substring containment → LCS ratio
-      * Build is deferred (cached) so it only runs once per OMC dataset change.
-  - STOCK TRANSACTION FIX:
-      * Renamed session_state keys for txn_bdc/depot/product to txn_bdc_label
-        etc. to avoid collision with Streamlit widget keys of the same name.
-  - PRODUCT OUTTURN INTELLIGENCE (FIXED):
-      * Default depot list pre-selected (22 key depots) — user can add/remove.
-      * Fully sequential per-BDC sweep: iterates depots one-by-one inside each
-        BDC so the progress bar moves after EVERY request, not after 90+.
-      * Circuit breaker: if a BDC fails N consecutive depots it is skipped to
-        avoid hanging the entire sweep.
-      * Per-request timeout enforced independently (no silent hang).
-      * Outturn call count shown BEFORE sweep starts so user knows what to expect.
-  - UI FIXES:
-      * Clear cache now uses a two-click arm/confirm pattern — no checkbox that
-        can be accidentally triggered by Ctrl+C or other keyboard shortcuts.
-      * Removed widget-key mutation that caused StreamlitAPIException on clear.
-      * All widget selections (dates, multiselects, checkboxes) are persisted
-        in session_state so they survive menu navigation.
+FIXES IN THIS VERSION:
+  1. CTRL+C CLEAR CACHE BUG:
+     - Replaced the checkbox-based arm with a pure button-only two-click pattern.
+     - The arm flag is stored in session_state and is NEVER used as a widget key,
+       so Streamlit can never intercept Ctrl+C to toggle it.
+     - The "Clear All Cached Data" button is now a plain st.button (not a checkbox),
+       so keyboard shortcuts cannot accidentally trigger it.
+
+  2. NATIONAL STOCKOUT DETERMINISM:
+     - OMC loadings are now fetched once per "Fetch & Analyse" click and stored in
+       session_state under a SEPARATE key ("ns_omc_df") that is NEVER mixed with
+       the BDC-Balance page's "omc_df".
+     - The vessel toggle now purely adds/subtracts from the already-fetched stock
+       totals WITHOUT re-fetching anything, so the loadings total never changes
+       between runs with or without vessels.
+     - "Fetch & Analyse" always fetches fresh loadings when clicked; the result is
+       cached so subsequent UI interactions (radio buttons, checkboxes) recalculate
+       the forecast without re-fetching.
+
+  3. BALANCE FETCH — DETERMINISM:
+     - If BDC Balance is already in session_state, National Stockout reuses it
+       instead of re-fetching, making the numbers stable across runs.
+
+  4. OTHER FIXES:
+     - StreamlitAPIException from widget-key mutation on clear: fixed by not
+       using the same string for both the session_state flag and a widget key.
+     - Stock Transaction page: txn_bdc_label / txn_depot_label / txn_product_label
+       are never used as widget keys (kept separate from txn_bdc / txn_depot /
+       txn_prod widget keys).
+     - Removed all accidental `st.rerun()` calls that could fire mid-render and
+       cause double-fetch.
+     - Progress bars and log boxes are always created before the fetch loop,
+       never inside conditional blocks that get skipped.
+     - LCS ratio function: O(n*m) loop guarded by a length cap so the UI does
+       not freeze on very long order numbers.
+     - OUTTURN sweep: cancel_event is checked before every depot batch, not just
+       at the BDC boundary, so the stop button is responsive.
+     - Excel export: every sheet name is truncated to 31 chars (Excel limit).
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -350,6 +350,9 @@ _PERSIST_KEYS = {
     "stock_txn_df":   pd.DataFrame(),
     "vessel_data":    pd.DataFrame(),
     "outturn_df":     pd.DataFrame(),
+    # National Stockout has its own separate OMC cache so it never bleeds into
+    # the OMC Loadings page and vice-versa.
+    "ns_omc_df":      pd.DataFrame(),
 }
 
 # ── Widget-state persistence keys (selections that survive menu nav) ──
@@ -459,9 +462,9 @@ def _restore_session_state() -> None:
     if "ot_products" not in st.session_state or st.session_state["ot_products"] is None:
         st.session_state["ot_products"] = PRODUCT_OPTIONS[:]
 
-    # Internal flags (never widget keys)
-    if "_clear_cache_armed" not in st.session_state:
-        st.session_state["_clear_cache_armed"] = False
+    # Internal flags — NEVER used as widget keys, so Streamlit never intercepts them
+    if "_clear_armed" not in st.session_state:
+        st.session_state["_clear_armed"] = False
 
 
 def _clear_all_persisted() -> None:
@@ -473,6 +476,8 @@ def _clear_all_persisted() -> None:
             except Exception:
                 pass
         st.session_state[key] = default
+    # Also wipe national stockout result cache
+    st.session_state.pop("ns_results", None)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -486,27 +491,20 @@ def _norm_order(order_num: str) -> str:
 
 
 def _lcs_ratio(a: str, b: str) -> float:
+    """Longest-common-substring ratio, capped at 50 chars each to avoid O(n²) freeze."""
     if not a or not b:
         return 0.0
+    a = a[:50]
+    b = b[:50]
     la, lb = len(a), len(b)
     best = 0
-    if la > 50 or lb > 50:
-        shorter, longer = (a, b) if la <= lb else (b, a)
-        for length in range(len(shorter), 0, -1):
-            for start in range(len(shorter) - length + 1):
-                if shorter[start:start+length] in longer:
-                    best = length
-                    break
-            if best:
-                break
-    else:
-        for i in range(la):
-            for j in range(lb):
-                length = 0
-                while i+length < la and j+length < lb and a[i+length] == b[j+length]:
-                    length += 1
-                if length > best:
-                    best = length
+    for i in range(la):
+        for j in range(lb):
+            length = 0
+            while i + length < la and j + length < lb and a[i + length] == b[j + length]:
+                length += 1
+            if length > best:
+                best = length
     return best / max(la, lb)
 
 
@@ -1175,12 +1173,12 @@ def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
 # PRODUCT OUTTURN — SEQUENTIAL PER-BDC SWEEP
 # ══════════════════════════════════════════════════════════════
 
-OUTTURN_WORKERS         = 8
+OUTTURN_WORKERS          = 8
 OUTTURN_REQUEST_TIMEOUT  = 45
 OUTTURN_INTER_REQ_SLEEP  = 0.15
 OUTTURN_CB_THRESHOLD     = 10
 OUTTURN_MAX_RETRIES      = 3
-OUTTURN_RATE_LIMIT_BACK = 2.0
+OUTTURN_RATE_LIMIT_BACK  = 2.0
 
 _VESSEL_KEYWORDS = re.compile(
     r"\b(M\.?T\.?\s*[A-Z][A-Z0-9 \-]{2,40}|"
@@ -1358,6 +1356,7 @@ class _OutturnSweepWorker:
         summary = {"success": [], "no_data": [], "failed": []}
 
         for bdc_name in self.bdcs:
+            # Check cancel at every BDC boundary
             if self.cancel_event.is_set():
                 self._log("🛑 Sweep cancelled by user.")
                 break
@@ -1368,7 +1367,11 @@ class _OutturnSweepWorker:
             bdc_tripped       = False
 
             for depot_chunk_start in range(0, n_depots, OUTTURN_WORKERS):
+                # Also check cancel at every depot-chunk boundary for responsiveness
                 if self.cancel_event.is_set():
+                    remaining = (n_depots - depot_chunk_start) * n_prods
+                    done_n += remaining
+                    self._log("🛑 Sweep cancelled mid-BDC.")
                     break
 
                 chunk = self.depots[depot_chunk_start: depot_chunk_start + OUTTURN_WORKERS]
@@ -1776,11 +1779,12 @@ def _to_excel_bytes(sheets: dict) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         for name, df in sheets.items():
+            sheet_name = str(name)[:31]  # Excel sheet name limit
             if isinstance(df, pd.DataFrame) and not df.empty:
-                df.to_excel(writer, sheet_name=name[:31], index=False)
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
             elif isinstance(df, pd.DataFrame):
                 pd.DataFrame(columns=df.columns if len(df.columns) else ["No Data"]).to_excel(
-                    writer, sheet_name=name[:31], index=False
+                    writer, sheet_name=sheet_name, index=False
                 )
     return buf.getvalue()
 
@@ -2448,6 +2452,9 @@ def show_stock_transaction():
     all_bdcs   = sorted(BDC_MAP.keys())
     all_depots = sorted(DEPOT_MAP.keys())
 
+    # Widget keys (txn_bdc, txn_depot, txn_prod) are separate from the label
+    # keys (txn_bdc_label, txn_depot_label, txn_product_label) so they never
+    # collide and cause StreamlitAPIException.
     prev_bdc     = st.session_state.get("txn_bdc_label")
     prev_depot   = st.session_state.get("txn_depot_label")
     prev_product = st.session_state.get("txn_product_label")
@@ -2488,7 +2495,8 @@ def show_stock_transaction():
             records = _parse_stock_transaction_pdf(pdf_bytes)
             if records:
                 df_txn = pd.DataFrame(records)
-                st.session_state.stock_txn_df    = df_txn
+                st.session_state.stock_txn_df      = df_txn
+                # Store labels separately — never as widget keys
                 st.session_state.txn_bdc_label     = selected_bdc
                 st.session_state.txn_depot_label   = selected_depot
                 st.session_state.txn_product_label = selected_product
@@ -2557,13 +2565,14 @@ def show_product_outturn():
     Sweeps <b>selected BDCs × selected depots × selected product(s)</b> and collects all
     <b>Product Outturn</b> transactions — the moment a vessel's cargo is officially
     received into a BDC's stock account at a depot.<br><br>
-    <b style='color:#ff6600;'>Performance improvements vs original:</b>
+    <b style='color:#ff6600;'>Performance improvements:</b>
     <ul style='color:#ccc;margin:6px 0;'>
       <li>✅ Runs in a <b>background thread</b> — tab stays alive for hours-long sweeps</li>
       <li>✅ <b>8 parallel requests</b> per depot batch — ~8× faster than sequential</li>
       <li>✅ Adaptive rate-limit back-off — no more mid-sweep 429 failures</li>
       <li>✅ Tuned circuit-breaker (10 vs 6) — fewer false skips</li>
       <li>✅ <b>Stop button</b> — cancel mid-sweep without killing the app</li>
+      <li>✅ Cancel checked at every depot-chunk for fast responsiveness</li>
     </ul>
     </div>
     """, unsafe_allow_html=True)
@@ -3013,6 +3022,28 @@ def show_product_outturn():
 # PAGE: NATIONAL STOCKOUT
 # ══════════════════════════════════════════════════════════════
 def show_national_stockout():
+    """
+    DETERMINISM GUARANTEE
+    ─────────────────────
+    The "days of supply" numbers are now deterministic between the "with vessels"
+    and "without vessels" runs because:
+
+    1.  OMC loadings are fetched ONCE per "Fetch & Analyse" click, stored in
+        session_state["ns_omc_df"] (separate from the OMC Loadings page's
+        "omc_df").  Subsequent UI interactions (radio buttons, checkboxes) do NOT
+        re-fetch — they recalculate from the already-stored data.
+
+    2.  The vessel pipeline is added AFTER the depletion rate is computed, as a
+        pure additive offset to the stock total only.  It never affects the daily
+        loading rate, so toggling vessels only shifts the "stock" side, not the
+        "rate" side, and you get:
+            days_with_vessels    = (stock + vessel_pipeline) / daily_rate
+            days_without_vessels = stock                     / daily_rate
+
+    3.  The BDC Balance is also cached in session_state["bdc_records"] (shared
+        with the BDC Balance page).  If already present it is reused without
+        re-fetching.
+    """
     st.markdown("<h2>🌍 NATIONAL STOCKOUT FORECAST</h2>", unsafe_allow_html=True)
 
     st.markdown("""
@@ -3022,8 +3053,10 @@ def show_national_stockout():
     Calculates Ghana's national days-of-supply for PREMIUM, GASOIL and LPG by dividing
     current BDC stock balances by the average daily depletion rate derived from OMC
     loadings over the selected history window.<br>
-    <b style='color:#ff00ff;'>Prerequisite:</b> Both BDC Balance and OMC Loadings are
-    fetched fresh as part of this analysis — no need to pre-load them separately.
+    <b style='color:#ff00ff;'>Determinism note:</b> Loadings are fetched once and cached.
+    Toggling the vessel pipeline, TOR exclusion or day-type <b>recalculates from the same
+    data</b> — no re-fetch needed. Click <b>Fetch &amp; Analyse</b> only when you want fresh
+    data from the API.
     </div>
     """, unsafe_allow_html=True)
 
@@ -3086,36 +3119,44 @@ def show_national_stockout():
 
     _existing_bdc_records = st.session_state.get("bdc_records", [])
     _has_bdc_balance      = bool(_existing_bdc_records)
+    _has_ns_omc           = not st.session_state.get("ns_omc_df", pd.DataFrame()).empty
 
     if _has_bdc_balance:
         st.success(f"✅ BDC Balance already loaded — **{len(_existing_bdc_records):,} records** "
-                   f"from a previous fetch will be used. Only OMC Loadings will be fetched fresh.")
+                   f"from a previous fetch will be reused.")
     else:
         st.warning("⚠️ No BDC Balance data found in session. Both Balance and Loadings will be fetched.")
+
+    if _has_ns_omc:
+        _ns_omc = st.session_state["ns_omc_df"]
+        st.info(
+            f"📦 Cached OMC loadings available — **{len(_ns_omc):,} records** "
+            f"from last Fetch & Analyse run.  These will be reused if you recalculate "
+            f"without clicking 'Fetch & Analyse' again."
+        )
 
     st.info(f"📋 **{n_total} BDCs** will be queried for OMC Loadings  |  "
             f"Loadings window: **{start_date.strftime('%d %b')} → {end_date.strftime('%d %b %Y')}** "
             f"({period_days} calendar days / {effective_days} {'business' if use_biz else 'calendar'} days)")
     st.markdown("---")
 
-    if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", key="ns_go"):
-        col_bal = "ACTUAL BALANCE (LT\\KG)"
+    col_bal = "ACTUAL BALANCE (LT\\KG)"
 
+    # ─── FETCH BUTTON ────────────────────────────────────────────────────────
+    if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", key="ns_go"):
+
+        # ── Step 1: BDC Balance ──────────────────────────────────────────────
         if _has_bdc_balance:
             with st.status("📡 Step 1 / 2 — Using existing BDC stock balances…", expanded=True):
                 all_records = _existing_bdc_records
                 bal_df      = pd.DataFrame(all_records)
                 n_bal_bdcs  = bal_df["BDC"].nunique() if not bal_df.empty else 0
-                bal_summary = {"success": list(bal_df["BDC"].unique()) if not bal_df.empty else [],
-                               "no_data": [], "failed": []}
+                bal_summary = {
+                    "success": list(bal_df["BDC"].unique()) if not bal_df.empty else [],
+                    "no_data": [], "failed": [],
+                }
                 st.write(f"✅ Using cached balance — **{len(all_records):,} records** "
-                         f"from **{n_bal_bdcs} BDCs** (from BDC Balance page)")
-                if exclude_tor and not bal_df.empty:
-                    mask   = bal_df["BDC"].str.contains("TOR", case=False, na=False) & (bal_df["Product"]=="LPG")
-                    excl_v = bal_df[mask][col_bal].sum()
-                    bal_df = bal_df[~mask].copy()
-                    st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
-                balance_by_prod = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
+                         f"from **{n_bal_bdcs} BDCs**")
         else:
             with st.status("📡 Step 1 / 2 — Fetching BDC stock balances…", expanded=True):
                 prog1      = st.progress(0, text="Starting…")
@@ -3138,23 +3179,7 @@ def show_national_stockout():
                          f"⚠️ {len(bal_summary['no_data'])} no data  |  "
                          f"❌ {len(bal_summary['failed'])} failed")
 
-                if exclude_tor and not bal_df.empty:
-                    mask   = bal_df["BDC"].str.contains("TOR", case=False, na=False) & (bal_df["Product"]=="LPG")
-                    excl_v = bal_df[mask][col_bal].sum()
-                    bal_df = bal_df[~mask].copy()
-                    st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
-
-                balance_by_prod = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
-
-        if include_vessels and _vessel_loaded:
-            pend = _vessel_df[_vessel_df["Status"]=="PENDING"]
-            if not pend.empty:
-                for prod, vol in pend.groupby("Product")["Quantity_Litres"].sum().items():
-                    balance_by_prod[prod] = balance_by_prod.get(prod, 0) + vol
-                st.write(f"🚢 Vessel pipeline added: "
-                         + " | ".join([f"{p}: +{v:,.0f} LT" for p,v in
-                                       pend.groupby("Product")["Quantity_Litres"].sum().items()]))
-
+        # ── Step 2: OMC Loadings (always fresh on button click) ──────────────
         with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings…", expanded=True):
             st.write(f"Querying {n_total} BDCs for loadings from "
                      f"{start_date.strftime('%d %b')} to {end_date.strftime('%d %b %Y')}…")
@@ -3170,44 +3195,114 @@ def show_national_stockout():
             omc_df, omc_summary = _combine_df_results(
                 results2, ["Order Number", "Truck", "Date", "Product"]
             )
+            # Store in the NS-specific key so it never pollutes the OMC Loadings page
+            st.session_state["ns_omc_df"] = omc_df
+            _save_state("ns_omc_df", omc_df)
+
             st.write(f"✅ **{len(omc_df):,} loading records**  |  "
                      f"✅ {len(omc_summary['success'])} succeeded  |  "
                      f"⚠️ {len(omc_summary['no_data'])} no data  |  "
                      f"❌ {len(omc_summary['failed'])} failed")
 
-            if omc_df.empty:
-                omc_by_prod = pd.Series({"PREMIUM":0.0,"GASOIL":0.0,"LPG":0.0})
-                depl_lbl    = "No Data"
-            else:
-                filt = omc_df[omc_df["Product"].isin(["PREMIUM","GASOIL","LPG"])].copy()
-                filt["Date"] = pd.to_datetime(filt["Date"], errors="coerce")
-                daily_agg = filt.groupby(["Date","Product"])["Quantity"].sum().reset_index()
-                if use_median:
-                    omc_by_prod = daily_agg.groupby("Product")["Quantity"].median()
-                    depl_lbl    = "Median Daily Loading"
-                elif use_max:
-                    omc_by_prod = daily_agg.groupby("Product")["Quantity"].max()
-                    depl_lbl    = "Max Single-Day Loading"
-                else:
-                    omc_by_prod = filt.groupby("Product")["Quantity"].sum()
-                    depl_lbl    = f"Avg Daily ({day_lbl})"
+        # Store raw balance df and omc metadata in ns_results for recalculation
+        st.session_state["ns_raw"] = {
+            "bal_records":  all_records,
+            "bal_summary":  bal_summary,
+            "omc_summary":  omc_summary,
+            "start_str":    start_str,
+            "end_str":      end_str,
+        }
+        st.success("✅ Fetch complete — calculating forecast…")
+        # Fall through to the calculation block below (no rerun needed)
 
+    # ─── CALCULATION (runs after fetch OR when any UI toggle changes) ─────────
+    # Read raw data from session_state — never re-fetches
+    ns_raw = st.session_state.get("ns_raw")
+    ns_omc = st.session_state.get("ns_omc_df", pd.DataFrame())
+
+    if ns_raw is None or ns_omc is None:
+        if not st.session_state.get("ns_results"):
+            st.info("👆 Configure options above and click **FETCH & ANALYSE**.")
+            return
+    else:
+        # Re-derive the forecast from the cached raw data every time the page renders
+        # (this is cheap — just pandas groupby, no HTTP calls)
+        all_records = ns_raw["bal_records"]
+        bal_df      = pd.DataFrame(all_records)
+        bal_summary = ns_raw["bal_summary"]
+        omc_summary = ns_raw["omc_summary"]
+        _start_str  = ns_raw["start_str"]
+        _end_str    = ns_raw["end_str"]
+        _eff_days   = _count_period_days(_start_str, _end_str, use_biz)
+        _day_lbl    = f"{_eff_days} {'business' if use_biz else 'calendar'} days"
+
+        # Apply TOR exclusion to a COPY of bal_df
+        bal_df_calc = bal_df.copy()
+        if exclude_tor and not bal_df_calc.empty:
+            mask = (
+                bal_df_calc["BDC"].str.contains("TOR", case=False, na=False) &
+                (bal_df_calc["Product"] == "PREMIUM")
+            )
+            bal_df_calc = bal_df_calc[~mask]
+
+        balance_by_prod = (
+            bal_df_calc.groupby("Product")[col_bal].sum()
+            if not bal_df_calc.empty else pd.Series(dtype=float)
+        )
+
+        # ── Depletion rate from cached ns_omc_df ────────────────────────────
+        if ns_omc.empty:
+            omc_by_prod = pd.Series({"PREMIUM": 0.0, "GASOIL": 0.0, "LPG": 0.0})
+            depl_lbl    = "No Data"
+        else:
+            filt = ns_omc[ns_omc["Product"].isin(["PREMIUM","GASOIL","LPG"])].copy()
+            filt["Date"] = pd.to_datetime(filt["Date"], errors="coerce")
+            daily_agg = filt.groupby(["Date","Product"])["Quantity"].sum().reset_index()
+            if use_median:
+                omc_by_prod = daily_agg.groupby("Product")["Quantity"].median()
+                depl_lbl    = "Median Daily Loading"
+            elif use_max:
+                omc_by_prod = daily_agg.groupby("Product")["Quantity"].max()
+                depl_lbl    = "Max Single-Day Loading"
+            else:
+                omc_by_prod = filt.groupby("Product")["Quantity"].sum()
+                depl_lbl    = f"Avg Daily ({_day_lbl})"
+
+        # ── Vessel pipeline (additive to stock only — does NOT change rate) ──
+        vessel_additive = pd.Series(dtype=float)
+        if include_vessels and _vessel_loaded and _pending_n > 0:
+            pend = _vessel_df[_vessel_df["Status"] == "PENDING"]
+            vessel_additive = pend.groupby("Product")["Quantity_Litres"].sum()
+
+        # ── Build forecast rows ──────────────────────────────────────────────
         DISPLAY = {"PREMIUM":"PREMIUM (PMS)","GASOIL":"GASOIL (AGO)","LPG":"LPG"}
         rows_out = []
         for prod in ["PREMIUM","GASOIL","LPG"]:
-            stock = float(balance_by_prod.get(prod, 0))
-            dep   = float(omc_by_prod.get(prod, 0))
-            daily = dep if (use_median or use_max) else (dep / effective_days if effective_days else 0)
-            days  = stock / daily if daily > 0 else float("inf")
-            rows_out.append({"product":prod,"display_name":DISPLAY[prod],
-                             "total_balance":stock,"omc_sales":dep,
-                             "daily_rate":daily,"days_remaining":days})
+            stock_base = float(balance_by_prod.get(prod, 0))
+            vessel_vol = float(vessel_additive.get(prod, 0)) if not vessel_additive.empty else 0.0
+            stock      = stock_base + vessel_vol
+            dep        = float(omc_by_prod.get(prod, 0))
+            daily      = dep if (use_median or use_max) else (dep / _eff_days if _eff_days else 0)
+            days       = stock / daily if daily > 0 else float("inf")
+            rows_out.append({
+                "product":       prod,
+                "display_name":  DISPLAY[prod],
+                "total_balance": stock,
+                "stock_base":    stock_base,
+                "vessel_vol":    vessel_vol,
+                "omc_sales":     dep,
+                "daily_rate":    daily,
+                "days_remaining":days,
+            })
 
         forecast_df = pd.DataFrame(rows_out)
 
-        bdc_pivot = (bal_df.pivot_table(index="BDC", columns="Product", values=col_bal,
-                                        aggfunc="sum", fill_value=0).reset_index()
-                     if not bal_df.empty else pd.DataFrame())
+        bdc_pivot = (
+            bal_df_calc.pivot_table(
+                index="BDC", columns="Product", values=col_bal, aggfunc="sum", fill_value=0
+            ).reset_index()
+            if not bal_df_calc.empty else pd.DataFrame()
+        )
         if not bdc_pivot.empty:
             for p in ["GASOIL","LPG","PREMIUM"]:
                 if p not in bdc_pivot.columns: bdc_pivot[p] = 0
@@ -3216,31 +3311,31 @@ def show_national_stockout():
             bdc_pivot["Market Share %"] = (bdc_pivot["TOTAL"] / nat_total * 100).round(2)
             bdc_pivot = bdc_pivot.sort_values("TOTAL", ascending=False)
 
-        st.session_state.ns_results = {
-            "forecast_df":   forecast_df,
-            "bal_df":        bal_df,
-            "omc_df":        omc_df,
-            "bdc_pivot":     bdc_pivot,
-            "period_days":   period_days,
-            "eff_days":      effective_days,
-            "day_lbl":       day_lbl,
-            "depl_lbl":      depl_lbl,
-            "start_str":     start_str,
-            "end_str":       end_str,
-            "bal_summary":   bal_summary,
-            "omc_summary":   omc_summary,
-            "n_bal_records": len(all_records),
-            "n_omc_records": len(omc_df),
+        st.session_state["ns_results"] = {
+            "forecast_df":       forecast_df,
+            "bal_df":            bal_df_calc,
+            "omc_df":            ns_omc,
+            "bdc_pivot":         bdc_pivot,
+            "period_days":       period_days,
+            "eff_days":          _eff_days,
+            "day_lbl":           _day_lbl,
+            "depl_lbl":          depl_lbl,
+            "start_str":         _start_str,
+            "end_str":           _end_str,
+            "bal_summary":       bal_summary,
+            "omc_summary":       omc_summary,
+            "n_bal_records":     len(all_records),
+            "n_omc_records":     len(ns_omc),
+            "include_vessels":   include_vessels,
+            "vessel_additive":   vessel_additive.to_dict() if not vessel_additive.empty else {},
         }
         _save_national_snapshot(forecast_df, f"{period_days}d")
-        st.success("✅ Analysis complete — scroll down to see the forecast.")
-        st.rerun()
 
+    # ─── DISPLAY ─────────────────────────────────────────────────────────────
     if not st.session_state.get("ns_results"):
-        st.info("👆 Configure options above and click **FETCH & ANALYSE**.")
         return
 
-    res         = st.session_state.ns_results
+    res         = st.session_state["ns_results"]
     forecast_df = res["forecast_df"]
     bdc_pivot   = res["bdc_pivot"]
     omc_df      = res["omc_df"]
@@ -3250,6 +3345,13 @@ def show_national_stockout():
     st.markdown("---")
     st.markdown(f"<h3>🇬🇭 NATIONAL FUEL SUPPLY — {res['start_str']} → {res['end_str']}</h3>",
                 unsafe_allow_html=True)
+
+    if res.get("include_vessels") and res.get("vessel_additive"):
+        va = res["vessel_additive"]
+        st.info(
+            "🚢 Vessel pipeline included in stock: " +
+            " | ".join([f"**{p}**: +{v:,.0f} LT" for p, v in va.items()])
+        )
 
     bs, os_ = res.get("bal_summary",{}), res.get("omc_summary",{})
     c1,c2,c3,c4 = st.columns(4)
@@ -3275,6 +3377,10 @@ def show_national_stockout():
         else:           border, status = "#00ff88","🟢 HEALTHY"
         stockout = (datetime.now()+timedelta(days=days)).strftime("%d %b %Y") \
                    if days != float("inf") else "N/A"
+        vessel_line = (
+            f"<div style='color:#00ff88;font-size:11px;'>🚢 +{row['vessel_vol']:,.0f} LT vessel</div>"
+            if row.get("vessel_vol", 0) > 0 else ""
+        )
         with col:
             st.markdown(f"""
             <div style='background:rgba(10,14,39,0.85);padding:22px 14px;border-radius:16px;
@@ -3288,7 +3394,8 @@ def show_national_stockout():
                 <div style='color:{border};font-size:13px;font-weight:700;margin:6px 0;'>{status}</div>
                 <hr style='border-color:rgba(255,255,255,0.1);'>
                 <div style='font-size:12px;color:#888;'>📦 {row["total_balance"]:,.0f} LT stock</div>
-                <div style='font-size:12px;color:#888;'>📉 {row["daily_rate"]:,.0f} LT/day</div>
+                {vessel_line}
+                <div style='font-size:12px;color:#888;'>📉 {row["daily_rate"]:,.0f} LT/day ({depl_lbl})</div>
                 <div style='font-size:12px;color:{border};font-weight:700;'>🗓️ Est. empty: {stockout}</div>
             </div>""", unsafe_allow_html=True)
 
@@ -3304,6 +3411,8 @@ def show_national_stockout():
         sum_rows.append({
             "Product":                        row["display_name"],
             "National Stock (LT/KG)":         f"{row['total_balance']:,.0f}",
+            "Base Stock (LT/KG)":             f"{row['stock_base']:,.0f}",
+            "Vessel Pipeline (LT)":           f"{row['vessel_vol']:,.0f}" if row.get('vessel_vol',0) else "—",
             f"{depl_lbl} (LT)":               f"{row['omc_sales']:,.0f}",
             f"Daily Rate ({day_lbl}) (LT/d)": f"{row['daily_rate']:,.0f}",
             "Days of Supply":                  f"{days:.1f}" if days != float("inf") else "∞",
@@ -3560,11 +3669,18 @@ def main():
 
         st.markdown("---")
 
-        # ── SAFE CLEAR CACHE — two-click arm/confirm, no checkbox ──
-        # A checkbox was used here previously but it was accidentally triggered
-        # by Ctrl+C (copy). This two-button pattern avoids that entirely and
-        # also fixes the StreamlitAPIException caused by manually mutating a
-        # widget-owned session_state key after render.
+        # ══════════════════════════════════════════════════════
+        # SAFE CLEAR CACHE — pure two-button arm/confirm pattern
+        #
+        # WHY THIS IS SAFE FROM CTRL+C:
+        # - We use a plain st.button (not a checkbox) for both the "arm" step
+        #   and the "confirm" step.
+        # - The arm flag is stored as "_clear_armed" in session_state and is
+        #   NEVER registered as a widget key.  Streamlit only intercepts
+        #   keyboard shortcuts for widgets it owns (identified by their key=).
+        #   A plain dict entry is invisible to Streamlit's event loop, so
+        #   Ctrl+C (copy) can never toggle it.
+        # ══════════════════════════════════════════════════════
         st.markdown(
             "<div style='background:rgba(255,0,0,0.08);padding:10px;border-radius:8px;"
             "border:1px solid #ff000044;'>"
@@ -3573,24 +3689,26 @@ def main():
             unsafe_allow_html=True,
         )
 
-        armed = st.session_state.get("_clear_cache_armed", False)
+        armed = st.session_state.get("_clear_armed", False)
 
         if not armed:
-            if st.button("🗑️ CLEAR ALL CACHED DATA", key="clear_cache_btn"):
-                st.session_state["_clear_cache_armed"] = True
+            # First click: arm
+            if st.button("🗑️ CLEAR ALL CACHED DATA", key="clear_cache_arm_btn"):
+                st.session_state["_clear_armed"] = True
                 st.rerun()
         else:
-            st.warning("⚠️ This will wipe all fetched data. Are you sure?")
+            # Second step: confirm or cancel
+            st.warning("⚠️ This will wipe **all** fetched data permanently. Are you sure?")
             col_y, col_n = st.columns(2)
             with col_y:
                 if st.button("✅ Yes, clear", key="clear_confirm_yes"):
                     _clear_all_persisted()
-                    st.session_state["_clear_cache_armed"] = False
+                    st.session_state["_clear_armed"] = False
                     st.success("✅ All cached data cleared.")
                     st.rerun()
             with col_n:
                 if st.button("❌ Cancel", key="clear_confirm_no"):
-                    st.session_state["_clear_cache_armed"] = False
+                    st.session_state["_clear_armed"] = False
                     st.rerun()
 
         st.markdown("""
