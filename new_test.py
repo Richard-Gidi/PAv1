@@ -34,8 +34,9 @@ Fixed version:
       * Per-request timeout enforced independently (no silent hang).
       * Outturn call count shown BEFORE sweep starts so user knows what to expect.
   - UI FIXES:
-      * Clear cache button now requires a confirmation checkbox to prevent
-        accidental activation (e.g. from Ctrl+C keyboard shortcut).
+      * Clear cache now uses a two-click arm/confirm pattern — no checkbox that
+        can be accidentally triggered by Ctrl+C or other keyboard shortcuts.
+      * Removed widget-key mutation that caused StreamlitAPIException on clear.
       * All widget selections (dates, multiselects, checkboxes) are persisted
         in session_state so they survive menu navigation.
 
@@ -43,7 +44,7 @@ INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
 
 USAGE:
-    streamlit run npa_dashboard.py
+    streamlit run new_test.py
 """
 
 import streamlit as st
@@ -183,18 +184,11 @@ def load_depot_mappings() -> dict:
 
 
 def load_product_mappings() -> dict:
-    mapping = {
-        "PMS":       int(os.getenv("PRODUCT_PREMIUM_ID",   "12")),
-        "Gasoil":    int(os.getenv("PRODUCT_GASOIL_ID",    "14")),
-        "LPG":       int(os.getenv("PRODUCT_LPG_ID",       "28")),
+    return {
+        "PMS":    int(os.getenv("PRODUCT_PREMIUM_ID", "12")),
+        "Gasoil": int(os.getenv("PRODUCT_GASOIL_ID",  "14")),
+        "LPG":    int(os.getenv("PRODUCT_LPG_ID",     "28")),
     }
-    crude_id_str = os.getenv("PRODUCT_CRUDE_OIL_ID", "")
-    if crude_id_str:
-        try:
-            mapping["Crude Oil"] = int(crude_id_str)
-        except ValueError:
-            pass
-    return mapping
 
 
 # ── Load all mappings once at startup ───────────────────────
@@ -206,11 +200,7 @@ STOCK_PRODUCT_MAP = load_product_mappings()
 _BDC_USER_LOOKUP  = _build_lookup(BDC_USER_MAP)
 
 PRODUCT_OPTIONS     = ["PMS", "Gasoil", "LPG"]
-# Crude Oil is appended only when PRODUCT_CRUDE_OIL_ID is set in .env
-if "Crude Oil" in STOCK_PRODUCT_MAP:
-    PRODUCT_OPTIONS = PRODUCT_OPTIONS + ["Crude Oil"]
-
-PRODUCT_BALANCE_MAP = {"PMS": "PREMIUM", "Gasoil": "GASOIL", "LPG": "LPG", "Crude Oil": "CRUDE OIL"}
+PRODUCT_BALANCE_MAP = {"PMS": "PREMIUM", "Gasoil": "GASOIL", "LPG": "LPG"}
 
 NPA_CONFIG = {
     "COMPANY_ID":            os.getenv("NPA_COMPANY_ID",    "1"),
@@ -363,7 +353,6 @@ _PERSIST_KEYS = {
 }
 
 # ── Widget-state persistence keys (selections that survive menu nav) ──
-# Format: { session_state_key: default_value }
 _WIDGET_STATE_DEFAULTS = {
     # BDC Balance
     "bal_bdc_select":      [],
@@ -372,7 +361,7 @@ _WIDGET_STATE_DEFAULTS = {
     "bal_ftype":           "Product",
     "bal_fval":            "ALL",
     # OMC Loadings
-    "omc_start":           None,   # date — handled specially
+    "omc_start":           None,
     "omc_end":             None,
     "omc_bdc_select":      [],
     "omc_fetch_all":       True,
@@ -397,8 +386,8 @@ _WIDGET_STATE_DEFAULTS = {
     "ot_end":              None,
     "ot_bdc_select":       [],
     "ot_all_bdcs":         True,
-    "ot_depots_selection": None,   # list — handled specially
-    "ot_products":         None,   # list — handled specially
+    "ot_depots_selection": None,
+    "ot_products":         None,
     "ot_merge_prev":       True,
     # National Stockout
     "ns_start":            None,
@@ -410,10 +399,6 @@ _WIDGET_STATE_DEFAULTS = {
     # Vessel Supply
     "vessel_url":          VESSEL_SHEET_URL,
     "vessel_year_sel":     "2025",
-    # Crude Oil toggles (per-page)
-    "bal_show_crude":      False,
-    "ot_show_crude":       False,
-    "vessel_show_crude":   False,
 }
 
 
@@ -446,7 +431,7 @@ def _restore_session_state() -> None:
         if key not in st.session_state:
             st.session_state[key] = _load_state(key)
 
-    # Restore widget selections (only set default if key not already in state)
+    # Restore widget selections
     _today = datetime.now().date()
     _date_defaults = {
         "omc_start":   _today - timedelta(days=7),
@@ -465,15 +450,18 @@ def _restore_session_state() -> None:
             if key in _date_defaults:
                 st.session_state[key] = _date_defaults[key]
             elif default is None:
-                pass   # will be handled in the page itself on first render
+                pass
             else:
                 st.session_state[key] = default
 
-    # Special defaults that need runtime values
     if "ot_depots_selection" not in st.session_state or st.session_state["ot_depots_selection"] is None:
         st.session_state["ot_depots_selection"] = _resolve_default_depots()
     if "ot_products" not in st.session_state or st.session_state["ot_products"] is None:
         st.session_state["ot_products"] = PRODUCT_OPTIONS[:]
+
+    # Internal flags (never widget keys)
+    if "_clear_cache_armed" not in st.session_state:
+        st.session_state["_clear_cache_armed"] = False
 
 
 def _clear_all_persisted() -> None:
@@ -637,7 +625,7 @@ def _fetch_pdf(url: str, params: dict, timeout: int = _HTTP_TIMEOUT) -> bytes:
 
 
 # ══════════════════════════════════════════════════════════════
-# ROBUST BATCH FETCHER  (used by Balance / OMC / Daily)
+# ROBUST BATCH FETCHER
 # ══════════════════════════════════════════════════════════════
 BATCH_SIZE          = 6
 MAX_RETRIES         = 3
@@ -1679,10 +1667,9 @@ def _count_period_days(start_str: str, end_str: str, use_biz: bool) -> int:
 # ══════════════════════════════════════════════════════════════
 # VESSEL SUPPLY HELPERS
 # ══════════════════════════════════════════════════════════════
-VESSEL_CF  = {"PREMIUM":1324.50,"GASOIL":1183.00,"LPG":1000.00,"NAPHTHA":800.00,"CRUDE OIL":1165.00}
+VESSEL_CF  = {"PREMIUM":1324.50,"GASOIL":1183.00,"LPG":1000.00,"NAPHTHA":800.00}
 VESSEL_PM  = {"PMS":"PREMIUM","GASOLINE":"PREMIUM","AGO":"GASOIL",
-              "GASOIL":"GASOIL","LPG":"LPG","BUTANE":"LPG","NAPHTHA":"NAPHTHA",
-              "CRUDE OIL":"CRUDE OIL","CRUDE":"CRUDE OIL"}
+              "GASOIL":"GASOIL","LPG":"LPG","BUTANE":"LPG","NAPHTHA":"NAPHTHA"}
 VESSEL_MM  = {m[:3].title():m[:3].upper() for m in
               ["January","February","March","April","May","June",
                "July","August","September","October","November","December"]}
@@ -1765,11 +1752,7 @@ def _process_vessel_df(vdf, year="2025"):
             try: qty_mt = float(qty_str)
             except ValueError: continue
             if qty_mt <= 0: continue
-            # Normalise any "crude" variant (e.g. LIGHT CRUDE OIL, BONNY LIGHT CRUDE) to CRUDE OIL
-            if "CRUDE" in prod_raw:
-                product = "CRUDE OIL"
-            else:
-                product = VESSEL_PM.get(prod_raw, prod_raw)
+            product = VESSEL_PM.get(prod_raw, prod_raw)
             if product not in VESSEL_CF: continue
             qty_lt = qty_mt * VESSEL_CF[product]
             month, yr_, status = _parse_vessel_date(date_cell, yr=year)
@@ -1887,30 +1870,12 @@ def show_bdc_balance():
 
     df      = pd.DataFrame(records)
     col_bal = "ACTUAL BALANCE (LT\\KG)"
-
-    # ── Crude Oil toggle ──────────────────────────────────────
-    _bal_has_crude = "CRUDE OIL" in df["Product"].values
-    _bal_show_crude = False
-    if _bal_has_crude:
-        _bal_show_crude = st.toggle(
-            "🛢️ Include Crude Oil in view",
-            value=st.session_state.get("bal_show_crude", False),
-            key="bal_show_crude",
-            help="Toggle to show or hide Crude Oil records in all balance totals, pivot and tables below.",
-        )
-    if not _bal_show_crude:
-        df = df[df["Product"] != "CRUDE OIL"]
-    # ─────────────────────────────────────────────────────────
-
     summary = df.groupby("Product")[col_bal].sum()
 
     st.markdown("---")
     st.markdown("### 🛢️ NATIONAL STOCK TOTALS")
-    core_products = [p for p in ["PREMIUM","GASOIL","LPG"] if p in summary.index]
-    crude_products = [p for p in ["CRUDE OIL"] if _bal_show_crude and p in summary.index]
-    display_products = core_products + crude_products
-    cols = st.columns(max(len(display_products), 1))
-    for idx, prod in enumerate(display_products):
+    cols = st.columns(3)
+    for idx, prod in enumerate(["PREMIUM","GASOIL","LPG"]):
         with cols[idx]:
             val = summary.get(prod, 0)
             st.markdown(f"<div class='metric-card'><h2>{prod}</h2><h1>{val:,.0f}</h1>"
@@ -1936,16 +1901,12 @@ def show_bdc_balance():
     st.markdown("### 📊 PRODUCT × BDC PIVOT")
     pivot = (df.pivot_table(index="BDC", columns="Product", values=col_bal,
                             aggfunc="sum", fill_value=0).reset_index())
-    _pivot_core = [p for p in ["GASOIL","LPG","PREMIUM"] if p in pivot.columns]
     for p in ["GASOIL","LPG","PREMIUM"]:
         if p not in pivot.columns: pivot[p] = 0
-    _pivot_cols = ["GASOIL","LPG","PREMIUM"]
-    if _bal_show_crude and "CRUDE OIL" in pivot.columns:
-        _pivot_cols = _pivot_cols + ["CRUDE OIL"]
-    pivot["TOTAL"] = pivot[_pivot_cols].sum(axis=1)
+    pivot["TOTAL"] = pivot[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
     pivot = pivot.sort_values("TOTAL", ascending=False)
     st.caption(f"**{len(pivot)} BDCs** shown in pivot")
-    st.dataframe(pivot[["BDC"] + _pivot_cols + ["TOTAL"]], use_container_width=True, hide_index=True)
+    st.dataframe(pivot[["BDC","GASOIL","LPG","PREMIUM","TOTAL"]], use_container_width=True, hide_index=True)
 
     st.markdown("---")
     st.markdown("### 🔍 FILTER & EXPLORE")
@@ -1965,15 +1926,12 @@ def show_bdc_balance():
 
     st.markdown("---")
     _bdc_dl_ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    _excel_bdc_sheets = {
+    excel_bytes = _to_excel_bytes({
         "Stock Balance": df,
         "LPG":           df[df["Product"]=="LPG"],
         "PREMIUM":       df[df["Product"]=="PREMIUM"],
         "GASOIL":        df[df["Product"]=="GASOIL"],
-    }
-    if _bal_show_crude and "CRUDE OIL" in df["Product"].values:
-        _excel_bdc_sheets["CRUDE OIL"] = df[df["Product"]=="CRUDE OIL"]
-    excel_bytes = _to_excel_bytes(_excel_bdc_sheets)
+    })
     st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes,
                        f"bdc_balance_{_bdc_dl_ts}.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -2396,7 +2354,6 @@ def show_market_share():
         set(loadings_df["BDC"].unique() if not loadings_df.empty else [])
     )
 
-    # Restore previous selection if available
     prev_bdc = st.session_state.get("ms_bdc")
     default_idx = all_bdcs.index(prev_bdc) if prev_bdc and prev_bdc in all_bdcs else 0
 
@@ -2491,7 +2448,6 @@ def show_stock_transaction():
     all_bdcs   = sorted(BDC_MAP.keys())
     all_depots = sorted(DEPOT_MAP.keys())
 
-    # Restore previous selections
     prev_bdc     = st.session_state.get("txn_bdc_label")
     prev_depot   = st.session_state.get("txn_depot_label")
     prev_product = st.session_state.get("txn_product_label")
@@ -2503,8 +2459,6 @@ def show_stock_transaction():
     with c1:
         selected_bdc     = st.selectbox("BDC",     all_bdcs,         index=bdc_idx,  key="txn_bdc")
         selected_product = st.selectbox("Product",  PRODUCT_OPTIONS,  index=prod_idx, key="txn_prod")
-        if selected_product == "Crude Oil" and "Crude Oil" not in STOCK_PRODUCT_MAP:
-            st.warning("⚠️ Crude Oil not configured — set **PRODUCT_CRUDE_OIL_ID** in your .env file.")
     with c2:
         selected_depot   = st.selectbox("Depot",    all_depots,       index=depot_idx, key="txn_depot")
 
@@ -2866,20 +2820,6 @@ def show_product_outturn():
 
     st.markdown("---")
 
-    # ── Crude Oil toggle ──────────────────────────────────────
-    _ot_has_crude  = "Crude Oil" in df["Product"].values if "Product" in df.columns else False
-    _ot_show_crude = False
-    if _ot_has_crude:
-        _ot_show_crude = st.toggle(
-            "🛢️ Include Crude Oil in view",
-            value=st.session_state.get("ot_show_crude", False),
-            key="ot_show_crude",
-            help="Toggle to show or hide Crude Oil outturn records in all metrics, charts and tables below.",
-        )
-    if not _ot_show_crude:
-        df = df[df["Product"] != "Crude Oil"] if "Product" in df.columns else df
-    # ─────────────────────────────────────────────────────────
-
     total_vol   = float(df["Volume"].sum())
     n_vessels   = df["Vessel Name"].replace("", pd.NA).dropna().nunique()
     n_bdcs_data = df["BDC"].nunique()
@@ -2893,11 +2833,10 @@ def show_product_outturn():
     c5.metric("🚢 Vessels ID'd",     f"{n_vessels}")
 
     st.markdown("### 📦 PRODUCT BREAKDOWN")
-    _visible_products = [p for p in sel_products if p != "Crude Oil" or _ot_show_crude]
-    prod_cols = st.columns(max(len(_visible_products), 1))
-    PROD_COLORS = {"PMS": "#00ffff", "Gasoil": "#ffaa00", "LPG": "#00ff88", "Crude Oil": "#cc6600"}
-    PROD_ICONS  = {"PMS": "⛽", "Gasoil": "🚛", "LPG": "🔵", "Crude Oil": "🛢️"}
-    for col, prod in zip(prod_cols, _visible_products):
+    prod_cols = st.columns(len(sel_products))
+    PROD_COLORS = {"PMS": "#00ffff", "Gasoil": "#ffaa00", "LPG": "#00ff88"}
+    PROD_ICONS  = {"PMS": "⛽", "Gasoil": "🚛", "LPG": "🔵"}
+    for col, prod in zip(prod_cols, sel_products):
         sub   = df[df["Product"] == prod]
         vol   = float(sub["Volume"].sum())
         color = PROD_COLORS.get(prod, "#fff")
@@ -3005,7 +2944,7 @@ def show_product_outturn():
                 df_ts.groupby(["Date_dt","Product"])["Volume"].sum().reset_index()
                 .rename(columns={"Date_dt":"Date","Volume":"Volume (LT)"})
             )
-            PCMAP = {"PMS":"#00ffff","Gasoil":"#ffaa00","LPG":"#00ff88","Crude Oil":"#cc6600"}
+            PCMAP = {"PMS":"#00ffff","Gasoil":"#ffaa00","LPG":"#00ff88"}
             fig_ts = go.Figure()
             for prod in daily_ts["Product"].unique():
                 sub_ts = daily_ts[daily_ts["Product"]==prod].sort_values("Date")
@@ -3431,8 +3370,8 @@ def show_world_monitor():
 # PAGE: VESSEL SUPPLY
 # ══════════════════════════════════════════════════════════════
 def show_vessel_supply():
-    VCOLS  = {"PREMIUM":"#00ffff","GASOIL":"#ffaa00","LPG":"#00ff88","NAPHTHA":"#ff6600","CRUDE OIL":"#cc6600"}
-    VICONS = {"PREMIUM":"⛽","GASOIL":"🚛","LPG":"🔵","NAPHTHA":"🟠","CRUDE OIL":"🛢️"}
+    VCOLS  = {"PREMIUM":"#00ffff","GASOIL":"#ffaa00","LPG":"#00ff88","NAPHTHA":"#ff6600"}
+    VICONS = {"PREMIUM":"⛽","GASOIL":"🚛","LPG":"🔵","NAPHTHA":"🟠"}
     MONTH_ORDER = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
 
     st.markdown("<h2>🚢 VESSEL SUPPLY TRACKER</h2>", unsafe_allow_html=True)
@@ -3480,23 +3419,6 @@ def show_vessel_supply():
     yr_lbl     = st.session_state.get("vessel_year","2025")
     discharged = df[df["Status"]=="DISCHARGED"]
     pending    = df[df["Status"]=="PENDING"]
-
-    # ── Crude Oil toggle ─────────────────────────────────────
-    all_prods     = df["Product"].unique().tolist()
-    has_crude     = "CRUDE OIL" in all_prods
-    show_crude    = False
-    if has_crude:
-        show_crude = st.toggle(
-            "🛢️ Include Crude Oil in view",
-            value=st.session_state.get("vessel_show_crude", False),
-            key="vessel_show_crude",
-            help="Toggle to show or hide Crude Oil vessels in all counts, charts and tables below.",
-        )
-    if not show_crude:
-        df         = df[df["Product"] != "CRUDE OIL"]
-        discharged = discharged[discharged["Product"] != "CRUDE OIL"]
-        pending    = pending[pending["Product"] != "CRUDE OIL"]
-    # ─────────────────────────────────────────────────────────
 
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("Total Vessels", len(df))
@@ -3638,7 +3560,11 @@ def main():
 
         st.markdown("---")
 
-        # ── SAFE CLEAR CACHE — requires confirmation to prevent accidental trigger ──
+        # ── SAFE CLEAR CACHE — two-click arm/confirm, no checkbox ──
+        # A checkbox was used here previously but it was accidentally triggered
+        # by Ctrl+C (copy). This two-button pattern avoids that entirely and
+        # also fixes the StreamlitAPIException caused by manually mutating a
+        # widget-owned session_state key after render.
         st.markdown(
             "<div style='background:rgba(255,0,0,0.08);padding:10px;border-radius:8px;"
             "border:1px solid #ff000044;'>"
@@ -3646,25 +3572,29 @@ def main():
             "</div>",
             unsafe_allow_html=True,
         )
-        confirm_clear = st.checkbox(
-            "✔ Confirm: I want to clear all cached data",
-            value=False,
-            key="confirm_clear_cache",
-        )
-        clear_btn = st.button(
-            "🗑️ CLEAR ALL CACHED DATA",
-            key="clear_cache_btn",
-            disabled=not confirm_clear,
-        )
-        if clear_btn and confirm_clear:
-            _clear_all_persisted()
-            # Reset the confirmation checkbox
-            st.session_state["confirm_clear_cache"] = False
-            st.success("✅ All cached data cleared.")
-            st.rerun()
+
+        armed = st.session_state.get("_clear_cache_armed", False)
+
+        if not armed:
+            if st.button("🗑️ CLEAR ALL CACHED DATA", key="clear_cache_btn"):
+                st.session_state["_clear_cache_armed"] = True
+                st.rerun()
+        else:
+            st.warning("⚠️ This will wipe all fetched data. Are you sure?")
+            col_y, col_n = st.columns(2)
+            with col_y:
+                if st.button("✅ Yes, clear", key="clear_confirm_yes"):
+                    _clear_all_persisted()
+                    st.session_state["_clear_cache_armed"] = False
+                    st.success("✅ All cached data cleared.")
+                    st.rerun()
+            with col_n:
+                if st.button("❌ Cancel", key="clear_confirm_no"):
+                    st.session_state["_clear_cache_armed"] = False
+                    st.rerun()
 
         st.markdown("""
-        <div style='text-align:center;padding:12px;background:rgba(255,0,255,0.08);
+        <div style='text-align:center;padding:12px;background:rgba(255,0,0,0.08);
                     border-radius:10px;border:2px solid #ff00ff;'>
             <b style='color:#ff00ff;'>⚙️ SYSTEM STATUS</b><br>
             <span style='color:#00ff88;font-size:16px;'>🟢 OPERATIONAL</span>
