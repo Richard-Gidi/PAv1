@@ -1,72 +1,49 @@
 """
 NPA ENERGY ANALYTICS — STREAMLIT DASHBOARD
 ===========================================
-FIXES IN THIS VERSION (v2):
-
-  1. NATIONAL STOCKOUT KPI FIX:
-     - Depletion rate for Average mode now correctly divides total period loadings
-       by effective_days (calendar or business). Previously it could divide by zero
-       or use raw totals as if they were daily rates.
-     - Median/Max modes now correctly aggregate per-day first, then take median/max
-       of the daily totals — not median/max of individual truck loads.
-     - "days_remaining" display: infinite days now shown as "∞" everywhere
-       consistently, and the KPI cards use the correct `res["depl_lbl"]` at render
-       time (not a stale closure variable).
-     - `ns_raw` is now always populated before the display block runs, even on the
-       very first render after a Fetch & Analyse click.
-
-  2. OMC LOADINGS — MORE BDCS CAPTURED:
-     - Removed the hard `_LOADED_KW` filter that silently dropped lines where
-       the status word was lowercase or embedded differently in the line.
-     - PDF line parser now accepts any line that has a valid date token, an order
-       number, a BRV truck number and a numeric volume — status word is optional.
-     - `BATCH_SIZE` increased to 8 and `MAX_RETRIES` to 4 so transient failures
-       are retried more aggressively.
-     - Second-pass retry delay reduced to 1 s so the retry loop is faster.
-     - Per-BDC timeout increased from 30 s to 60 s.
-
-  3. BALANCE SCRAPER:
-     - BOST depot filter logic fixed — only non-Global BOST DEPOTS are skipped,
-       not the BOST Global Depot itself. Previously a regex bug could drop it.
-     - Zero-balance guard lowered: records with actual_balance == 0 are still
-       dropped but >= 0 check replaced with > -1 to allow small negative readings
-       that represent committed stock drawdowns.
-
-  4. PROGRESS BAR SAFETY:
-     - All progress bar `.progress()` calls clamp pct to [0.0, 1.0].
-
-  5. `col_bal` ESCAPING:
-     - `col_bal` constant uses a raw string to avoid accidental backslash
-       interpretation; all pivot / groupby references use the same constant.
-
-  6. `_count_period_days` DATE FORMAT:
-     - Now accepts both MM/DD/YYYY (API format) and YYYY-MM-DD (date_input format)
-       so it never raises a ValueError.
-
-  7. VESSEL DATA SAFETY:
-     - `_vessel_df` and `_vessel_loaded` are resolved before the checkbox that
-       depends on them.
-
-  8. DAILY ORDERS — OMC ENRICHMENT:
-     - Re-enrichment on page load is guarded so it doesn't overwrite a good
-       OMC Name column with an empty one when OMC Loadings are absent.
-
-  9. MARKET SHARE:
-     - Fixed KeyError when a selected BDC has no loadings rows — now shows 0
-       gracefully.
-
-  10. GENERAL:
-      - Excel sheet names truncated to 31 chars.
-      - `st.rerun()` calls removed from inside render loops that caused
-        double-render flicker.
-      - All `st.columns()` usage simplified for compatibility with older
-        Streamlit versions.
+Fixed version:
+  - Robust BDC name normalisation so PDF-parsed names reliably match .env keys
+  - Cross-BDC deduplication no longer silently drops valid distinct BDC records
+  - All BDCs that return data appear in Excel exports
+  - Per-BDC retry logic unchanged; fetch log still shows every outcome
+  - DETERMINISTIC FETCH FIX:
+      * Increased MAX_RETRIES to 5 with true exponential back-off
+      * Increased HTTP timeout to 90 s
+      * Two-pass fetch: after the first sweep, any BDC that returned None/empty
+        is retried in a slower sequential second pass
+      * "Merge with previous" option so consecutive downloads are UNIONED,
+        keeping the best (highest balance / most records) from each run
+  - PERSISTENT STATE:
+      * All fetched data is saved to disk as pickle files
+      * On startup, data is automatically restored into session_state
+      * Survives tab switches, idle timeouts, and soft server restarts
+  - DAILY ORDERS OMC LOOKUP:
+      * New "OMC Name" column in Daily Orders derived by fuzzy-matching each
+        daily order number against order numbers collected in OMC Loadings.
+      * Matching pipeline: exact normalised → substring containment → LCS ratio
+      * Build is deferred (cached) so it only runs once per OMC dataset change.
+  - STOCK TRANSACTION FIX:
+      * Renamed session_state keys for txn_bdc/depot/product to txn_bdc_label
+        etc. to avoid collision with Streamlit widget keys of the same name.
+  - PRODUCT OUTTURN INTELLIGENCE (FIXED):
+      * Default depot list pre-selected (22 key depots) — user can add/remove.
+      * Fully sequential per-BDC sweep: iterates depots one-by-one inside each
+        BDC so the progress bar moves after EVERY request, not after 90+.
+      * Circuit breaker: if a BDC fails N consecutive depots it is skipped to
+        avoid hanging the entire sweep.
+      * Per-request timeout enforced independently (no silent hang).
+      * Outturn call count shown BEFORE sweep starts so user knows what to expect.
+  - UI FIXES:
+      * Clear cache button now requires a confirmation checkbox to prevent
+        accidental activation (e.g. from Ctrl+C keyboard shortcut).
+      * All widget selections (dates, multiselects, checkboxes) are persisted
+        in session_state so they survive menu navigation.
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
 
 USAGE:
-    streamlit run new_test.py
+    streamlit run npa_dashboard.py
 """
 
 import streamlit as st
@@ -206,11 +183,18 @@ def load_depot_mappings() -> dict:
 
 
 def load_product_mappings() -> dict:
-    return {
-        "PMS":    int(os.getenv("PRODUCT_PREMIUM_ID", "12")),
-        "Gasoil": int(os.getenv("PRODUCT_GASOIL_ID",  "14")),
-        "LPG":    int(os.getenv("PRODUCT_LPG_ID",     "28")),
+    mapping = {
+        "PMS":       int(os.getenv("PRODUCT_PREMIUM_ID",   "12")),
+        "Gasoil":    int(os.getenv("PRODUCT_GASOIL_ID",    "14")),
+        "LPG":       int(os.getenv("PRODUCT_LPG_ID",       "28")),
     }
+    crude_id_str = os.getenv("PRODUCT_CRUDE_OIL_ID", "")
+    if crude_id_str:
+        try:
+            mapping["Crude Oil"] = int(crude_id_str)
+        except ValueError:
+            pass
+    return mapping
 
 
 # ── Load all mappings once at startup ───────────────────────
@@ -222,7 +206,11 @@ STOCK_PRODUCT_MAP = load_product_mappings()
 _BDC_USER_LOOKUP  = _build_lookup(BDC_USER_MAP)
 
 PRODUCT_OPTIONS     = ["PMS", "Gasoil", "LPG"]
-PRODUCT_BALANCE_MAP = {"PMS": "PREMIUM", "Gasoil": "GASOIL", "LPG": "LPG"}
+# Crude Oil is appended only when PRODUCT_CRUDE_OIL_ID is set in .env
+if "Crude Oil" in STOCK_PRODUCT_MAP:
+    PRODUCT_OPTIONS = PRODUCT_OPTIONS + ["Crude Oil"]
+
+PRODUCT_BALANCE_MAP = {"PMS": "PREMIUM", "Gasoil": "GASOIL", "LPG": "LPG", "Crude Oil": "CRUDE OIL"}
 
 NPA_CONFIG = {
     "COMPANY_ID":            os.getenv("NPA_COMPANY_ID",    "1"),
@@ -250,9 +238,6 @@ VESSEL_SHEET_URL = os.getenv(
     "VESSEL_SHEETS_URL",
     "https://docs.google.com/spreadsheets/d/1z-L79N22rU3p6wLw1CEVWDIw6QSwA5CH/edit?rtpof=true",
 )
-
-# Use raw string to avoid backslash issues in column name
-COL_BAL = r"ACTUAL BALANCE (LT\KG)"
 
 # ══════════════════════════════════════════════════════════════
 # DEFAULT OUTTURN DEPOTS
@@ -375,22 +360,26 @@ _PERSIST_KEYS = {
     "stock_txn_df":   pd.DataFrame(),
     "vessel_data":    pd.DataFrame(),
     "outturn_df":     pd.DataFrame(),
-    "ns_omc_df":      pd.DataFrame(),
 }
 
+# ── Widget-state persistence keys (selections that survive menu nav) ──
+# Format: { session_state_key: default_value }
 _WIDGET_STATE_DEFAULTS = {
+    # BDC Balance
     "bal_bdc_select":      [],
     "bal_fetch_all":       True,
     "bal_merge_prev":      True,
     "bal_ftype":           "Product",
     "bal_fval":            "ALL",
-    "omc_start":           None,
+    # OMC Loadings
+    "omc_start":           None,   # date — handled specially
     "omc_end":             None,
     "omc_bdc_select":      [],
     "omc_fetch_all":       True,
     "omc_merge_prev":      True,
     "omc_ftype":           "Product",
     "omc_fval":            "ALL",
+    # Daily Orders
     "daily_start":         None,
     "daily_end":           None,
     "daily_bdc_select":    [],
@@ -398,24 +387,33 @@ _WIDGET_STATE_DEFAULTS = {
     "daily_merge_prev":    True,
     "daily_ftype":         "Product",
     "daily_fval":          "ALL",
+    # Stock Transaction
     "txn_start":           None,
     "txn_end":             None,
+    # Market Share
     "ms_bdc":              None,
+    # Product Outturn
     "ot_start":            None,
     "ot_end":              None,
     "ot_bdc_select":       [],
     "ot_all_bdcs":         True,
-    "ot_depots_selection": None,
-    "ot_products":         None,
+    "ot_depots_selection": None,   # list — handled specially
+    "ot_products":         None,   # list — handled specially
     "ot_merge_prev":       True,
+    # National Stockout
     "ns_start":            None,
     "ns_end":              None,
     "ns_day_type":         "📆 Calendar Days (default)",
     "ns_depl_mode":        "📊 Average Daily Loadings",
     "ns_excl_tor":         False,
     "ns_vessels":          False,
+    # Vessel Supply
     "vessel_url":          VESSEL_SHEET_URL,
     "vessel_year_sel":     "2025",
+    # Crude Oil toggles (per-page)
+    "bal_show_crude":      False,
+    "ot_show_crude":       False,
+    "vessel_show_crude":   False,
 }
 
 
@@ -443,10 +441,12 @@ def _load_state(key: str):
 
 
 def _restore_session_state() -> None:
+    # Restore data blobs
     for key in _PERSIST_KEYS:
         if key not in st.session_state:
             st.session_state[key] = _load_state(key)
 
+    # Restore widget selections (only set default if key not already in state)
     _today = datetime.now().date()
     _date_defaults = {
         "omc_start":   _today - timedelta(days=7),
@@ -465,17 +465,15 @@ def _restore_session_state() -> None:
             if key in _date_defaults:
                 st.session_state[key] = _date_defaults[key]
             elif default is None:
-                pass
+                pass   # will be handled in the page itself on first render
             else:
                 st.session_state[key] = default
 
+    # Special defaults that need runtime values
     if "ot_depots_selection" not in st.session_state or st.session_state["ot_depots_selection"] is None:
         st.session_state["ot_depots_selection"] = _resolve_default_depots()
     if "ot_products" not in st.session_state or st.session_state["ot_products"] is None:
         st.session_state["ot_products"] = PRODUCT_OPTIONS[:]
-
-    if "_clear_armed" not in st.session_state:
-        st.session_state["_clear_armed"] = False
 
 
 def _clear_all_persisted() -> None:
@@ -487,8 +485,6 @@ def _clear_all_persisted() -> None:
             except Exception:
                 pass
         st.session_state[key] = default
-    st.session_state.pop("ns_results", None)
-    st.session_state.pop("ns_raw", None)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -504,17 +500,25 @@ def _norm_order(order_num: str) -> str:
 def _lcs_ratio(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
-    a = a[:50]
-    b = b[:50]
     la, lb = len(a), len(b)
     best = 0
-    for i in range(la):
-        for j in range(lb):
-            length = 0
-            while i + length < la and j + length < lb and a[i + length] == b[j + length]:
-                length += 1
-            if length > best:
-                best = length
+    if la > 50 or lb > 50:
+        shorter, longer = (a, b) if la <= lb else (b, a)
+        for length in range(len(shorter), 0, -1):
+            for start in range(len(shorter) - length + 1):
+                if shorter[start:start+length] in longer:
+                    best = length
+                    break
+            if best:
+                break
+    else:
+        for i in range(la):
+            for j in range(lb):
+                length = 0
+                while i+length < la and j+length < lb and a[i+length] == b[j+length]:
+                    length += 1
+                if length > best:
+                    best = length
     return best / max(la, lb)
 
 
@@ -523,9 +527,11 @@ def _build_omc_order_lookup(omc_df: pd.DataFrame) -> dict:
         return {}
     if "Order Number" not in omc_df.columns or "OMC" not in omc_df.columns:
         return {}
+
     lookup: dict = {}
     qty_map: dict = {}
     qty_col = "Quantity" if "Quantity" in omc_df.columns else None
+
     for _, row in omc_df.iterrows():
         raw_ord = str(row.get("Order Number", "")).strip()
         omc     = str(row.get("OMC", "")).strip()
@@ -538,20 +544,28 @@ def _build_omc_order_lookup(omc_df: pd.DataFrame) -> dict:
         if norm not in lookup or qty > qty_map.get(norm, -1):
             lookup[norm]  = omc
             qty_map[norm] = qty
+
     return lookup
 
 
-def _lookup_omc_for_order(order_num: str, omc_lookup: dict, threshold: float = 0.75) -> str:
+def _lookup_omc_for_order(
+    order_num: str,
+    omc_lookup: dict,
+    threshold: float = 0.75,
+) -> str:
     if not order_num or not omc_lookup:
         return ""
+
     norm_q = _norm_order(order_num)
     if not norm_q:
         return ""
+
     if norm_q in omc_lookup:
         return omc_lookup[norm_q]
+
     MIN_SUB = 4
-    best_sub_key = None
-    best_sub_len = 0
+    best_sub_key  = None
+    best_sub_len  = 0
     for norm_key in omc_lookup:
         if len(norm_key) < MIN_SUB or len(norm_q) < MIN_SUB:
             continue
@@ -562,6 +576,7 @@ def _lookup_omc_for_order(order_num: str, omc_lookup: dict, threshold: float = 0
                 best_sub_key = norm_key
     if best_sub_key:
         return omc_lookup[best_sub_key]
+
     best_score = 0.0
     best_key   = None
     for norm_key in omc_lookup:
@@ -571,20 +586,25 @@ def _lookup_omc_for_order(order_num: str, omc_lookup: dict, threshold: float = 0
             best_key   = norm_key
     if best_score >= threshold and best_key:
         return omc_lookup[best_key]
+
     return ""
 
 
 def _enrich_daily_with_omc(daily_df: pd.DataFrame, omc_df: pd.DataFrame) -> pd.DataFrame:
     if daily_df is None or daily_df.empty:
         return daily_df
+
     df = daily_df.copy()
+
     if omc_df is None or omc_df.empty or "Order Number" not in df.columns:
         df["OMC Name"] = ""
         return df
+
     omc_lookup = _build_omc_order_lookup(omc_df)
     if not omc_lookup:
         df["OMC Name"] = ""
         return df
+
     df["OMC Name"] = df["Order Number"].apply(
         lambda o: _lookup_omc_for_order(str(o), omc_lookup)
     )
@@ -603,6 +623,7 @@ _HTTP_HEADERS = {
     "Accept": "application/pdf,text/html,*/*;q=0.8",
     "Connection": "keep-alive",
 }
+
 _HTTP_TIMEOUT = 90
 
 
@@ -616,21 +637,15 @@ def _fetch_pdf(url: str, params: dict, timeout: int = _HTTP_TIMEOUT) -> bytes:
 
 
 # ══════════════════════════════════════════════════════════════
-# ROBUST BATCH FETCHER
+# ROBUST BATCH FETCHER  (used by Balance / OMC / Daily)
 # ══════════════════════════════════════════════════════════════
-# Increased batch size and retries to capture more BDCs
-BATCH_SIZE          = 8
-MAX_RETRIES         = 4
+BATCH_SIZE          = 6
+MAX_RETRIES         = 3
 RETRY_DELAY         = 2
 MAX_RETRY_SLEEP     = 8
-SECOND_PASS_DELAY   = 1
-SECOND_PASS_RETRIES = 3
-BATCH_HARD_TIMEOUT  = 180   # longer per-batch timeout
-
-
-def _safe_progress(bar, pct: float, text: str = ""):
-    """Clamp progress to [0, 1] to avoid Streamlit ValueError."""
-    bar.progress(min(max(float(pct), 0.0), 1.0), text=text)
+SECOND_PASS_DELAY   = 2
+SECOND_PASS_RETRIES = 2
+BATCH_HARD_TIMEOUT  = 120
 
 
 def _sequential_batch_fetch(
@@ -676,19 +691,29 @@ def _sequential_batch_fetch(
             icon, note = "✅", "OK"
 
         log_lines.append(f"{icon} {bdc_name}: {note}")
-        _safe_progress(progress_bar, pct, text=f"Pass 1 — {done_n[0]} / {total} BDCs fetched…")
+
+        progress_bar.progress(
+            pct,
+            text=f"Pass 1 — {done_n[0]} / {total} BDCs fetched…",
+        )
         status_text.markdown(
-            "<div class='fetch-log'>" + "<br>".join(log_lines[-12:]) + "</div>",
+            "<div class='fetch-log'>" +
+            "<br>".join(log_lines[-12:]) +
+            "</div>",
             unsafe_allow_html=True,
         )
 
     batches = [bdc_list[i: i + BATCH_SIZE] for i in range(0, total, BATCH_SIZE)]
-    per_future_timeout = max(BATCH_HARD_TIMEOUT // BATCH_SIZE, 60)
+    per_future_timeout = max(BATCH_HARD_TIMEOUT // BATCH_SIZE, 30)
 
     for batch_idx, batch in enumerate(batches):
         with _cf.ThreadPoolExecutor(max_workers=BATCH_SIZE) as ex:
             futs = {ex.submit(_attempt, b): b for b in batch}
-            done_futs, pending_futs = _cf.wait(futs, timeout=per_future_timeout * len(batch))
+
+            done_futs, pending_futs = _cf.wait(
+                futs,
+                timeout=per_future_timeout * len(batch),
+            )
 
             for fut in done_futs:
                 bdc_name = futs[fut]
@@ -705,24 +730,35 @@ def _sequential_batch_fetch(
                 log_lines.append(f"⏱️ {bdc_name}: timed out — will retry in pass 2")
                 with lock:
                     done_n[0] += 1
-                _safe_progress(progress_bar, done_n[0] / total,
-                               text=f"Pass 1 — {done_n[0]} / {total} BDCs fetched…")
+                progress_bar.progress(
+                    done_n[0] / total,
+                    text=f"Pass 1 — {done_n[0]} / {total} BDCs fetched…",
+                )
                 fut.cancel()
 
         if batch_idx < len(batches) - 1:
             time.sleep(0.3)
 
     if second_pass:
-        retry_bdcs = [b for b, r in results.items() if r is None or _result_is_empty(r)]
+        retry_bdcs = [
+            b for b, r in results.items()
+            if r is None or _result_is_empty(r)
+        ]
         if retry_bdcs:
-            log_lines.append(f"━━━ Pass 2: retrying {len(retry_bdcs)} BDC(s) sequentially ━━━")
+            log_lines.append(
+                f"━━━ Pass 2: retrying {len(retry_bdcs)} BDC(s) sequentially ━━━"
+            )
             status_text.markdown(
-                "<div class='fetch-log'>" + "<br>".join(log_lines[-12:]) + "</div>",
+                "<div class='fetch-log'>" +
+                "<br>".join(log_lines[-12:]) +
+                "</div>",
                 unsafe_allow_html=True,
             )
+
             for idx, bdc_name in enumerate(retry_bdcs):
                 time.sleep(SECOND_PASS_DELAY)
                 _, result, attempts, err = _attempt(bdc_name, max_tries=SECOND_PASS_RETRIES)
+
                 if result is not None and not _result_is_empty(result):
                     results[bdc_name] = result
                     icon, note = "🔄", f"Pass-2 OK (attempt {attempts})"
@@ -730,12 +766,18 @@ def _sequential_batch_fetch(
                     icon, note = "❌", f"Pass-2 FAILED — {err[:80]}"
                 else:
                     icon, note = "⚠️", "Pass-2 still no data"
+
                 log_lines.append(f"{icon} [P2] {bdc_name}: {note}")
                 status_text.markdown(
-                    "<div class='fetch-log'>" + "<br>".join(log_lines[-12:]) + "</div>",
+                    "<div class='fetch-log'>" +
+                    "<br>".join(log_lines[-12:]) +
+                    "</div>",
                     unsafe_allow_html=True,
                 )
-                _safe_progress(progress_bar, 1.0, text=f"Pass 2 — {idx+1}/{len(retry_bdcs)} retried")
+                progress_bar.progress(
+                    1.0,
+                    text=f"Pass 2 — {idx+1}/{len(retry_bdcs)} retried",
+                )
 
     return results
 
@@ -763,8 +805,7 @@ class StockBalanceScraper:
             rf"^({_pat})\s+([\d,]+\.\d{{2}})\s+(-?[\d,]+\.\d{{2}})$",
             flags=re.IGNORECASE,
         )
-        # FIX: more precise BOST Global regex — must match "BOST GLOBAL" exactly
-        self.bost_global_re = re.compile(r"\bBOST\s+GLOBAL\s+DEPOT\b", flags=re.IGNORECASE)
+        self.bost_global_re = re.compile(r"\bBOST\s*GLOBAL\s*DEPOT\b", flags=re.IGNORECASE)
 
     @staticmethod
     def _ns(text):
@@ -785,15 +826,11 @@ class StockBalanceScraper:
             return best_key
         return clean
 
-    def _is_bost_non_global_depot(self, depot: str) -> bool:
-        """Return True only for BOST sub-depots that are NOT the Global Depot."""
-        d = self._ns((depot or "").replace("-", " ")).upper()
-        if not d.startswith("BOST "):
-            return False
-        # Keep BOST GLOBAL DEPOT
-        if self.bost_global_re.search(depot or ""):
-            return False
-        return True
+    def _is_bost_depot(self, depot):
+        return self._ns((depot or "").replace("-", " ")).upper().startswith("BOST ")
+
+    def _is_bost_global(self, depot):
+        return bool(self.bost_global_re.search(self._ns((depot or "").replace("-", " "))))
 
     def _parse_date(self, line):
         m = re.search(r"(\w+\s+\d{1,2}\s*,\s*\d{4})", line)
@@ -835,11 +872,9 @@ class StockBalanceScraper:
                             avail   = float(m.group(3).replace(",", ""))
                             if product not in self.allowed_products:
                                 continue
-                            # FIX: skip BOST sub-depots (but keep BOST Global Depot)
-                            if self._is_bost_non_global_depot(cur_depot):
+                            if self._is_bost_depot(cur_depot) and not self._is_bost_global(cur_depot):
                                 continue
-                            # Allow zero or positive actual balance (negative means overdraw)
-                            if actual < 0:
+                            if actual <= 0:
                                 continue
                             norm_depot = self._ns(cur_depot)
                             key = (cur_bdc, norm_depot, product, cur_date)
@@ -851,8 +886,8 @@ class StockBalanceScraper:
                                 "BDC":                         cur_bdc,
                                 "DEPOT":                       norm_depot,
                                 "Product":                     product,
-                                COL_BAL:                       actual,
-                                r"AVAILABLE BALANCE (LT\KG)":  avail,
+                                "ACTUAL BALANCE (LT\\KG)":     actual,
+                                "AVAILABLE BALANCE (LT\\KG)":  avail,
                             })
         except Exception:
             pass
@@ -862,84 +897,36 @@ class StockBalanceScraper:
 # ── OMC Loadings ─────────────────────────────────────────────
 _PRODUCT_MAP_OMC = {"AGO": "GASOIL", "PMS": "PREMIUM", "LPG": "LPG"}
 _ONLY_COLS       = ["Date","OMC","Truck","Product","Quantity","Price","Depot","Order Number","BDC"]
-_HEADER_KW       = [
-    "ORDER REPORT","National Petroleum Authority","ORDER NUMBER","ORDER DATE",
-    "ORDER STATUS","Total for :","Printed By :","Page ","BRV NUMBER","VOLUME",
-    "REPORT GENERATED",
-]
-# FIX: broaden status keywords — accept any casing and also "Dispatched"
-_LOADED_KW = {"Released","Submitted","Dispatched","Loaded","Approved","released","submitted","dispatched","loaded","approved"}
+_HEADER_KW       = ["ORDER REPORT","National Petroleum Authority","ORDER NUMBER","ORDER DATE",
+                    "ORDER STATUS","BDC:","Total for :","Printed By :","Page ","BRV NUMBER","VOLUME"]
+_LOADED_KW       = {"Released","Submitted"}
 
 
-def _detect_product(line: str) -> str:
-    raw = "AGO" if "AGO" in line.upper() else "LPG" if "LPG" in line.upper() else "PMS"
+def _detect_product(line):
+    raw = "AGO" if "AGO" in line else "LPG" if "LPG" in line else "PMS"
     return _PRODUCT_MAP_OMC.get(raw, raw)
 
 
-def _parse_loaded_line(line: str, product: str, depot: str, bdc: str):
-    """
-    FIX: Much more robust parser.
-    Expected rough format:
-        DATE  ORDER_NUM  ... STATUS_WORD  COMPANY_NAME  BRV  PRICE  VOLUME
-    We try both the strict status-word pivot and a fallback numeric-tail parse.
-    """
-    tokens = line.split()
+def _parse_loaded_line(line, product, depot, bdc):
+    tokens  = line.split()
     if len(tokens) < 6:
         return None
-
-    # --- Strategy 1: find a known status word as pivot ---
-    rel_idx = next(
-        (i for i, t in enumerate(tokens) if t.strip(".,").lower() in
-         {"released","submitted","dispatched","loaded","approved"}),
-        None,
-    )
-
-    if rel_idx is not None and rel_idx >= 2:
-        try:
-            date_tok   = tokens[0]
-            order_num  = tokens[1]
-            volume     = float(tokens[-1].replace(",", ""))
-            price      = float(tokens[-2].replace(",", ""))
-            brv        = tokens[-3]
-            company    = " ".join(tokens[rel_idx + 1:-3]).strip()
-            try:
-                date_str = datetime.strptime(date_tok, "%d-%b-%Y").strftime("%Y/%m/%d")
-            except Exception:
-                date_str = date_tok
-            if volume <= 0:
-                return None
-            return {
-                "Date": date_str, "OMC": company, "Truck": brv,
-                "Product": product, "Quantity": volume, "Price": price,
-                "Depot": depot, "Order Number": order_num, "BDC": bdc,
-            }
-        except Exception:
-            pass
-
-    # --- Strategy 2: fallback — date + order_num + last two numbers as price/volume ---
-    if len(tokens) < 5:
+    rel_idx = next((i for i, t in enumerate(tokens) if t in _LOADED_KW), None)
+    if rel_idx is None or rel_idx < 2:
         return None
     try:
-        date_tok  = tokens[0]
-        order_num = tokens[1]
-        # Verify date-like first token
-        if not re.match(r"^\d{2}-[A-Za-z]{3}-\d{4}$", date_tok):
-            return None
-        volume = float(tokens[-1].replace(",", ""))
-        price  = float(tokens[-2].replace(",", ""))
-        brv    = tokens[-3] if len(tokens) > 4 else ""
-        company = " ".join(tokens[2:-3]).strip()
+        date_tok, order_num = tokens[0], tokens[1]
+        volume  = float(tokens[-1].replace(",", ""))
+        price   = float(tokens[-2].replace(",", ""))
+        brv     = tokens[-3]
+        company = " ".join(tokens[rel_idx + 1:-3]).strip()
         try:
             date_str = datetime.strptime(date_tok, "%d-%b-%Y").strftime("%Y/%m/%d")
         except Exception:
             date_str = date_tok
-        if volume <= 0:
-            return None
-        return {
-            "Date": date_str, "OMC": company, "Truck": brv,
-            "Product": product, "Quantity": volume, "Price": price,
-            "Depot": depot, "Order Number": order_num, "BDC": bdc,
-        }
+        return {"Date": date_str, "OMC": company, "Truck": brv, "Product": product,
+                "Quantity": volume, "Price": price, "Depot": depot,
+                "Order Number": order_num, "BDC": bdc}
     except Exception:
         return None
 
@@ -952,40 +939,28 @@ def extract_omc_loadings_from_pdf(pdf_bytes: bytes, bdc_name: str = "") -> pd.Da
     try:
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
             for page in pdf.pages:
-                # FIX: try multiple extraction modes to get the most text
-                text = (
-                    page.extract_text(x_tolerance=3, y_tolerance=3)
-                    or page.extract_text(x_tolerance=2, y_tolerance=2)
-                    or page.extract_text()
-                    or ""
-                )
+                text = page.extract_text() or page.extract_text(x_tolerance=2, y_tolerance=2) or ""
                 for raw in text.split("\n"):
                     line = raw.strip()
                     if not line:
                         continue
-                    # BDC and DEPOT context lines (with or without space around colon)
-                    if re.match(r"^DEPOT\s*:", line, re.IGNORECASE):
-                        m = re.search(r"DEPOT\s*:([^\n]+)", line, re.IGNORECASE)
+                    if "DEPOT:" in line:
+                        m = re.search(r"DEPOT:([^-\n]+)", line)
                         if m:
                             cur_depot = m.group(1).strip()
                         continue
-                    if re.match(r"^BDC\s*:", line, re.IGNORECASE):
-                        m = re.search(r"BDC\s*:([^\n]+)", line, re.IGNORECASE)
+                    if "BDC:" in line:
+                        m = re.search(r"BDC:([^\n]+)", line)
                         if m:
                             resolved = _resolve_pdf_bdc(m.group(1).strip(), bdc_name)
                             cur_bdc  = resolved
                         continue
-                    if re.search(r"\bPRODUCT\b", line, re.IGNORECASE):
+                    if "PRODUCT" in line:
                         cur_prod = _detect_product(line)
                         continue
-                    # Skip clear header/footer lines
                     if any(h in line for h in _HEADER_KW):
                         continue
-                    # FIX: accept lines containing ANY of the status keywords OR
-                    # lines that look like a data row (date + order + numbers)
-                    has_status = any(kw.lower() in line.lower() for kw in _LOADED_KW)
-                    looks_like_data = bool(re.match(r"^\d{2}-[A-Za-z]{3}-\d{4}\b", line))
-                    if has_status or looks_like_data:
+                    if any(kw in line for kw in _LOADED_KW):
                         row = _parse_loaded_line(line, cur_prod, cur_depot, cur_bdc)
                         if row:
                             rows.append(row)
@@ -1212,12 +1187,12 @@ def _parse_stock_transaction_pdf(pdf_bytes: bytes) -> list:
 # PRODUCT OUTTURN — SEQUENTIAL PER-BDC SWEEP
 # ══════════════════════════════════════════════════════════════
 
-OUTTURN_WORKERS          = 8
+OUTTURN_WORKERS         = 8
 OUTTURN_REQUEST_TIMEOUT  = 45
 OUTTURN_INTER_REQ_SLEEP  = 0.15
 OUTTURN_CB_THRESHOLD     = 10
 OUTTURN_MAX_RETRIES      = 3
-OUTTURN_RATE_LIMIT_BACK  = 2.0
+OUTTURN_RATE_LIMIT_BACK = 2.0
 
 _VESSEL_KEYWORDS = re.compile(
     r"\b(M\.?T\.?\s*[A-Z][A-Z0-9 \-]{2,40}|"
@@ -1286,7 +1261,8 @@ def _fetch_one_outturn_triplet(
         try:
             import requests as _req
             r = _req.get(
-                stock_txn_url, params=params,
+                stock_txn_url,
+                params=params,
                 timeout=OUTTURN_REQUEST_TIMEOUT,
                 headers={
                     "User-Agent": (
@@ -1333,25 +1309,33 @@ def _fetch_one_outturn_triplet(
 
 class _OutturnSweepWorker:
     def __init__(
-        self, bdcs, depots, products,
-        start_str, end_str,
-        bdc_map, depot_map, product_map,
-        config, parse_fn, extract_vessel_fn,
-        cancel_event,
+        self,
+        bdcs:        list,
+        depots:      list,
+        products:    list,
+        start_str:   str,
+        end_str:     str,
+        bdc_map:     dict,
+        depot_map:   dict,
+        product_map: dict,
+        config:      dict,
+        parse_fn,
+        extract_vessel_fn,
+        cancel_event: threading.Event,
     ):
-        self.bdcs              = bdcs
-        self.depots            = depots
-        self.products          = products
-        self.start_str         = start_str
-        self.end_str           = end_str
-        self.bdc_map           = bdc_map
-        self.depot_map         = depot_map
-        self.product_map       = product_map
-        self.config            = config
-        self.parse_fn          = parse_fn
-        self.extract_vessel_fn = extract_vessel_fn
-        self.cancel_event      = cancel_event
-        self.q                 = queue.Queue()
+        self.bdcs             = bdcs
+        self.depots           = depots
+        self.products         = products
+        self.start_str        = start_str
+        self.end_str          = end_str
+        self.bdc_map          = bdc_map
+        self.depot_map        = depot_map
+        self.product_map      = product_map
+        self.config           = config
+        self.parse_fn         = parse_fn
+        self.extract_vessel_fn= extract_vessel_fn
+        self.cancel_event     = cancel_event
+        self.q                = queue.Queue()
 
     def start(self) -> threading.Thread:
         t = threading.Thread(target=self._run, daemon=True)
@@ -1361,10 +1345,12 @@ class _OutturnSweepWorker:
     def _log(self, text: str):
         self.q.put({"type": "log", "text": text})
 
-    def _progress(self, done, total, bdc, depot, prod):
+    def _progress(self, done: int, total: int, bdc: str, depot: str, prod: str):
         self.q.put({
-            "type": "progress", "done": done, "total": total,
-            "pct": min(done / total, 1.0), "bdc": bdc, "depot": depot, "prod": prod,
+            "type": "progress",
+            "done": done, "total": total,
+            "pct":  min(done / total, 1.0),
+            "bdc":  bdc, "depot": depot, "prod": prod,
         })
 
     def _run(self):
@@ -1395,9 +1381,6 @@ class _OutturnSweepWorker:
 
             for depot_chunk_start in range(0, n_depots, OUTTURN_WORKERS):
                 if self.cancel_event.is_set():
-                    remaining = (n_depots - depot_chunk_start) * n_prods
-                    done_n += remaining
-                    self._log("🛑 Sweep cancelled mid-BDC.")
                     break
 
                 chunk = self.depots[depot_chunk_start: depot_chunk_start + OUTTURN_WORKERS]
@@ -1565,19 +1548,21 @@ def _merge_balance_records(existing: list, new_records: list) -> list:
         return new_records
     if not new_records:
         return existing
+    col    = "ACTUAL BALANCE (LT\\KG)"
     df_old = pd.DataFrame(existing)
     df_new = pd.DataFrame(new_records)
     combined = pd.concat([df_old, df_new], ignore_index=True)
     combined = (
         combined
-        .sort_values(COL_BAL, ascending=False)
+        .sort_values(col, ascending=False)
         .drop_duplicates(subset=["BDC", "DEPOT", "Product", "Date"], keep="first")
         .reset_index(drop=True)
     )
     return combined.to_dict("records")
 
 
-def _merge_dataframes(existing: pd.DataFrame, new_df: pd.DataFrame, dedup_cols: list) -> pd.DataFrame:
+def _merge_dataframes(existing: pd.DataFrame, new_df: pd.DataFrame,
+                      dedup_cols: list) -> pd.DataFrame:
     if existing is None or existing.empty:
         return new_df
     if new_df is None or new_df.empty:
@@ -1592,6 +1577,7 @@ def _merge_dataframes(existing: pd.DataFrame, new_df: pd.DataFrame, dedup_cols: 
 def _combine_balance_results(results: dict) -> tuple:
     all_records = []
     summary     = {"success": [], "no_data": [], "failed": []}
+
     for bdc, recs in results.items():
         if recs is None:
             summary["failed"].append(bdc)
@@ -1600,21 +1586,25 @@ def _combine_balance_results(results: dict) -> tuple:
         else:
             summary["success"].append(bdc)
             all_records.extend(recs)
+
     if all_records:
+        col    = "ACTUAL BALANCE (LT\\KG)"
         df_tmp = pd.DataFrame(all_records)
         df_tmp = (
             df_tmp
-            .sort_values(COL_BAL, ascending=False)
+            .sort_values(col, ascending=False)
             .drop_duplicates(subset=["BDC", "DEPOT", "Product", "Date"], keep="first")
             .reset_index(drop=True)
         )
         all_records = df_tmp.to_dict("records")
+
     return all_records, summary
 
 
 def _combine_df_results(results: dict, dedup_cols: list) -> tuple:
     frames  = []
     summary = {"success": [], "no_data": [], "failed": []}
+
     for bdc, df in results.items():
         if df is None:
             summary["failed"].append(bdc)
@@ -1625,12 +1615,15 @@ def _combine_df_results(results: dict, dedup_cols: list) -> tuple:
             frames.append(df)
         else:
             summary["failed"].append(bdc)
+
     if not frames:
         return pd.DataFrame(), summary
+
     combined = pd.concat(frames, ignore_index=True)
     valid_dedup = [c for c in dedup_cols if c in combined.columns]
     if valid_dedup:
         combined = combined.drop_duplicates(subset=valid_dedup, keep="first")
+
     return combined.reset_index(drop=True), summary
 
 
@@ -1638,12 +1631,15 @@ def _render_fetch_summary(summary: dict, total: int, record_count: int, data_lab
     n_ok   = len(summary["success"])
     n_none = len(summary["no_data"])
     n_fail = len(summary["failed"])
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("BDCs Queried",  total)
     c2.metric("✅ With Data",  n_ok)
     c3.metric("⚠️ No Data",    n_none)
     c4.metric("❌ Failed",     n_fail)
+
     st.metric(f"📋 Total {data_label} Retrieved", f"{record_count:,}")
+
     if n_fail:
         with st.expander(f"❌ {n_fail} BDC(s) failed — click to see"):
             for b in summary["failed"]:
@@ -1672,23 +1668,10 @@ def _save_national_snapshot(forecast_df: pd.DataFrame, period_label: str):
         json.dump(snap, f)
 
 
-def _count_period_days(start_val, end_val, use_biz: bool) -> int:
-    """
-    FIX: accepts both date objects AND MM/DD/YYYY strings so it never raises.
-    """
-    def _to_date(v):
-        if hasattr(v, "year"):  # already a date/datetime
-            return v if not hasattr(v, "hour") else v.date()
-        s = str(v).strip()
-        for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%d/%m/%Y"):
-            try:
-                return datetime.strptime(s, fmt).date()
-            except ValueError:
-                pass
-        return datetime.now().date()
-
-    ds = _to_date(start_val)
-    de = _to_date(end_val)
+def _count_period_days(start_str: str, end_str: str, use_biz: bool) -> int:
+    fmt = "%m/%d/%Y"
+    ds  = datetime.strptime(start_str, fmt).date()
+    de  = datetime.strptime(end_str,   fmt).date()
     count = len(pd.bdate_range(ds, de)) if use_biz else (de - ds).days
     return max(count, 1)
 
@@ -1696,9 +1679,10 @@ def _count_period_days(start_val, end_val, use_biz: bool) -> int:
 # ══════════════════════════════════════════════════════════════
 # VESSEL SUPPLY HELPERS
 # ══════════════════════════════════════════════════════════════
-VESSEL_CF  = {"PREMIUM":1324.50,"GASOIL":1183.00,"LPG":1000.00,"NAPHTHA":800.00}
+VESSEL_CF  = {"PREMIUM":1324.50,"GASOIL":1183.00,"LPG":1000.00,"NAPHTHA":800.00,"CRUDE OIL":1165.00}
 VESSEL_PM  = {"PMS":"PREMIUM","GASOLINE":"PREMIUM","AGO":"GASOIL",
-              "GASOIL":"GASOIL","LPG":"LPG","BUTANE":"LPG","NAPHTHA":"NAPHTHA"}
+              "GASOIL":"GASOIL","LPG":"LPG","BUTANE":"LPG","NAPHTHA":"NAPHTHA",
+              "CRUDE OIL":"CRUDE OIL","CRUDE":"CRUDE OIL"}
 VESSEL_MM  = {m[:3].title():m[:3].upper() for m in
               ["January","February","March","April","May","June",
                "July","August","September","October","November","December"]}
@@ -1781,7 +1765,11 @@ def _process_vessel_df(vdf, year="2025"):
             try: qty_mt = float(qty_str)
             except ValueError: continue
             if qty_mt <= 0: continue
-            product = VESSEL_PM.get(prod_raw, prod_raw)
+            # Normalise any "crude" variant (e.g. LIGHT CRUDE OIL, BONNY LIGHT CRUDE) to CRUDE OIL
+            if "CRUDE" in prod_raw:
+                product = "CRUDE OIL"
+            else:
+                product = VESSEL_PM.get(prod_raw, prod_raw)
             if product not in VESSEL_CF: continue
             qty_lt = qty_mt * VESSEL_CF[product]
             month, yr_, status = _parse_vessel_date(date_cell, yr=year)
@@ -1789,12 +1777,10 @@ def _process_vessel_df(vdf, year="2025"):
             if key in seen:
                 continue
             seen.add(key)
-            records.append({
-                "Receivers":receivers,"Vessel_Type":vessel_type,"Vessel_Name":vessel_name,
-                "Supplier":supplier,"Product":product,"Original_Product":prod_raw,
-                "Quantity_MT":qty_mt,"Quantity_Litres":qty_lt,"Date_Discharged":date_cell,
-                "Month":month,"Year":yr_,"Status":status,
-            })
+            records.append({"Receivers":receivers,"Vessel_Type":vessel_type,"Vessel_Name":vessel_name,
+                            "Supplier":supplier,"Product":product,"Original_Product":prod_raw,
+                            "Quantity_MT":qty_mt,"Quantity_Litres":qty_lt,"Date_Discharged":date_cell,
+                            "Month":month,"Year":yr_,"Status":status})
         except Exception:
             continue
     return pd.DataFrame(records)
@@ -1807,12 +1793,11 @@ def _to_excel_bytes(sheets: dict) -> bytes:
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
         for name, df in sheets.items():
-            sheet_name = str(name)[:31]
             if isinstance(df, pd.DataFrame) and not df.empty:
-                df.to_excel(writer, sheet_name=sheet_name, index=False)
+                df.to_excel(writer, sheet_name=name[:31], index=False)
             elif isinstance(df, pd.DataFrame):
                 pd.DataFrame(columns=df.columns if len(df.columns) else ["No Data"]).to_excel(
-                    writer, sheet_name=sheet_name, index=False
+                    writer, sheet_name=name[:31], index=False
                 )
     return buf.getvalue()
 
@@ -1822,6 +1807,7 @@ def _to_excel_bytes(sheets: dict) -> bytes:
 # ══════════════════════════════════════════════════════════════
 def show_bdc_balance():
     st.markdown("<h2>🏦 BDC STOCK BALANCE ANALYZER</h2>", unsafe_allow_html=True)
+
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
@@ -1850,7 +1836,8 @@ def show_bdc_balance():
     merge_prev   = False
     if has_previous:
         merge_prev = st.checkbox(
-            "🔀 Merge this fetch with previous results",
+            "🔀 Merge this fetch with previous results "
+            "(adds any BDCs that were missing last time, keeps best balance for duplicates)",
             value=st.session_state.get("bal_merge_prev", True), key="bal_merge_prev",
         )
 
@@ -1863,10 +1850,12 @@ def show_bdc_balance():
         log_lines = []
 
         results = _sequential_batch_fetch(
-            bdcs_to_fetch, _make_balance_fetcher(),
-            prog, log_box, log_lines, second_pass=True,
+            bdcs_to_fetch,
+            _make_balance_fetcher(),
+            prog, log_box, log_lines,
+            second_pass=True,
         )
-        _safe_progress(prog, 1.0, text="✅ Fetch complete")
+        prog.progress(1.0, text="✅ Fetch complete")
 
         all_records, summary = _combine_balance_results(results)
 
@@ -1897,46 +1886,66 @@ def show_bdc_balance():
             )
 
     df      = pd.DataFrame(records)
-    summary = df.groupby("Product")[COL_BAL].sum()
+    col_bal = "ACTUAL BALANCE (LT\\KG)"
+
+    # ── Crude Oil toggle ──────────────────────────────────────
+    _bal_has_crude = "CRUDE OIL" in df["Product"].values
+    _bal_show_crude = False
+    if _bal_has_crude:
+        _bal_show_crude = st.toggle(
+            "🛢️ Include Crude Oil in view",
+            value=st.session_state.get("bal_show_crude", False),
+            key="bal_show_crude",
+            help="Toggle to show or hide Crude Oil records in all balance totals, pivot and tables below.",
+        )
+    if not _bal_show_crude:
+        df = df[df["Product"] != "CRUDE OIL"]
+    # ─────────────────────────────────────────────────────────
+
+    summary = df.groupby("Product")[col_bal].sum()
 
     st.markdown("---")
     st.markdown("### 🛢️ NATIONAL STOCK TOTALS")
-    cols = st.columns(3)
-    for idx, prod in enumerate(["PREMIUM","GASOIL","LPG"]):
+    core_products = [p for p in ["PREMIUM","GASOIL","LPG"] if p in summary.index]
+    crude_products = [p for p in ["CRUDE OIL"] if _bal_show_crude and p in summary.index]
+    display_products = core_products + crude_products
+    cols = st.columns(max(len(display_products), 1))
+    for idx, prod in enumerate(display_products):
         with cols[idx]:
             val = summary.get(prod, 0)
             st.markdown(f"<div class='metric-card'><h2>{prod}</h2><h1>{val:,.0f}</h1>"
                         f"<p style='color:#888;font-size:13px;margin:0;'>Litres / KG</p></div>",
                         unsafe_allow_html=True)
 
-    grand_total = float(df[COL_BAL].sum())
+    grand_total = float(df[col_bal].sum())
     st.metric("🏭 Grand National Total", f"{grand_total:,.0f} LT/KG",
               help="Sum of PREMIUM + GASOIL + LPG across all BDCs and depots")
 
     st.markdown("---")
     st.markdown("### 🏢 BDC BREAKDOWN")
     bdc_sum = (df.groupby("BDC")
-               .agg({COL_BAL:"sum","DEPOT":"nunique","Product":"nunique"})
+               .agg({col_bal:"sum","DEPOT":"nunique","Product":"nunique"})
                .reset_index()
-               .rename(columns={COL_BAL:"Total Balance (LT/KG)","DEPOT":"Depots","Product":"Products"}))
+               .rename(columns={col_bal:"Total Balance (LT/KG)","DEPOT":"Depots","Product":"Products"}))
     bdc_sum = bdc_sum.sort_values("Total Balance (LT/KG)", ascending=False)
-    if grand_total > 0:
-        bdc_sum["Market Share %"] = (bdc_sum["Total Balance (LT/KG)"] / grand_total * 100).round(2)
-    else:
-        bdc_sum["Market Share %"] = 0.0
+    bdc_sum["Market Share %"] = (bdc_sum["Total Balance (LT/KG)"] / grand_total * 100).round(2)
     st.caption(f"**{len(bdc_sum)} BDCs** with balance data")
     st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
 
     st.markdown("---")
     st.markdown("### 📊 PRODUCT × BDC PIVOT")
-    pivot = (df.pivot_table(index="BDC", columns="Product", values=COL_BAL,
+    pivot = (df.pivot_table(index="BDC", columns="Product", values=col_bal,
                             aggfunc="sum", fill_value=0).reset_index())
+    _pivot_core = [p for p in ["GASOIL","LPG","PREMIUM"] if p in pivot.columns]
     for p in ["GASOIL","LPG","PREMIUM"]:
         if p not in pivot.columns: pivot[p] = 0
-    pivot["TOTAL"] = pivot[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
+    _pivot_cols = ["GASOIL","LPG","PREMIUM"]
+    if _bal_show_crude and "CRUDE OIL" in pivot.columns:
+        _pivot_cols = _pivot_cols + ["CRUDE OIL"]
+    pivot["TOTAL"] = pivot[_pivot_cols].sum(axis=1)
     pivot = pivot.sort_values("TOTAL", ascending=False)
     st.caption(f"**{len(pivot)} BDCs** shown in pivot")
-    st.dataframe(pivot[["BDC","GASOIL","LPG","PREMIUM","TOTAL"]], use_container_width=True, hide_index=True)
+    st.dataframe(pivot[["BDC"] + _pivot_cols + ["TOTAL"]], use_container_width=True, hide_index=True)
 
     st.markdown("---")
     st.markdown("### 🔍 FILTER & EXPLORE")
@@ -1949,25 +1958,22 @@ def show_bdc_balance():
     st.caption(f"Showing **{len(filt):,}** records  |  "
                f"**{filt['BDC'].nunique()}** BDCs  |  "
                f"**{filt['DEPOT'].nunique()}** depots  |  "
-               f"Total: **{filt[COL_BAL].sum():,.0f} LT/KG**")
-
-    avail_col = r"AVAILABLE BALANCE (LT\KG)"
-    display_cols = ["Product","BDC","DEPOT","Date",COL_BAL]
-    if avail_col in filt.columns:
-        display_cols.insert(4, avail_col)
-    st.dataframe(
-        filt[display_cols].sort_values(["Product","BDC"]),
-        use_container_width=True, height=400, hide_index=True,
-    )
+               f"Total: **{filt[col_bal].sum():,.0f} LT/KG**")
+    st.dataframe(filt[["Product","BDC","DEPOT","AVAILABLE BALANCE (LT\\KG)",col_bal,"Date"]]
+                 .sort_values(["Product","BDC"]),
+                 use_container_width=True, height=400, hide_index=True)
 
     st.markdown("---")
     _bdc_dl_ts  = datetime.now().strftime("%Y%m%d_%H%M%S")
-    excel_bytes = _to_excel_bytes({
+    _excel_bdc_sheets = {
         "Stock Balance": df,
         "LPG":           df[df["Product"]=="LPG"],
         "PREMIUM":       df[df["Product"]=="PREMIUM"],
         "GASOIL":        df[df["Product"]=="GASOIL"],
-    })
+    }
+    if _bal_show_crude and "CRUDE OIL" in df["Product"].values:
+        _excel_bdc_sheets["CRUDE OIL"] = df[df["Product"]=="CRUDE OIL"]
+    excel_bytes = _to_excel_bytes(_excel_bdc_sheets)
     st.download_button("⬇️ DOWNLOAD EXCEL", excel_bytes,
                        f"bdc_balance_{_bdc_dl_ts}.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -1978,6 +1984,7 @@ def show_bdc_balance():
 # ══════════════════════════════════════════════════════════════
 def show_omc_loadings():
     st.markdown("<h2>🚚 OMC LOADINGS ANALYZER</h2>", unsafe_allow_html=True)
+
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
@@ -1992,13 +1999,9 @@ def show_omc_loadings():
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start Date",
-                                   value=st.session_state.get("omc_start", datetime.now()-timedelta(days=7)),
-                                   key="omc_start")
+        start_date = st.date_input("Start Date", value=st.session_state.get("omc_start", datetime.now()-timedelta(days=7)), key="omc_start")
     with col2:
-        end_date = st.date_input("End Date",
-                                  value=st.session_state.get("omc_end", datetime.now()),
-                                  key="omc_end")
+        end_date = st.date_input("End Date", value=st.session_state.get("omc_end", datetime.now()), key="omc_end")
 
     col3, col4 = st.columns([3,1])
     with col3:
@@ -2031,10 +2034,12 @@ def show_omc_loadings():
         log_lines = []
 
         results = _sequential_batch_fetch(
-            bdcs_to_fetch, _make_omc_fetcher(start_str, end_str),
-            prog, log_box, log_lines, second_pass=True,
+            bdcs_to_fetch,
+            _make_omc_fetcher(start_str, end_str),
+            prog, log_box, log_lines,
+            second_pass=True,
         )
-        _safe_progress(prog, 1.0, text="✅ Fetch complete")
+        prog.progress(1.0, text="✅ Fetch complete")
 
         combined, summary = _combine_df_results(
             results, ["Order Number", "Truck", "Date", "Product"]
@@ -2042,7 +2047,8 @@ def show_omc_loadings():
 
         if merge_prev and has_previous:
             prev = st.session_state.omc_df
-            combined = _merge_dataframes(prev, combined, ["Order Number", "Truck", "Date", "Product"])
+            combined = _merge_dataframes(prev, combined,
+                                         ["Order Number", "Truck", "Date", "Product"])
             st.info(f"🔀 Merged — {len(combined)} total records after union.")
 
         st.session_state.omc_df            = combined
@@ -2071,13 +2077,11 @@ def show_omc_loadings():
             )
 
     st.markdown("---")
-    total_vol = df["Quantity"].sum()
-    total_val = (df["Quantity"] * df["Price"]).sum()
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Total Orders",      f"{len(df):,}")
-    c2.metric("Total Volume (LT)", f"{total_vol:,.0f}")
-    c3.metric("Unique OMCs",       f"{df['OMC'].nunique()}")
-    c4.metric("Total Value (₵)",   f"{total_val:,.0f}")
+    c1.metric("Total Orders",    f"{len(df):,}")
+    c2.metric("Total Volume (LT)", f"{df['Quantity'].sum():,.0f}")
+    c3.metric("Unique OMCs",     f"{df['OMC'].nunique()}")
+    c4.metric("Total Value (₵)", f"{(df['Quantity']*df['Price']).sum():,.0f}")
 
     st.markdown("### 📦 PRODUCT BREAKDOWN")
     prod_sum = (df.groupby("Product")
@@ -2106,7 +2110,8 @@ def show_omc_loadings():
     opts  = ["ALL"] + sorted(df[_cmap[ft]].unique().tolist())
     fval  = st.selectbox("Value", opts, key="omc_fval")
     filt  = df if fval=="ALL" else df[df[_cmap[ft]]==fval]
-    st.caption(f"Showing **{len(filt):,}** records | Volume: **{filt['Quantity'].sum():,.0f} LT**")
+    st.caption(f"Showing **{len(filt):,}** records | "
+               f"Volume: **{filt['Quantity'].sum():,.0f} LT**")
     st.dataframe(filt[["Date","OMC","Truck","Quantity","Order Number","BDC","Depot","Price","Product"]]
                  .sort_values(["Product","Date"]),
                  use_container_width=True, height=400, hide_index=True)
@@ -2114,7 +2119,8 @@ def show_omc_loadings():
     st.markdown("---")
     _omc_bdc_summary = (
         df.pivot_table(index="BDC", columns="Product", values="Quantity",
-                       aggfunc="sum", fill_value=0).reset_index()
+                       aggfunc="sum", fill_value=0)
+        .reset_index()
     )
     for _p in ["GASOIL","LPG","PREMIUM"]:
         if _p not in _omc_bdc_summary.columns:
@@ -2140,6 +2146,7 @@ def show_omc_loadings():
 # ══════════════════════════════════════════════════════════════
 def show_daily_orders():
     st.markdown("<h2>📅 DAILY ORDERS ANALYZER</h2>", unsafe_allow_html=True)
+
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
@@ -2147,7 +2154,7 @@ def show_daily_orders():
     Fetches the daily dispatch order report grouped by depot, giving truck-level
     granularity of physical fuel movements out of each storage facility.<br>
     <b style='color:#ff00ff;'>OMC Name column:</b> Automatically cross-referenced from OMC Loadings
-    data (if fetched) by fuzzy-matching order numbers.
+    data (if fetched) by fuzzy-matching order numbers. Fetch OMC Loadings first for best results.
     </div>
     """, unsafe_allow_html=True)
 
@@ -2156,13 +2163,9 @@ def show_daily_orders():
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start Date",
-                                   value=st.session_state.get("daily_start", datetime.now()-timedelta(days=1)),
-                                   key="daily_start")
+        start_date = st.date_input("Start Date", value=st.session_state.get("daily_start", datetime.now()-timedelta(days=1)), key="daily_start")
     with col2:
-        end_date = st.date_input("End Date",
-                                  value=st.session_state.get("daily_end", datetime.now()),
-                                  key="daily_end")
+        end_date = st.date_input("End Date", value=st.session_state.get("daily_end", datetime.now()), key="daily_end")
 
     col3, col4 = st.columns([3,1])
     with col3:
@@ -2188,12 +2191,20 @@ def show_daily_orders():
     if _has_omc:
         _n_omc_orders = omc_df_for_lookup["Order Number"].nunique() \
             if "Order Number" in omc_df_for_lookup.columns else 0
-        st.success(f"✅ OMC Loadings available — **{_n_omc_orders:,} unique order numbers** will be used.")
+        st.success(
+            f"✅ OMC Loadings available — **{_n_omc_orders:,} unique order numbers** "
+            f"will be used to populate the **OMC Name** column."
+        )
     else:
-        st.warning("⚠️ No OMC Loadings data found. Fetch OMC Loadings first for the OMC Name column.")
+        st.warning(
+            "⚠️ No OMC Loadings data found in session. "
+            "Fetch OMC Loadings first to enable the **OMC Name** cross-reference column. "
+            "The column will still appear but will be empty."
+        )
 
     st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
-            f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** ({period_days} days)")
+            f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
+            f"({period_days} days)")
 
     if st.button("🔄 FETCH DAILY ORDERS", key="daily_fetch"):
         start_str = start_date.strftime("%m/%d/%Y")
@@ -2203,18 +2214,23 @@ def show_daily_orders():
         log_lines = []
 
         results = _sequential_batch_fetch(
-            bdcs_to_fetch, _make_daily_fetcher(start_str, end_str),
-            prog, log_box, log_lines, second_pass=True,
+            bdcs_to_fetch,
+            _make_daily_fetcher(start_str, end_str),
+            prog, log_box, log_lines,
+            second_pass=True,
         )
-        _safe_progress(prog, 1.0, text="✅ Fetch complete")
+        prog.progress(1.0, text="✅ Fetch complete")
 
-        combined, summary = _combine_df_results(results, ["Date", "Truck", "Order Number", "Product"])
+        combined, summary = _combine_df_results(
+            results, ["Date", "Truck", "Order Number", "Product"]
+        )
 
         if merge_prev and has_previous:
             prev = st.session_state.daily_df
             if "OMC Name" in prev.columns:
                 prev = prev.drop(columns=["OMC Name"])
-            combined = _merge_dataframes(prev, combined, ["Date", "Truck", "Order Number", "Product"])
+            combined = _merge_dataframes(prev, combined,
+                                         ["Date", "Truck", "Order Number", "Product"])
             st.info(f"🔀 Merged — {len(combined)} total records after union.")
 
         combined = _enrich_daily_with_omc(combined, omc_df_for_lookup)
@@ -2226,25 +2242,31 @@ def show_daily_orders():
         st.session_state.daily_end_date      = end_date
         _save_state("daily_df", combined)
 
-        n_matched = int((combined["OMC Name"] != "").sum()) if not combined.empty and "OMC Name" in combined.columns else 0
+        n_matched = int((combined["OMC Name"] != "").sum()) if not combined.empty else 0
         st.markdown("---")
         _render_fetch_summary(summary, len(bdcs_to_fetch),
-                              len(combined) if not combined.empty else 0, "Order Records")
+                              len(combined) if not combined.empty else 0,
+                              "Order Records")
         if not combined.empty:
-            st.info(f"🔗 OMC Name: **{n_matched:,} / {len(combined):,}** orders matched "
-                    f"({n_matched/len(combined)*100:.1f}%)")
+            st.info(
+                f"🔗 OMC Name cross-reference: **{n_matched:,} / {len(combined):,}** orders "
+                f"matched ({n_matched/len(combined)*100:.1f}%)"
+            )
 
     df = st.session_state.get("daily_df", pd.DataFrame())
     if df.empty:
         st.info("👆 Select a date range and click **FETCH DAILY ORDERS**.")
         return
 
-    # FIX: only re-enrich if OMC Name column is missing or empty AND omc data is available
-    if _has_omc and ("OMC Name" not in df.columns or df.get("OMC Name", pd.Series()).eq("").all()):
-        with st.spinner("🔗 Cross-referencing OMC names…"):
+    if _has_omc and ("OMC Name" not in df.columns or df["OMC Name"].eq("").all()):
+        with st.spinner("🔗 Cross-referencing OMC names from loadings data…"):
             df = _enrich_daily_with_omc(df, omc_df_for_lookup)
             st.session_state.daily_df = df
             _save_state("daily_df", df)
+        n_matched = int((df["OMC Name"] != "").sum())
+        st.success(
+            f"✅ OMC Name column updated — **{n_matched:,} / {len(df):,}** orders matched."
+        )
 
     if st.session_state.get("daily_fetch_summary"):
         with st.expander("📊 Last fetch outcome", expanded=False):
@@ -2255,14 +2277,15 @@ def show_daily_orders():
             )
 
     st.markdown("---")
+
     n_omc_matched = int((df["OMC Name"] != "").sum()) if "OMC Name" in df.columns else 0
     c1,c2,c3,c4,c5,c6 = st.columns(6)
-    c1.metric("Orders",         f"{len(df):,}")
-    c2.metric("Volume (LT)",    f"{df['Quantity'].sum():,.0f}")
-    c3.metric("BDCs",           f"{df['BDC'].nunique()}")
-    c4.metric("Depots",         f"{df['Depot'].nunique()}")
-    c5.metric("Value (₵)",      f"{(df['Quantity']*df['Price']).sum():,.0f}")
-    c6.metric("🔗 OMC Matched", f"{n_omc_matched:,}")
+    c1.metric("Orders",          f"{len(df):,}")
+    c2.metric("Volume (LT)",     f"{df['Quantity'].sum():,.0f}")
+    c3.metric("BDCs",            f"{df['BDC'].nunique()}")
+    c4.metric("Depots",          f"{df['Depot'].nunique()}")
+    c5.metric("Value (₵)",       f"{(df['Quantity']*df['Price']).sum():,.0f}")
+    c6.metric("🔗 OMC Matched",  f"{n_omc_matched:,}")
 
     st.markdown("### 📦 PRODUCT SUMMARY")
     prod_sum = (df.groupby("Product")
@@ -2285,8 +2308,13 @@ def show_daily_orders():
             df[df["OMC Name"] != ""]
             .groupby("OMC Name")
             .agg(Orders=("Order Number","count"), Volume=("Quantity","sum"))
-            .reset_index().sort_values("Volume", ascending=False)
+            .reset_index()
+            .sort_values("Volume", ascending=False)
             .rename(columns={"Volume":"Total Volume (LT/KG)"})
+        )
+        st.caption(
+            f"Derived from fuzzy order-number matching against OMC Loadings data — "
+            f"**{n_omc_matched:,}** of **{len(df):,}** orders matched."
         )
         st.dataframe(omc_name_sum, use_container_width=True, hide_index=True)
 
@@ -2306,12 +2334,15 @@ def show_daily_orders():
     opts  = ["ALL"] + sorted(df[col_for_filter].dropna().unique().tolist())
     fval  = st.selectbox("Value", opts, key="daily_fval")
     filt  = df if fval=="ALL" else df[df[col_for_filter]==fval]
-    st.caption(f"Showing **{len(filt):,}** records | Volume: **{filt['Quantity'].sum():,.0f} LT**")
+    st.caption(f"Showing **{len(filt):,}** records | "
+               f"Volume: **{filt['Quantity'].sum():,.0f} LT**")
 
     detail_cols = ["Date","Truck","Quantity","Order Number","OMC Name","BDC","Depot","Price","Product","Status"]
     detail_cols = [c for c in detail_cols if c in filt.columns]
-    st.dataframe(filt[detail_cols].sort_values(["Product","Date"]),
-                 use_container_width=True, height=400, hide_index=True)
+    st.dataframe(
+        filt[detail_cols].sort_values(["Product","Date"]),
+        use_container_width=True, height=400, hide_index=True,
+    )
 
     st.markdown("---")
     excel_sheets = {"All Orders": df, "BDC Pivot": pivot}
@@ -2330,11 +2361,13 @@ def show_daily_orders():
 # ══════════════════════════════════════════════════════════════
 def show_market_share():
     st.markdown("<h2>📊 BDC MARKET SHARE ANALYSIS</h2>", unsafe_allow_html=True)
+
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
-    Shows a selected BDC's share of national stock and dispatch volumes per product.<br>
+    Shows a selected BDC's share of national stock and dispatch volumes per product,
+    including its ranking against all other BDCs.<br>
     <b style='color:#ff00ff;'>Prerequisite:</b> Fetch BDC Balance and/or OMC Loadings data first.
     </div>
     """, unsafe_allow_html=True)
@@ -2344,15 +2377,11 @@ def show_market_share():
 
     c1, c2 = st.columns(2)
     with c1:
-        if has_balance:
-            st.success(f"✅ BDC Balance: {len(st.session_state.get('bdc_records',[]))} records")
-        else:
-            st.warning("⚠️ Fetch BDC Balance first")
+        st.success(f"✅ BDC Balance: {len(st.session_state.get('bdc_records',[]))} records") \
+            if has_balance else st.warning("⚠️ Fetch BDC Balance first")
     with c2:
-        if has_loadings:
-            st.success(f"✅ OMC Loadings: {len(st.session_state.get('omc_df',pd.DataFrame()))} records")
-        else:
-            st.warning("⚠️ Fetch OMC Loadings first")
+        st.success(f"✅ OMC Loadings: {len(st.session_state.get('omc_df',pd.DataFrame()))} records") \
+            if has_loadings else st.warning("⚠️ Fetch OMC Loadings first")
 
     if not has_balance and not has_loadings:
         st.error("No data available. Please fetch from the BDC Balance and/or OMC Loadings pages first.")
@@ -2360,17 +2389,17 @@ def show_market_share():
 
     balance_df  = pd.DataFrame(st.session_state.bdc_records) if has_balance else pd.DataFrame()
     loadings_df = st.session_state.omc_df if has_loadings else pd.DataFrame()
+    col_bal     = "ACTUAL BALANCE (LT\\KG)"
 
     all_bdcs = sorted(
         set(balance_df["BDC"].unique()  if not balance_df.empty  else []) |
         set(loadings_df["BDC"].unique() if not loadings_df.empty else [])
     )
-    if not all_bdcs:
-        st.warning("No BDCs found in data.")
-        return
 
-    prev_bdc    = st.session_state.get("ms_bdc")
+    # Restore previous selection if available
+    prev_bdc = st.session_state.get("ms_bdc")
     default_idx = all_bdcs.index(prev_bdc) if prev_bdc and prev_bdc in all_bdcs else 0
+
     selected_bdc = st.selectbox("Choose BDC to analyse:", all_bdcs, index=default_idx, key="ms_bdc")
     if not selected_bdc:
         return
@@ -2384,11 +2413,11 @@ def show_market_share():
         if not has_balance:
             st.warning("Fetch BDC Balance first.")
         else:
-            bdc_bal   = balance_df[balance_df["BDC"]==selected_bdc]
-            total_mkt = float(balance_df[COL_BAL].sum())
-            bdc_total = float(bdc_bal[COL_BAL].sum())
-            share_pct = bdc_total / total_mkt * 100 if total_mkt else 0
-            sorted_idx = list(balance_df.groupby("BDC")[COL_BAL].sum()
+            bdc_bal    = balance_df[balance_df["BDC"]==selected_bdc]
+            total_mkt  = float(balance_df[col_bal].sum())
+            bdc_total  = float(bdc_bal[col_bal].sum())
+            share_pct  = bdc_total / total_mkt * 100 if total_mkt else 0
+            sorted_idx = list(balance_df.groupby("BDC")[col_bal].sum()
                               .sort_values(ascending=False).index)
             rank = sorted_idx.index(selected_bdc) + 1 if selected_bdc in sorted_idx else "N/A"
 
@@ -2399,9 +2428,9 @@ def show_market_share():
 
             rows = []
             for prod in ["PREMIUM","GASOIL","LPG"]:
-                mkt = float(balance_df[balance_df["Product"]==prod][COL_BAL].sum())
-                bv  = float(bdc_bal[bdc_bal["Product"]==prod][COL_BAL].sum())
-                rows.append({"Product": prod,
+                mkt = float(balance_df[balance_df["Product"]==prod][col_bal].sum())
+                bv  = float(bdc_bal[bdc_bal["Product"]==prod][col_bal].sum())
+                rows.append({"Product":prod,
                               "BDC Stock (LT)":    f"{bv:,.0f}",
                               "Market Total (LT)": f"{mkt:,.0f}",
                               "Share (%)":         f"{bv/mkt*100:.2f}" if mkt else "0.00"})
@@ -2417,8 +2446,7 @@ def show_market_share():
             share_pct = bdc_vol / total_vol * 100 if total_vol else 0
             all_sales = loadings_df.groupby("BDC")["Quantity"].sum().sort_values(ascending=False)
             s_rank    = list(all_sales.index).index(selected_bdc)+1 if selected_bdc in all_sales.index else "N/A"
-            # FIX: safe revenue calc even if BDC has no rows
-            rev = float((bdc_ld["Quantity"] * bdc_ld["Price"]).sum()) if not bdc_ld.empty else 0.0
+            rev       = (bdc_ld["Quantity"]*bdc_ld["Price"]).sum()
 
             c1,c2,c3,c4 = st.columns(4)
             c1.metric("Total Dispatched (LT)", f"{bdc_vol:,.0f}")
@@ -2432,8 +2460,8 @@ def show_market_share():
                 bv        = float(bdc_ld[bdc_ld["Product"]==prod]["Quantity"].sum())
                 prod_rank = loadings_df[loadings_df["Product"]==prod].groupby("BDC")["Quantity"]\
                               .sum().sort_values(ascending=False)
-                pr_n = list(prod_rank.index).index(selected_bdc)+1 if selected_bdc in prod_rank.index else "N/A"
-                rows.append({"Product": prod,
+                pr_n      = list(prod_rank.index).index(selected_bdc)+1 if selected_bdc in prod_rank.index else "N/A"
+                rows.append({"Product":prod,
                               "BDC Dispatched (LT)": f"{bv:,.0f}",
                               "Market Total (LT)":   f"{mkt:,.0f}",
                               "Share (%)":           f"{bv/mkt*100:.2f}" if mkt else "0.00",
@@ -2446,11 +2474,14 @@ def show_market_share():
 # ══════════════════════════════════════════════════════════════
 def show_stock_transaction():
     st.markdown("<h2>📈 STOCK TRANSACTION ANALYZER</h2>", unsafe_allow_html=True)
+
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
-    Retrieves the full stock transaction ledger for a specific BDC, depot and product.
+    Retrieves the full stock transaction ledger for a specific BDC, depot and product —
+    showing every inflow and outflow with a running balance for reconciliation.<br>
+    <b style='color:#ff00ff;'>Note:</b> Uses BDC entity IDs (lngBDCId), not per-user credentials.
     </div>
     """, unsafe_allow_html=True)
 
@@ -2460,29 +2491,28 @@ def show_stock_transaction():
     all_bdcs   = sorted(BDC_MAP.keys())
     all_depots = sorted(DEPOT_MAP.keys())
 
+    # Restore previous selections
     prev_bdc     = st.session_state.get("txn_bdc_label")
     prev_depot   = st.session_state.get("txn_depot_label")
     prev_product = st.session_state.get("txn_product_label")
-    bdc_idx   = all_bdcs.index(prev_bdc)         if prev_bdc     and prev_bdc     in all_bdcs     else 0
-    depot_idx = all_depots.index(prev_depot)      if prev_depot   and prev_depot   in all_depots   else 0
-    prod_idx  = PRODUCT_OPTIONS.index(prev_product) if prev_product and prev_product in PRODUCT_OPTIONS else 0
+    bdc_idx      = all_bdcs.index(prev_bdc)     if prev_bdc     and prev_bdc     in all_bdcs   else 0
+    depot_idx    = all_depots.index(prev_depot)  if prev_depot   and prev_depot   in all_depots else 0
+    prod_idx     = PRODUCT_OPTIONS.index(prev_product) if prev_product and prev_product in PRODUCT_OPTIONS else 0
 
     c1, c2 = st.columns(2)
     with c1:
-        selected_bdc     = st.selectbox("BDC",     all_bdcs,        index=bdc_idx,   key="txn_bdc")
-        selected_product = st.selectbox("Product",  PRODUCT_OPTIONS, index=prod_idx,  key="txn_prod")
+        selected_bdc     = st.selectbox("BDC",     all_bdcs,         index=bdc_idx,  key="txn_bdc")
+        selected_product = st.selectbox("Product",  PRODUCT_OPTIONS,  index=prod_idx, key="txn_prod")
+        if selected_product == "Crude Oil" and "Crude Oil" not in STOCK_PRODUCT_MAP:
+            st.warning("⚠️ Crude Oil not configured — set **PRODUCT_CRUDE_OIL_ID** in your .env file.")
     with c2:
-        selected_depot   = st.selectbox("Depot",    all_depots,      index=depot_idx, key="txn_depot")
+        selected_depot   = st.selectbox("Depot",    all_depots,       index=depot_idx, key="txn_depot")
 
     c3, c4 = st.columns(2)
     with c3:
-        start_date = st.date_input("Start Date",
-                                   value=st.session_state.get("txn_start", datetime.now()-timedelta(days=30)),
-                                   key="txn_start")
+        start_date = st.date_input("Start Date", value=st.session_state.get("txn_start", datetime.now()-timedelta(days=30)), key="txn_start")
     with c4:
-        end_date   = st.date_input("End Date",
-                                   value=st.session_state.get("txn_end", datetime.now()),
-                                   key="txn_end")
+        end_date   = st.date_input("End Date",   value=st.session_state.get("txn_end",   datetime.now()),                    key="txn_end")
 
     if st.button("📊 FETCH TRANSACTION REPORT", key="txn_fetch"):
         bdc_id     = BDC_MAP[selected_bdc]
@@ -2497,21 +2527,21 @@ def show_stock_transaction():
         with st.spinner(f"Fetching {selected_product} transactions for {selected_bdc}…"):
             pdf_bytes = _fetch_pdf(NPA_CONFIG["STOCK_TRANSACTION_URL"], params)
         if not pdf_bytes:
-            st.error("❌ No PDF returned. Check BDC / depot / product combination.")
+            st.error("❌ No PDF returned. Check BDC / depot / product combination or API availability.")
             st.session_state.stock_txn_df = pd.DataFrame()
             _save_state("stock_txn_df", pd.DataFrame())
         else:
             records = _parse_stock_transaction_pdf(pdf_bytes)
             if records:
                 df_txn = pd.DataFrame(records)
-                st.session_state.stock_txn_df      = df_txn
+                st.session_state.stock_txn_df    = df_txn
                 st.session_state.txn_bdc_label     = selected_bdc
                 st.session_state.txn_depot_label   = selected_depot
                 st.session_state.txn_product_label = selected_product
                 _save_state("stock_txn_df", df_txn)
                 st.success(f"✅ {len(records):,} transaction records extracted.")
             else:
-                st.warning("No transactions found. Try a different date range or combination.")
+                st.warning("No transactions found. Try a different date range or BDC/depot combination.")
                 st.session_state.stock_txn_df = pd.DataFrame()
                 _save_state("stock_txn_df", pd.DataFrame())
 
@@ -2524,11 +2554,11 @@ def show_stock_transaction():
                 f"{st.session_state.get('txn_product_label','')} @ "
                 f"{st.session_state.get('txn_depot_label','')}")
 
-    inflows  = float(df[df["Description"].isin(["Custody Transfer In","Product Outturn"])]["Volume"].sum())
-    outflows = float(df[df["Description"].isin(["Sale","Custody Transfer Out"])]["Volume"].sum())
-    sales    = float(df[df["Description"]=="Sale"]["Volume"].sum())
-    bdc_xfer = float(df[df["Description"]=="Custody Transfer Out"]["Volume"].sum())
-    final_bal= float(df["Balance"].iloc[-1]) if len(df) else 0
+    inflows   = float(df[df["Description"].isin(["Custody Transfer In","Product Outturn"])]["Volume"].sum())
+    outflows  = float(df[df["Description"].isin(["Sale","Custody Transfer Out"])]["Volume"].sum())
+    sales     = float(df[df["Description"]=="Sale"]["Volume"].sum())
+    bdc_xfer  = float(df[df["Description"]=="Custody Transfer Out"]["Volume"].sum())
+    final_bal = float(df["Balance"].iloc[-1]) if len(df) else 0
 
     c1,c2,c3,c4,c5 = st.columns(5)
     c1.metric("📥 Total Inflows",   f"{inflows:,.0f} LT")
@@ -2562,14 +2592,25 @@ def show_stock_transaction():
 # ══════════════════════════════════════════════════════════════
 # PAGE: PRODUCT OUTTURN
 # ══════════════════════════════════════════════════════════════
+
 def show_product_outturn():
     st.markdown("<h2>⛴️ PRODUCT OUTTURN INTELLIGENCE</h2>", unsafe_allow_html=True)
+
     st.markdown("""
     <div style='background:rgba(255,102,0,0.07);border:1px solid #ff660044;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#ff6600;'>What this page does</b><br>
     Sweeps <b>selected BDCs × selected depots × selected product(s)</b> and collects all
-    <b>Product Outturn</b> transactions — the moment a vessel's cargo is officially received.
+    <b>Product Outturn</b> transactions — the moment a vessel's cargo is officially
+    received into a BDC's stock account at a depot.<br><br>
+    <b style='color:#ff6600;'>Performance improvements vs original:</b>
+    <ul style='color:#ccc;margin:6px 0;'>
+      <li>✅ Runs in a <b>background thread</b> — tab stays alive for hours-long sweeps</li>
+      <li>✅ <b>8 parallel requests</b> per depot batch — ~8× faster than sequential</li>
+      <li>✅ Adaptive rate-limit back-off — no more mid-sweep 429 failures</li>
+      <li>✅ Tuned circuit-breaker (10 vs 6) — fewer false skips</li>
+      <li>✅ <b>Stop button</b> — cancel mid-sweep without killing the app</li>
+    </ul>
     </div>
     """, unsafe_allow_html=True)
 
@@ -2588,28 +2629,33 @@ def show_product_outturn():
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start Date",
-                                   value=st.session_state.get("ot_start", datetime.now()-timedelta(days=30)),
-                                   key="ot_start")
+        start_date = st.date_input(
+            "Start Date",
+            value=st.session_state.get("ot_start", datetime.now() - timedelta(days=30)),
+            key="ot_start",
+        )
     with col2:
-        end_date = st.date_input("End Date",
-                                  value=st.session_state.get("ot_end", datetime.now()),
-                                  key="ot_end")
+        end_date = st.date_input("End Date", value=st.session_state.get("ot_end", datetime.now()), key="ot_end")
 
     all_bdc_names = sorted(BDC_MAP.keys())
     n_total_bdcs  = len(all_bdc_names)
 
     col3, col4 = st.columns([3, 1])
     with col3:
-        sel_bdcs = st.multiselect(f"Select BDCs  (blank = all {n_total_bdcs})", all_bdc_names, key="ot_bdc_select")
+        sel_bdcs = st.multiselect(
+            f"Select BDCs  (blank = all {n_total_bdcs})",
+            all_bdc_names,
+            key="ot_bdc_select",
+        )
     with col4:
         st.markdown("<br>", unsafe_allow_html=True)
         fetch_all_bdcs = st.checkbox("All BDCs", value=st.session_state.get("ot_all_bdcs", True), key="ot_all_bdcs")
 
     bdcs_to_sweep = all_bdc_names if (fetch_all_bdcs or not sel_bdcs) else sel_bdcs
 
-    all_depot_names = sorted(DEPOT_MAP.keys())
-    n_total_depots  = len(all_depot_names)
+    all_depot_names     = sorted(DEPOT_MAP.keys())
+    n_total_depots      = len(all_depot_names)
+
     st.markdown("**🏭 Depots to sweep**")
 
     col5, col6 = st.columns([4, 1])
@@ -2637,16 +2683,20 @@ def show_product_outturn():
     if not sel_products:
         sel_products = PRODUCT_OPTIONS
 
-    n_calls  = len(bdcs_to_sweep) * len(depots_to_sweep) * len(sel_products)
-    est_mins = (n_calls / OUTTURN_WORKERS * 1.5 + len(bdcs_to_sweep) * 0.5) / 60
+    n_calls    = len(bdcs_to_sweep) * len(depots_to_sweep) * len(sel_products)
+    est_secs   = (n_calls / OUTTURN_WORKERS) * 1.5 + len(bdcs_to_sweep) * 0.5
+    est_mins   = est_secs / 60
 
     st.info(
         f"📋 **{len(bdcs_to_sweep)} BDCs** × **{len(depots_to_sweep)} depots** × "
         f"**{len(sel_products)} products** = **{n_calls:,} API calls**  |  "
-        f"Est. time: **~{est_mins:.0f} min**"
+        f"Est. time: **~{est_mins:.0f} min** ({OUTTURN_WORKERS} parallel workers)"
     )
     if n_calls > 3000:
-        st.warning(f"⚠️ {n_calls:,} requests. Large sweep.")
+        st.warning(
+            f"⚠️ {n_calls:,} requests. Large sweep — circuit-breaker will skip "
+            f"unresponsive BDCs automatically. You can stop at any time."
+        )
 
     merge_prev = False
     has_prev   = not st.session_state.get("outturn_df", pd.DataFrame()).empty
@@ -2657,30 +2707,45 @@ def show_product_outturn():
         )
 
     running = st.session_state.ot_sweep_running
+
     btn_col1, btn_col2 = st.columns([3, 1])
     with btn_col1:
-        start_btn = st.button("⛴️ SWEEP FOR PRODUCT OUTTURN", key="ot_fetch", disabled=running)
+        start_btn = st.button(
+            "⛴️ SWEEP FOR PRODUCT OUTTURN",
+            key="ot_fetch",
+            disabled=running,
+        )
     with btn_col2:
-        stop_btn  = st.button("🛑 STOP SWEEP", key="ot_stop", disabled=not running)
+        stop_btn = st.button(
+            "🛑 STOP SWEEP",
+            key="ot_stop",
+            disabled=not running,
+        )
 
     if stop_btn and running:
         if st.session_state.ot_cancel_event:
             st.session_state.ot_cancel_event.set()
         st.session_state.ot_sweep_running = False
-        st.warning("🛑 Stop signal sent.")
+        st.warning("🛑 Stop signal sent — sweep will finish its current batch then halt.")
 
     if start_btn and not running:
         cancel_ev = threading.Event()
         worker    = _OutturnSweepWorker(
-            bdcs=bdcs_to_sweep, depots=depots_to_sweep, products=sel_products,
-            start_str=start_date.strftime("%m/%d/%Y"), end_str=end_date.strftime("%m/%d/%Y"),
-            bdc_map=BDC_MAP, depot_map=DEPOT_MAP, product_map=STOCK_PRODUCT_MAP,
-            config=NPA_CONFIG,
-            parse_fn=_parse_stock_transaction_pdf_full,
-            extract_vessel_fn=_extract_vessel_name,
-            cancel_event=cancel_ev,
+            bdcs        = bdcs_to_sweep,
+            depots      = depots_to_sweep,
+            products    = sel_products,
+            start_str   = start_date.strftime("%m/%d/%Y"),
+            end_str     = end_date.strftime("%m/%d/%Y"),
+            bdc_map     = BDC_MAP,
+            depot_map   = DEPOT_MAP,
+            product_map = STOCK_PRODUCT_MAP,
+            config      = NPA_CONFIG,
+            parse_fn    = _parse_stock_transaction_pdf_full,
+            extract_vessel_fn = _extract_vessel_name,
+            cancel_event= cancel_ev,
         )
         thread = worker.start()
+
         st.session_state.ot_sweep_running  = True
         st.session_state.ot_sweep_thread   = thread
         st.session_state.ot_sweep_worker   = worker
@@ -2706,55 +2771,72 @@ def show_product_outturn():
             try:
                 while True:
                     msg = worker.q.get_nowait()
+
                     if msg["type"] == "progress":
-                        st.session_state.ot_done_n  = msg["done"]
-                        st.session_state.ot_total_n = msg["total"]
+                        st.session_state.ot_done_n   = msg["done"]
+                        st.session_state.ot_total_n  = msg["total"]
                         st.session_state.ot_last_bdc = msg["bdc"]
                         pct  = msg["pct"]
                         done = msg["done"]
                         tot  = msg["total"]
-                        _safe_progress(prog_bar, pct,
-                            text=f"Sweeping {done:,}/{tot:,} ({pct*100:.1f}%)  —  BDC: {msg['bdc']}")
+                        prog_bar.progress(
+                            pct,
+                            text=(
+                                f"Sweeping {done:,}/{tot:,} "
+                                f"({pct*100:.1f}%)  —  BDC: {msg['bdc']}  "
+                                f"Depot: {msg['depot']}  Product: {msg['prod']}"
+                            ),
+                        )
                         elapsed = time.time() - poll_start
                         if pct > 0:
                             eta = elapsed / pct * (1 - pct)
                             status_ph.markdown(
                                 f"⏱ Elapsed: **{elapsed/60:.1f} min**  |  "
-                                f"ETA: **~{eta/60:.1f} min**  |  Done: **{done:,} / {tot:,}**"
+                                f"ETA: **~{eta/60:.1f} min**  |  "
+                                f"Done: **{done:,} / {tot:,}**"
                             )
+
                     elif msg["type"] == "log":
                         st.session_state.ot_log_lines.append(msg["text"])
                         lines = st.session_state.ot_log_lines[-18:]
                         log_area.markdown(
-                            "<div class='fetch-log'>" + "<br>".join(lines) + "</div>",
+                            "<div class='fetch-log'>" +
+                            "<br>".join(lines) +
+                            "</div>",
                             unsafe_allow_html=True,
                         )
+
                     elif msg["type"] == "result":
                         new_df  = msg["df"]
                         summary = msg["summary"]
+
                         if merge_prev and has_prev:
                             prev = st.session_state.outturn_df
                             new_df = _merge_dataframes(
                                 prev, new_df,
                                 ["Date", "Trans #", "BDC", "Depot", "Product", "Volume"],
                             )
+
                         st.session_state.outturn_df = new_df
                         _save_state("outturn_df", new_df)
                         st.session_state.ot_last_summary = summary
                         st.session_state.ot_last_record_count = len(new_df)
+
                     elif msg["type"] in ("done", "error"):
                         sweep_done = True
                         if msg["type"] == "error":
                             st.error(f"❌ Sweep error: {msg['text']}")
                         break
+
             except queue.Empty:
                 pass
 
             if sweep_done or not thread.is_alive():
                 break
+
             time.sleep(1.5)
 
-        _safe_progress(prog_bar, 1.0, text="✅ Outturn sweep complete")
+        prog_bar.progress(1.0, text="✅ Outturn sweep complete")
         st.session_state.ot_sweep_running = False
 
         if "ot_last_summary" in st.session_state:
@@ -2764,6 +2846,7 @@ def show_product_outturn():
                 st.session_state.get("ot_last_record_count", 0),
                 "Outturn Records",
             )
+
         st.rerun()
 
     elif "ot_last_summary" in st.session_state and not running:
@@ -2782,6 +2865,21 @@ def show_product_outturn():
         return
 
     st.markdown("---")
+
+    # ── Crude Oil toggle ──────────────────────────────────────
+    _ot_has_crude  = "Crude Oil" in df["Product"].values if "Product" in df.columns else False
+    _ot_show_crude = False
+    if _ot_has_crude:
+        _ot_show_crude = st.toggle(
+            "🛢️ Include Crude Oil in view",
+            value=st.session_state.get("ot_show_crude", False),
+            key="ot_show_crude",
+            help="Toggle to show or hide Crude Oil outturn records in all metrics, charts and tables below.",
+        )
+    if not _ot_show_crude:
+        df = df[df["Product"] != "Crude Oil"] if "Product" in df.columns else df
+    # ─────────────────────────────────────────────────────────
+
     total_vol   = float(df["Volume"].sum())
     n_vessels   = df["Vessel Name"].replace("", pd.NA).dropna().nunique()
     n_bdcs_data = df["BDC"].nunique()
@@ -2795,20 +2893,21 @@ def show_product_outturn():
     c5.metric("🚢 Vessels ID'd",     f"{n_vessels}")
 
     st.markdown("### 📦 PRODUCT BREAKDOWN")
-    prod_cols   = st.columns(len(sel_products))
-    PROD_COLORS = {"PMS":"#00ffff","Gasoil":"#ffaa00","LPG":"#00ff88"}
-    PROD_ICONS  = {"PMS":"⛽","Gasoil":"🚛","LPG":"🔵"}
-    for col, prod in zip(prod_cols, sel_products):
-        sub   = df[df["Product"]==prod]
+    _visible_products = [p for p in sel_products if p != "Crude Oil" or _ot_show_crude]
+    prod_cols = st.columns(max(len(_visible_products), 1))
+    PROD_COLORS = {"PMS": "#00ffff", "Gasoil": "#ffaa00", "LPG": "#00ff88", "Crude Oil": "#cc6600"}
+    PROD_ICONS  = {"PMS": "⛽", "Gasoil": "🚛", "LPG": "🔵", "Crude Oil": "🛢️"}
+    for col, prod in zip(prod_cols, _visible_products):
+        sub   = df[df["Product"] == prod]
         vol   = float(sub["Volume"].sum())
-        color = PROD_COLORS.get(prod,"#fff")
-        icon  = PROD_ICONS.get(prod,"🛢")
+        color = PROD_COLORS.get(prod, "#fff")
+        icon  = PROD_ICONS.get(prod, "🛢")
         with col:
             st.markdown(f"""
             <div class='outturn-card' style='border-color:{color};box-shadow:0 0 18px {color}55;'>
                 <div style='font-size:30px;'>{icon}</div>
-                <div style='font-family:Orbitron,sans-serif;color:{color};font-size:14px;
-                             font-weight:700;margin:6px 0;'>{prod}</div>
+                <div style='font-family:Orbitron,sans-serif;color:{color};
+                             font-size:14px;font-weight:700;margin:6px 0;'>{prod}</div>
                 <div style='font-size:28px;color:{color};font-weight:900;'>{vol:,.0f}</div>
                 <div style='color:#888;font-size:12px;'>Litres / KG</div>
                 <div style='color:#ccc;font-size:12px;margin-top:4px;'>
@@ -2819,55 +2918,68 @@ def show_product_outturn():
     st.markdown("### 🏦 TOP BDCs BY OUTTURN VOLUME")
     bdc_sum = (
         df.groupby("BDC")
-        .agg(Events=("Trans #","count"), Volume_LT=("Volume","sum"),
-             Depots=("Depot","nunique"), Products=("Product","nunique"),
-             Vessels_ID_d=("Vessel Name", lambda x: x.replace("",pd.NA).dropna().nunique()))
-        .reset_index().sort_values("Volume_LT", ascending=False)
-        .rename(columns={"Volume_LT":"Total Volume (LT)","Vessels_ID_d":"Vessels ID'd"})
+        .agg(
+            Events       =("Trans #", "count"),
+            Volume_LT    =("Volume", "sum"),
+            Depots       =("Depot", "nunique"),
+            Products     =("Product", "nunique"),
+            Vessels_ID_d =("Vessel Name", lambda x: x.replace("", pd.NA).dropna().nunique()),
+        )
+        .reset_index()
+        .sort_values("Volume_LT", ascending=False)
+        .rename(columns={"Volume_LT": "Total Volume (LT)", "Vessels_ID_d": "Vessels ID'd"})
     )
-    if total_vol > 0:
-        bdc_sum["Market Share %"] = (bdc_sum["Total Volume (LT)"] / total_vol * 100).round(2)
+    bdc_sum["Market Share %"] = (bdc_sum["Total Volume (LT)"] / total_vol * 100).round(2)
     st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
 
     if not bdc_sum.empty:
         fig_bdc = go.Figure(go.Bar(
-            x=bdc_sum["BDC"].head(20), y=bdc_sum["Total Volume (LT)"].head(20),
+            x=bdc_sum["BDC"].head(20),
+            y=bdc_sum["Total Volume (LT)"].head(20),
             marker=dict(color=bdc_sum["Total Volume (LT)"].head(20), colorscale="Turbo"),
             text=bdc_sum["Total Volume (LT)"].head(20).apply(lambda v: f"{v:,.0f}"),
             textposition="outside",
         ))
         fig_bdc.update_layout(
             title=dict(text="Top 20 BDCs — Product Outturn Volume",
-                       font=dict(color="#ff6600",family="Orbitron")),
+                       font=dict(color="#ff6600", family="Orbitron")),
             paper_bgcolor="rgba(10,14,39,0.9)", plot_bgcolor="rgba(10,14,39,0.9)",
-            font=dict(color="white"), xaxis=dict(title="BDC",tickangle=-35),
-            yaxis=dict(title="Volume (LT)"), height=420,
+            font=dict(color="white"),
+            xaxis=dict(title="BDC", tickangle=-35),
+            yaxis=dict(title="Volume (LT)"),
+            height=420,
         )
         st.plotly_chart(fig_bdc, use_container_width=True)
 
     st.markdown("### 🏭 OUTTURN BY DEPOT")
     depot_sum = (
-        df.groupby(["Depot","Product"])
+        df.groupby(["Depot", "Product"])
         .agg(Events=("Trans #","count"), Volume_LT=("Volume","sum"))
         .reset_index().sort_values("Volume_LT", ascending=False)
-        .rename(columns={"Volume_LT":"Volume (LT)"})
+        .rename(columns={"Volume_LT": "Volume (LT)"})
     )
     st.dataframe(depot_sum, use_container_width=True, hide_index=True)
 
     st.markdown("### 🚢 VESSEL NAME ANALYSIS")
     vessel_df = df[df["Vessel Name"].str.strip() != ""].copy()
     if vessel_df.empty:
-        st.info("No vessel names extracted.")
+        st.info("No vessel names extracted. Check the Account column in the full table.")
     else:
         vessel_sum = (
-            vessel_df.groupby(["Vessel Name","Product"])
-            .agg(Outturns=("Trans #","count"), Volume_LT=("Volume","sum"),
-                 BDCs=("BDC","nunique"), Depots=("Depot","nunique"),
-                 First_Date=("Date","min"), Last_Date=("Date","max"))
+            vessel_df.groupby(["Vessel Name", "Product"])
+            .agg(
+                Outturns  =("Trans #", "count"),
+                Volume_LT =("Volume", "sum"),
+                BDCs      =("BDC", "nunique"),
+                Depots    =("Depot", "nunique"),
+                First_Date=("Date", "min"),
+                Last_Date =("Date", "max"),
+            )
             .reset_index().sort_values("Volume_LT", ascending=False)
-            .rename(columns={"Volume_LT":"Total Volume (LT)"})
+            .rename(columns={"Volume_LT": "Total Volume (LT)"})
         )
         st.dataframe(vessel_sum, use_container_width=True, hide_index=True)
+
         if len(vessel_sum) >= 2:
             fig_v = go.Figure(go.Treemap(
                 labels=vessel_sum["Vessel Name"] + "<br>" + vessel_sum["Product"],
@@ -2878,39 +2990,84 @@ def show_product_outturn():
             ))
             fig_v.update_layout(
                 title=dict(text="Vessel Outturn Volume Treemap",
-                           font=dict(color="#ff6600",family="Orbitron")),
+                           font=dict(color="#ff6600", family="Orbitron")),
                 paper_bgcolor="rgba(10,14,39,0.9)", font=dict(color="white"), height=420,
             )
             st.plotly_chart(fig_v, use_container_width=True)
 
+    st.markdown("### 📅 OUTTURN TIMELINE")
+    try:
+        df_ts = df.copy()
+        df_ts["Date_dt"] = pd.to_datetime(df_ts["Date"], dayfirst=True, errors="coerce")
+        df_ts = df_ts.dropna(subset=["Date_dt"])
+        if not df_ts.empty:
+            daily_ts = (
+                df_ts.groupby(["Date_dt","Product"])["Volume"].sum().reset_index()
+                .rename(columns={"Date_dt":"Date","Volume":"Volume (LT)"})
+            )
+            PCMAP = {"PMS":"#00ffff","Gasoil":"#ffaa00","LPG":"#00ff88","Crude Oil":"#cc6600"}
+            fig_ts = go.Figure()
+            for prod in daily_ts["Product"].unique():
+                sub_ts = daily_ts[daily_ts["Product"]==prod].sort_values("Date")
+                fig_ts.add_trace(go.Scatter(
+                    x=sub_ts["Date"], y=sub_ts["Volume (LT)"],
+                    mode="lines+markers", name=prod,
+                    line=dict(color=PCMAP.get(prod,"#fff"), width=2),
+                ))
+            fig_ts.update_layout(
+                title=dict(text="Daily Outturn Volume by Product",
+                           font=dict(color="#ff6600", family="Orbitron")),
+                paper_bgcolor="rgba(10,14,39,0.9)", plot_bgcolor="rgba(10,14,39,0.9)",
+                font=dict(color="white"), height=380,
+            )
+            st.plotly_chart(fig_ts, use_container_width=True)
+    except Exception:
+        pass
+
     st.markdown("---")
     st.markdown("### 🔍 FILTER & EXPLORE")
-    filter_by = st.selectbox("Filter by", ["All Records","BDC","Depot","Product","Vessel Name"], key="ot_filter_by")
+    filter_by = st.selectbox(
+        "Filter by", ["All Records","BDC","Depot","Product","Vessel Name"], key="ot_filter_by"
+    )
     col_map = {"BDC":"BDC","Depot":"Depot","Product":"Product","Vessel Name":"Vessel Name"}
+
     if filter_by == "All Records":
         filt = df
     else:
         col_f = col_map[filter_by]
         if col_f not in df.columns:
             df[col_f] = ""
-        opts = ["ALL"] + sorted(df[col_f].replace("",pd.NA).dropna().unique().tolist())
-        fval = st.selectbox(f"Select {filter_by}", opts, key="ot_filter_val")
-        filt = df if fval=="ALL" else df[df[col_f]==fval]
+        opts  = ["ALL"] + sorted(df[col_f].replace("",pd.NA).dropna().unique().tolist())
+        fval  = st.selectbox(f"Select {filter_by}", opts, key="ot_filter_val")
+        filt  = df if fval=="ALL" else df[df[col_f]==fval]
 
-    st.caption(f"**{len(filt):,}** records | Volume: **{filt['Volume'].sum():,.0f} LT**")
-    display_cols = [c for c in ["Date","Trans #","BDC","Depot","Product","Volume","Balance","Account","Vessel Name"] if c in filt.columns]
-    st.dataframe(filt[display_cols].sort_values(["Date","BDC"]),
-                 use_container_width=True, height=450, hide_index=True)
+    st.caption(
+        f"**{len(filt):,}** records | Volume: **{filt['Volume'].sum():,.0f} LT** | "
+        f"BDCs: **{filt['BDC'].nunique()}** | Depots: **{filt['Depot'].nunique()}**"
+    )
+    display_cols = [c for c in ["Date","Trans #","BDC","Depot","Product","Volume",
+                                 "Balance","Account","Vessel Name"] if c in filt.columns]
+    st.dataframe(
+        filt[display_cols].sort_values(["Date","BDC"]),
+        use_container_width=True, height=450, hide_index=True,
+    )
 
     st.markdown("---")
     _ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    excel_sheets = {"All Outturns": df[display_cols] if display_cols else df, "By BDC": bdc_sum, "By Depot": depot_sum}
+    excel_sheets = {
+        "All Outturns": df[display_cols] if display_cols else df,
+        "By BDC":       bdc_sum,
+        "By Depot":     depot_sum,
+    }
     if not vessel_df.empty:
         excel_sheets["By Vessel"] = vessel_sum
+
     excel_bytes = _to_excel_bytes(excel_sheets)
-    st.download_button("⬇️ DOWNLOAD OUTTURN EXCEL", excel_bytes,
-                       f"product_outturn_{_ts_str}.xlsx",
-                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button(
+        "⬇️ DOWNLOAD OUTTURN EXCEL", excel_bytes,
+        f"product_outturn_{_ts_str}.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 # ══════════════════════════════════════════════════════════════
@@ -2918,62 +3075,57 @@ def show_product_outturn():
 # ══════════════════════════════════════════════════════════════
 def show_national_stockout():
     st.markdown("<h2>🌍 NATIONAL STOCKOUT FORECAST</h2>", unsafe_allow_html=True)
+
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
-    Calculates Ghana's national days-of-supply for PREMIUM, GASOIL and LPG.<br>
-    <b>Formula:</b>  Days of Supply = National Stock ÷ Average Daily Loadings<br><br>
-    <b style='color:#ff00ff;'>How to read it:</b> The daily rate is the total OMC loadings over
-    the selected history window divided by the number of days in that window.  Toggling vessels,
-    TOR exclusion or day-type <b>recalculates instantly</b> from the same fetched data — no
-    re-fetch needed.  Click <b>Fetch &amp; Analyse</b> only when you want fresh API data.
+    Calculates Ghana's national days-of-supply for PREMIUM, GASOIL and LPG by dividing
+    current BDC stock balances by the average daily depletion rate derived from OMC
+    loadings over the selected history window.<br>
+    <b style='color:#ff00ff;'>Prerequisite:</b> Both BDC Balance and OMC Loadings are
+    fetched fresh as part of this analysis — no need to pre-load them separately.
     </div>
     """, unsafe_allow_html=True)
 
     c1, c2 = st.columns(2)
     with c1:
         start_date = st.date_input("Loadings History — From",
-                                   value=st.session_state.get("ns_start", datetime.now()-timedelta(days=30)),
-                                   key="ns_start")
+                                   value=st.session_state.get("ns_start", datetime.now()-timedelta(days=30)), key="ns_start")
     with c2:
         end_date   = st.date_input("Loadings History — To",
-                                   value=st.session_state.get("ns_end", datetime.now()),
-                                   key="ns_end")
+                                   value=st.session_state.get("ns_end", datetime.now()), key="ns_end")
 
     start_str   = start_date.strftime("%m/%d/%Y")
     end_str     = end_date.strftime("%m/%d/%Y")
     period_days = max((end_date - start_date).days, 1)
 
-    day_type_options = ["📆 Calendar Days (default)", "💼 Business Days (Mon–Fri only)"]
     day_type = st.radio(
         "Day-type for daily rate denominator",
-        day_type_options,
-        index=day_type_options.index(st.session_state.get("ns_day_type", day_type_options[0])),
+        ["📆 Calendar Days (default)","💼 Business Days (Mon–Fri only)"],
+        index=["📆 Calendar Days (default)","💼 Business Days (Mon–Fri only)"].index(
+            st.session_state.get("ns_day_type", "📆 Calendar Days (default)")
+        ),
         horizontal=True, key="ns_day_type",
     )
     use_biz = "Business" in day_type
 
-    depl_mode_options = [
-        "📊 Average Daily Loadings",
-        "🔥 Maximum Single-Day Loading (stress test)",
-        "📊 Median Daily Loadings",
-    ]
     depl_mode = st.radio(
         "Depletion rate method",
-        depl_mode_options,
-        index=depl_mode_options.index(st.session_state.get("ns_depl_mode", depl_mode_options[0])),
+        ["📊 Average Daily Loadings","🔥 Maximum Single-Day Loading (stress test)","📊 Median Daily Loadings"],
+        index=["📊 Average Daily Loadings","🔥 Maximum Single-Day Loading (stress test)","📊 Median Daily Loadings"].index(
+            st.session_state.get("ns_depl_mode", "📊 Average Daily Loadings")
+        ),
         key="ns_depl_mode",
     )
     use_max    = "Maximum" in depl_mode
     use_median = "Median"  in depl_mode
 
     exclude_tor = st.checkbox(
-        "❌ Exclude TEMA OIL REFINERY (TOR) from stock",
+        "❌ Exclude TEMA OIL REFINERY (TOR) from LPG stock",
         value=st.session_state.get("ns_excl_tor", False), key="ns_excl_tor",
     )
 
-    # FIX: resolve vessel data BEFORE the checkbox that depends on it
     _vessel_df     = st.session_state.get("vessel_data", pd.DataFrame())
     _vessel_loaded = isinstance(_vessel_df, pd.DataFrame) and not _vessel_df.empty
     _pending_n     = int((_vessel_df["Status"]=="PENDING").sum()) if _vessel_loaded else 0
@@ -2986,45 +3138,45 @@ def show_national_stockout():
         st.warning("No vessel data loaded — go to 🚢 Vessel Supply and fetch first.")
         include_vessels = False
     elif include_vessels and _pending_n == 0:
-        st.info("Vessel data loaded but no PENDING vessels — toggle has no effect.")
+        st.info("Vessel data is loaded but there are no PENDING vessels — toggle has no effect.")
 
     all_bdc_names  = sorted(BDC_USER_MAP.keys())
     n_total        = len(all_bdc_names)
-    effective_days = _count_period_days(start_date, end_date, use_biz)
+    effective_days = _count_period_days(start_str, end_str, use_biz)
     day_lbl        = f"{effective_days} {'business' if use_biz else 'calendar'} days"
 
     _existing_bdc_records = st.session_state.get("bdc_records", [])
     _has_bdc_balance      = bool(_existing_bdc_records)
-    _has_ns_omc           = not st.session_state.get("ns_omc_df", pd.DataFrame()).empty
 
     if _has_bdc_balance:
-        st.success(f"✅ BDC Balance already loaded — **{len(_existing_bdc_records):,} records** will be reused.")
+        st.success(f"✅ BDC Balance already loaded — **{len(_existing_bdc_records):,} records** "
+                   f"from a previous fetch will be used. Only OMC Loadings will be fetched fresh.")
     else:
-        st.warning("⚠️ No BDC Balance data found. Both Balance and Loadings will be fetched.")
+        st.warning("⚠️ No BDC Balance data found in session. Both Balance and Loadings will be fetched.")
 
-    if _has_ns_omc:
-        _ns_omc_preview = st.session_state["ns_omc_df"]
-        st.info(f"📦 Cached OMC loadings — **{len(_ns_omc_preview):,} records** from last Fetch & Analyse.")
-
-    st.info(f"📋 **{n_total} BDCs** · Loadings window: "
-            f"**{start_date.strftime('%d %b')} → {end_date.strftime('%d %b %Y')}** "
-            f"({period_days} calendar days / **{day_lbl}**)")
+    st.info(f"📋 **{n_total} BDCs** will be queried for OMC Loadings  |  "
+            f"Loadings window: **{start_date.strftime('%d %b')} → {end_date.strftime('%d %b %Y')}** "
+            f"({period_days} calendar days / {effective_days} {'business' if use_biz else 'calendar'} days)")
     st.markdown("---")
 
-    # ─── FETCH BUTTON ────────────────────────────────────────────────────────
     if st.button("⚡ FETCH & ANALYSE NATIONAL FUEL SUPPLY", key="ns_go"):
+        col_bal = "ACTUAL BALANCE (LT\\KG)"
 
-        # Step 1: BDC Balance
         if _has_bdc_balance:
             with st.status("📡 Step 1 / 2 — Using existing BDC stock balances…", expanded=True):
                 all_records = _existing_bdc_records
                 bal_df      = pd.DataFrame(all_records)
                 n_bal_bdcs  = bal_df["BDC"].nunique() if not bal_df.empty else 0
-                bal_summary = {
-                    "success": list(bal_df["BDC"].unique()) if not bal_df.empty else [],
-                    "no_data": [], "failed": [],
-                }
-                st.write(f"✅ Using cached balance — **{len(all_records):,} records** from **{n_bal_bdcs} BDCs**")
+                bal_summary = {"success": list(bal_df["BDC"].unique()) if not bal_df.empty else [],
+                               "no_data": [], "failed": []}
+                st.write(f"✅ Using cached balance — **{len(all_records):,} records** "
+                         f"from **{n_bal_bdcs} BDCs** (from BDC Balance page)")
+                if exclude_tor and not bal_df.empty:
+                    mask   = bal_df["BDC"].str.contains("TOR", case=False, na=False) & (bal_df["Product"]=="LPG")
+                    excl_v = bal_df[mask][col_bal].sum()
+                    bal_df = bal_df[~mask].copy()
+                    st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
+                balance_by_prod = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
         else:
             with st.status("📡 Step 1 / 2 — Fetching BDC stock balances…", expanded=True):
                 prog1      = st.progress(0, text="Starting…")
@@ -3032,20 +3184,38 @@ def show_national_stockout():
                 log_lines1 = []
                 results1   = _sequential_batch_fetch(
                     all_bdc_names, _make_balance_fetcher(),
-                    prog1, log_box1, log_lines1, second_pass=True,
+                    prog1, log_box1, log_lines1,
+                    second_pass=True,
                 )
-                _safe_progress(prog1, 1.0, text="✅ Balance fetch complete")
+                prog1.progress(1.0, text="✅ Balance fetch complete")
                 all_records, bal_summary = _combine_balance_results(results1)
                 bal_df = pd.DataFrame(all_records)
                 st.session_state.bdc_records = all_records
                 _save_state("bdc_records", all_records)
+
                 n_bal_bdcs = bal_df["BDC"].nunique() if not bal_df.empty else 0
-                st.write(f"✅ **{len(all_records):,} records** from **{n_bal_bdcs} BDCs**  |  "
-                         f"✅ {len(bal_summary['success'])} OK  |  "
+                st.write(f"✅ **{len(all_records):,} balance records** from **{n_bal_bdcs} BDCs**  |  "
+                         f"✅ {len(bal_summary['success'])} succeeded  |  "
                          f"⚠️ {len(bal_summary['no_data'])} no data  |  "
                          f"❌ {len(bal_summary['failed'])} failed")
 
-        # Step 2: OMC Loadings (always fresh on button click)
+                if exclude_tor and not bal_df.empty:
+                    mask   = bal_df["BDC"].str.contains("TOR", case=False, na=False) & (bal_df["Product"]=="LPG")
+                    excl_v = bal_df[mask][col_bal].sum()
+                    bal_df = bal_df[~mask].copy()
+                    st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
+
+                balance_by_prod = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
+
+        if include_vessels and _vessel_loaded:
+            pend = _vessel_df[_vessel_df["Status"]=="PENDING"]
+            if not pend.empty:
+                for prod, vol in pend.groupby("Product")["Quantity_Litres"].sum().items():
+                    balance_by_prod[prod] = balance_by_prod.get(prod, 0) + vol
+                st.write(f"🚢 Vessel pipeline added: "
+                         + " | ".join([f"{p}: +{v:,.0f} LT" for p,v in
+                                       pend.groupby("Product")["Quantity_Litres"].sum().items()]))
+
         with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings…", expanded=True):
             st.write(f"Querying {n_total} BDCs for loadings from "
                      f"{start_date.strftime('%d %b')} to {end_date.strftime('%d %b %Y')}…")
@@ -3054,187 +3224,101 @@ def show_national_stockout():
             log_lines2 = []
             results2   = _sequential_batch_fetch(
                 all_bdc_names, _make_omc_fetcher(start_str, end_str),
-                prog2, log_box2, log_lines2, second_pass=True,
+                prog2, log_box2, log_lines2,
+                second_pass=True,
             )
-            _safe_progress(prog2, 1.0, text="✅ Loadings fetch complete")
+            prog2.progress(1.0, text="✅ Loadings fetch complete")
             omc_df, omc_summary = _combine_df_results(
                 results2, ["Order Number", "Truck", "Date", "Product"]
             )
-            st.session_state["ns_omc_df"] = omc_df
-            _save_state("ns_omc_df", omc_df)
             st.write(f"✅ **{len(omc_df):,} loading records**  |  "
-                     f"✅ {len(omc_summary['success'])} OK  |  "
+                     f"✅ {len(omc_summary['success'])} succeeded  |  "
                      f"⚠️ {len(omc_summary['no_data'])} no data  |  "
                      f"❌ {len(omc_summary['failed'])} failed")
 
-        # Cache raw data for recalculation
-        st.session_state["ns_raw"] = {
-            "bal_records":  all_records,
-            "bal_summary":  bal_summary,
-            "omc_summary":  omc_summary,
-            "start_str":    start_str,
-            "end_str":      end_str,
+            if omc_df.empty:
+                omc_by_prod = pd.Series({"PREMIUM":0.0,"GASOIL":0.0,"LPG":0.0})
+                depl_lbl    = "No Data"
+            else:
+                filt = omc_df[omc_df["Product"].isin(["PREMIUM","GASOIL","LPG"])].copy()
+                filt["Date"] = pd.to_datetime(filt["Date"], errors="coerce")
+                daily_agg = filt.groupby(["Date","Product"])["Quantity"].sum().reset_index()
+                if use_median:
+                    omc_by_prod = daily_agg.groupby("Product")["Quantity"].median()
+                    depl_lbl    = "Median Daily Loading"
+                elif use_max:
+                    omc_by_prod = daily_agg.groupby("Product")["Quantity"].max()
+                    depl_lbl    = "Max Single-Day Loading"
+                else:
+                    omc_by_prod = filt.groupby("Product")["Quantity"].sum()
+                    depl_lbl    = f"Avg Daily ({day_lbl})"
+
+        DISPLAY = {"PREMIUM":"PREMIUM (PMS)","GASOIL":"GASOIL (AGO)","LPG":"LPG"}
+        rows_out = []
+        for prod in ["PREMIUM","GASOIL","LPG"]:
+            stock = float(balance_by_prod.get(prod, 0))
+            dep   = float(omc_by_prod.get(prod, 0))
+            daily = dep if (use_median or use_max) else (dep / effective_days if effective_days else 0)
+            days  = stock / daily if daily > 0 else float("inf")
+            rows_out.append({"product":prod,"display_name":DISPLAY[prod],
+                             "total_balance":stock,"omc_sales":dep,
+                             "daily_rate":daily,"days_remaining":days})
+
+        forecast_df = pd.DataFrame(rows_out)
+
+        bdc_pivot = (bal_df.pivot_table(index="BDC", columns="Product", values=col_bal,
+                                        aggfunc="sum", fill_value=0).reset_index()
+                     if not bal_df.empty else pd.DataFrame())
+        if not bdc_pivot.empty:
+            for p in ["GASOIL","LPG","PREMIUM"]:
+                if p not in bdc_pivot.columns: bdc_pivot[p] = 0
+            bdc_pivot["TOTAL"] = bdc_pivot[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
+            nat_total = bdc_pivot["TOTAL"].sum()
+            bdc_pivot["Market Share %"] = (bdc_pivot["TOTAL"] / nat_total * 100).round(2)
+            bdc_pivot = bdc_pivot.sort_values("TOTAL", ascending=False)
+
+        st.session_state.ns_results = {
+            "forecast_df":   forecast_df,
+            "bal_df":        bal_df,
+            "omc_df":        omc_df,
+            "bdc_pivot":     bdc_pivot,
+            "period_days":   period_days,
+            "eff_days":      effective_days,
+            "day_lbl":       day_lbl,
+            "depl_lbl":      depl_lbl,
+            "start_str":     start_str,
+            "end_str":       end_str,
+            "bal_summary":   bal_summary,
+            "omc_summary":   omc_summary,
+            "n_bal_records": len(all_records),
+            "n_omc_records": len(omc_df),
         }
-        st.success("✅ Fetch complete — calculating forecast below…")
+        _save_national_snapshot(forecast_df, f"{period_days}d")
+        st.success("✅ Analysis complete — scroll down to see the forecast.")
+        st.rerun()
 
-    # ─── CALCULATION BLOCK ───────────────────────────────────────────────────
-    # Runs every render if raw data is available (cheap — no HTTP calls)
-    ns_raw = st.session_state.get("ns_raw")
-    ns_omc = st.session_state.get("ns_omc_df", pd.DataFrame())
-
-    if ns_raw is None:
+    if not st.session_state.get("ns_results"):
         st.info("👆 Configure options above and click **FETCH & ANALYSE**.")
         return
 
-    all_records = ns_raw["bal_records"]
-    bal_df_raw  = pd.DataFrame(all_records)
-    bal_summary = ns_raw["bal_summary"]
-    omc_summary = ns_raw["omc_summary"]
-    _start_str  = ns_raw["start_str"]
-    _end_str    = ns_raw["end_str"]
-    _eff_days   = _count_period_days(_start_str, _end_str, use_biz)
-    _day_lbl    = f"{_eff_days} {'business' if use_biz else 'calendar'} days"
-
-    # Apply TOR exclusion to a COPY
-    bal_df_calc = bal_df_raw.copy()
-    if exclude_tor and not bal_df_calc.empty:
-        mask = bal_df_calc["BDC"].str.contains("TOR", case=False, na=False)
-        bal_df_calc = bal_df_calc[~mask]
-
-    balance_by_prod = (
-        bal_df_calc.groupby("Product")[COL_BAL].sum()
-        if not bal_df_calc.empty else pd.Series(dtype=float)
-    )
-
-    # ── Depletion rates ──────────────────────────────────────────────────────
-    # FIX: all three modes now correctly aggregate to daily totals first,
-    # then compute avg/max/median of those daily totals.
-    if ns_omc is None or ns_omc.empty:
-        daily_by_prod = pd.DataFrame(columns=["Product","DailyVol"])
-        depl_lbl = "No Data"
-    else:
-        filt = ns_omc[ns_omc["Product"].isin(["PREMIUM","GASOIL","LPG"])].copy()
-        filt["Date_dt"] = pd.to_datetime(filt["Date"], errors="coerce")
-        # Daily totals per product
-        daily_totals = (
-            filt.groupby(["Date_dt","Product"])["Quantity"]
-            .sum()
-            .reset_index()
-            .rename(columns={"Quantity":"DailyVol"})
-        )
-
-    # Build per-product daily rate
-    rate_by_prod = {}
-    if ns_omc is None or ns_omc.empty:
-        depl_lbl = "No Data"
-        for prod in ["PREMIUM","GASOIL","LPG"]:
-            rate_by_prod[prod] = 0.0
-    else:
-        if use_max:
-            depl_lbl = "Max Single-Day Loading"
-            for prod in ["PREMIUM","GASOIL","LPG"]:
-                sub = daily_totals[daily_totals["Product"]==prod]["DailyVol"]
-                rate_by_prod[prod] = float(sub.max()) if not sub.empty else 0.0
-        elif use_median:
-            depl_lbl = "Median Daily Loading"
-            for prod in ["PREMIUM","GASOIL","LPG"]:
-                sub = daily_totals[daily_totals["Product"]==prod]["DailyVol"]
-                rate_by_prod[prod] = float(sub.median()) if not sub.empty else 0.0
-        else:
-            # Average: sum of all loadings / number of effective days in the window
-            depl_lbl = f"Avg Daily ({_day_lbl})"
-            total_by_prod = filt.groupby("Product")["Quantity"].sum()
-            for prod in ["PREMIUM","GASOIL","LPG"]:
-                raw_total = float(total_by_prod.get(prod, 0))
-                rate_by_prod[prod] = raw_total / _eff_days if _eff_days > 0 else 0.0
-
-    # ── Vessel pipeline (pure additive to stock — never changes rate) ────────
-    vessel_additive = {}
-    if include_vessels and _vessel_loaded and _pending_n > 0:
-        pend = _vessel_df[_vessel_df["Status"] == "PENDING"]
-        vessel_additive = pend.groupby("Product")["Quantity_Litres"].sum().to_dict()
-
-    # ── Build forecast rows ──────────────────────────────────────────────────
-    DISPLAY = {"PREMIUM":"PREMIUM (PMS)", "GASOIL":"GASOIL (AGO)", "LPG":"LPG"}
-    rows_out = []
-    for prod in ["PREMIUM","GASOIL","LPG"]:
-        stock_base = float(balance_by_prod.get(prod, 0))
-        vessel_vol = float(vessel_additive.get(prod, 0))
-        stock      = stock_base + vessel_vol
-        daily_rate = rate_by_prod.get(prod, 0.0)
-        days       = stock / daily_rate if daily_rate > 0 else float("inf")
-        rows_out.append({
-            "product":        prod,
-            "display_name":   DISPLAY[prod],
-            "total_balance":  stock,
-            "stock_base":     stock_base,
-            "vessel_vol":     vessel_vol,
-            "daily_rate":     daily_rate,
-            "days_remaining": days,
-        })
-
-    forecast_df = pd.DataFrame(rows_out)
-
-    bdc_pivot = pd.DataFrame()
-    if not bal_df_calc.empty:
-        bdc_pivot = (
-            bal_df_calc.pivot_table(
-                index="BDC", columns="Product", values=COL_BAL, aggfunc="sum", fill_value=0
-            ).reset_index()
-        )
-        for p in ["GASOIL","LPG","PREMIUM"]:
-            if p not in bdc_pivot.columns: bdc_pivot[p] = 0
-        bdc_pivot["TOTAL"] = bdc_pivot[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
-        nat_total = bdc_pivot["TOTAL"].sum()
-        bdc_pivot["Market Share %"] = (bdc_pivot["TOTAL"] / nat_total * 100).round(2) if nat_total else 0.0
-        bdc_pivot = bdc_pivot.sort_values("TOTAL", ascending=False)
-
-    # Cache results for display
-    st.session_state["ns_results"] = {
-        "forecast_df":     forecast_df,
-        "bal_df":          bal_df_calc,
-        "omc_df":          ns_omc,
-        "bdc_pivot":       bdc_pivot,
-        "period_days":     period_days,
-        "eff_days":        _eff_days,
-        "day_lbl":         _day_lbl,
-        "depl_lbl":        depl_lbl,
-        "start_str":       _start_str,
-        "end_str":         _end_str,
-        "bal_summary":     bal_summary,
-        "omc_summary":     omc_summary,
-        "n_bal_records":   len(all_records),
-        "n_omc_records":   len(ns_omc) if ns_omc is not None else 0,
-        "include_vessels": include_vessels,
-        "vessel_additive": vessel_additive,
-    }
-    _save_national_snapshot(forecast_df, f"{period_days}d")
-
-    # ─── DISPLAY ─────────────────────────────────────────────────────────────
-    res         = st.session_state["ns_results"]
+    res         = st.session_state.ns_results
     forecast_df = res["forecast_df"]
     bdc_pivot   = res["bdc_pivot"]
-    omc_df_disp = res["omc_df"]
+    omc_df      = res["omc_df"]
     depl_lbl    = res["depl_lbl"]
     day_lbl     = res["day_lbl"]
 
     st.markdown("---")
-    st.markdown(f"<h3>🇬🇭 NATIONAL FUEL SUPPLY FORECAST</h3>", unsafe_allow_html=True)
-    st.caption(f"Balance as at latest fetch  |  Loadings window: {res['start_str']} → {res['end_str']}  |  Rate method: {depl_lbl}")
+    st.markdown(f"<h3>🇬🇭 NATIONAL FUEL SUPPLY — {res['start_str']} → {res['end_str']}</h3>",
+                unsafe_allow_html=True)
 
-    if res.get("include_vessels") and res.get("vessel_additive"):
-        va = res["vessel_additive"]
-        st.info("🚢 Vessel pipeline included: " + " | ".join([f"**{p}**: +{v:,.0f} LT" for p, v in va.items()]))
-
-    bs  = res.get("bal_summary",{})
-    os_ = res.get("omc_summary",{})
+    bs, os_ = res.get("bal_summary",{}), res.get("omc_summary",{})
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("Balance Records",  f"{res.get('n_bal_records',0):,}")
     c2.metric("Loading Records",  f"{res.get('n_omc_records',0):,}")
     c3.metric("Balance BDCs ✅",  len(bs.get("success",[])))
     c4.metric("Loadings BDCs ✅", len(os_.get("success",[])))
 
-    # ── KPI Cards ─────────────────────────────────────────────────────────────
     ICONS  = {"PREMIUM":"⛽","GASOIL":"🚛","LPG":"🔵"}
     COLORS = {"PREMIUM":"#00ffff","GASOIL":"#ffaa00","LPG":"#00ff88"}
 
@@ -3244,27 +3328,14 @@ def show_national_stockout():
         days  = row["days_remaining"]
         prod  = row["product"]
         color = COLORS.get(prod,"#fff")
-
-        # Format days display
-        if days == float("inf") or days != days:   # inf or NaN
-            days_txt  = "∞"
-            weeks_txt = "(no depletion data)"
-            stockout  = "N/A"
-        else:
-            days_txt  = f"{days:.1f}"
-            weeks_txt = f"(~{days/7:.1f} weeks)"
-            stockout  = (datetime.now() + timedelta(days=days)).strftime("%d %b %Y")
-
-        if   days == float("inf"):   border, status = "#00ff88","🟢 HEALTHY"
-        elif days < 7:               border, status = "#ff0000","🔴 CRITICAL"
-        elif days < 14:              border, status = "#ffaa00","🟡 WARNING"
-        elif days < 30:              border, status = "#ff6600","🟠 MONITOR"
-        else:                        border, status = "#00ff88","🟢 HEALTHY"
-
-        vessel_line = (
-            f"<div style='color:#00ff88;font-size:11px;'>🚢 +{row['vessel_vol']:,.0f} LT vessel pipeline</div>"
-            if row.get("vessel_vol", 0) > 0 else ""
-        )
+        days_txt  = f"{days:.1f}" if days != float("inf") else "∞"
+        weeks_txt = f"(~{days/7:.1f} weeks)" if days != float("inf") else ""
+        if   days < 7:  border, status = "#ff0000","🔴 CRITICAL"
+        elif days < 14: border, status = "#ffaa00","🟡 WARNING"
+        elif days < 30: border, status = "#ff6600","🟠 MONITOR"
+        else:           border, status = "#00ff88","🟢 HEALTHY"
+        stockout = (datetime.now()+timedelta(days=days)).strftime("%d %b %Y") \
+                   if days != float("inf") else "N/A"
         with col:
             st.markdown(f"""
             <div style='background:rgba(10,14,39,0.85);padding:22px 14px;border-radius:16px;
@@ -3274,62 +3345,34 @@ def show_national_stockout():
                              font-weight:700;margin:6px 0;'>{row["display_name"]}</div>
                 <div style='font-family:Orbitron,sans-serif;font-size:52px;color:{border};
                              font-weight:900;line-height:1;'>{days_txt}</div>
-                <div style='color:#888;font-size:13px;'>{weeks_txt}</div>
-                <div style='color:{border};font-size:14px;font-weight:700;margin:4px 0;'>{status}</div>
-                <hr style='border-color:rgba(255,255,255,0.1);margin:8px 0;'>
-                <div style='font-size:12px;color:#aaa;'>📦 Stock: {row["total_balance"]:,.0f} LT</div>
-                {vessel_line}
-                <div style='font-size:12px;color:#aaa;'>📉 Daily rate: {row["daily_rate"]:,.0f} LT/day</div>
-                <div style='font-size:11px;color:#888;'>({depl_lbl})</div>
-                <div style='font-size:12px;color:{border};font-weight:700;margin-top:4px;'>🗓️ Est. empty: {stockout}</div>
+                <div style='color:#888;font-size:13px;'>{weeks_txt} days of supply</div>
+                <div style='color:{border};font-size:13px;font-weight:700;margin:6px 0;'>{status}</div>
+                <hr style='border-color:rgba(255,255,255,0.1);'>
+                <div style='font-size:12px;color:#888;'>📦 {row["total_balance"]:,.0f} LT stock</div>
+                <div style='font-size:12px;color:#888;'>📉 {row["daily_rate"]:,.0f} LT/day</div>
+                <div style='font-size:12px;color:{border};font-weight:700;'>🗓️ Est. empty: {stockout}</div>
             </div>""", unsafe_allow_html=True)
 
-    # ── Summary table ──────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📊 SUMMARY TABLE")
     sum_rows = []
     for _, row in forecast_df.iterrows():
         days = row["days_remaining"]
-        if   days == float("inf"):   status = "🟢 HEALTHY"
-        elif days < 7:               status = "🔴 CRITICAL"
-        elif days < 14:              status = "🟡 WARNING"
-        elif days < 30:              status = "🟠 MONITOR"
-        else:                        status = "🟢 HEALTHY"
-        days_fmt = f"{days:.1f}" if days != float("inf") else "∞"
+        if   days < 7:  status = "🔴 CRITICAL"
+        elif days < 14: status = "🟡 WARNING"
+        elif days < 30: status = "🟠 MONITOR"
+        else:           status = "🟢 HEALTHY"
         sum_rows.append({
             "Product":                        row["display_name"],
             "National Stock (LT/KG)":         f"{row['total_balance']:,.0f}",
-            "Base Stock":                     f"{row['stock_base']:,.0f}",
-            "Vessel Pipeline (LT)":           f"{row['vessel_vol']:,.0f}" if row.get("vessel_vol",0) else "—",
-            "Daily Rate (LT/day)":            f"{row['daily_rate']:,.0f}",
-            "Rate Method":                    depl_lbl,
-            "Days of Supply":                 days_fmt,
-            "Projected Empty":                (datetime.now()+timedelta(days=days)).strftime("%Y-%m-%d")
+            f"{depl_lbl} (LT)":               f"{row['omc_sales']:,.0f}",
+            f"Daily Rate ({day_lbl}) (LT/d)": f"{row['daily_rate']:,.0f}",
+            "Days of Supply":                  f"{days:.1f}" if days != float("inf") else "∞",
+            "Projected Empty":                 (datetime.now()+timedelta(days=days)).strftime("%Y-%m-%d")
                                                if days != float("inf") else "N/A",
-            "Status":                         status,
+            "Status":                          status,
         })
     st.dataframe(pd.DataFrame(sum_rows), use_container_width=True, hide_index=True)
-
-    # ── Depletion detail ───────────────────────────────────────────────────────
-    if ns_omc is not None and not ns_omc.empty:
-        with st.expander("📈 Daily loadings detail (for rate calculation)", expanded=False):
-            filt2 = ns_omc[ns_omc["Product"].isin(["PREMIUM","GASOIL","LPG"])].copy()
-            filt2["Date_dt"] = pd.to_datetime(filt2["Date"], errors="coerce")
-            daily_detail = (
-                filt2.groupby(["Date_dt","Product"])["Quantity"]
-                .sum().reset_index()
-                .rename(columns={"Date_dt":"Date","Quantity":"Daily Volume (LT)"})
-                .sort_values(["Product","Date"])
-            )
-            st.caption(
-                f"Total loadings over window: "
-                + " | ".join([
-                    f"**{p}**: {filt2[filt2['Product']==p]['Quantity'].sum():,.0f} LT "
-                    f"÷ {_eff_days} days = **{rate_by_prod.get(p,0):,.0f} LT/day**"
-                    for p in ["PREMIUM","GASOIL","LPG"]
-                ])
-            )
-            st.dataframe(daily_detail, use_container_width=True, hide_index=True, height=300)
 
     st.markdown("---")
     if not bdc_pivot.empty:
@@ -3343,9 +3386,12 @@ def show_national_stockout():
         st.dataframe(disp, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    excel_sheets = {"Stockout Forecast": pd.DataFrame(sum_rows), "Stock by BDC": bdc_pivot}
-    if omc_df_disp is not None and not omc_df_disp.empty:
-        excel_sheets["OMC Loadings"] = omc_df_disp
+    excel_sheets = {
+        "Stockout Forecast": pd.DataFrame(sum_rows),
+        "Stock by BDC":      bdc_pivot,
+    }
+    if not omc_df.empty:
+        excel_sheets["OMC Loadings"] = omc_df
     excel_bytes = _to_excel_bytes(excel_sheets)
     st.download_button("⬇️ DOWNLOAD NATIONAL REPORT", excel_bytes, "national_stockout.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -3356,23 +3402,27 @@ def show_national_stockout():
 # ══════════════════════════════════════════════════════════════
 def show_world_monitor():
     st.markdown("<h2>🌍 WORLD RISK MONITOR</h2>", unsafe_allow_html=True)
+
     st.markdown("""
     <div style='background:rgba(255,0,0,0.05);border:1px solid #ff000033;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#ff4444;'>🔴 LIVE GLOBAL INTELLIGENCE</b><br>
     Real-time global threat and supply-chain risk map — conflicts, sanctions, weather,
-    shipping lane disruptions, power outages and more.
+    shipping lane disruptions, power outages and more — aggregated from 100+ OSINT feeds.
     </div>
     """, unsafe_allow_html=True)
+
     st.markdown("""
     <div style='background:rgba(22,33,62,0.6);padding:40px;border-radius:15px;
                 border:2px solid #00ffff;text-align:center;margin:20px 0;'>
         <div style='font-size:80px;margin-bottom:20px;'>🌍</div>
         <h3 style='color:#00ffff;margin:0;'>WORLD RISK MONITOR</h3>
         <p style='color:#888;margin:10px 0 20px;'>
-            25 live data layers · 7-day rolling window · WebGL satellite base map
+            25 live data layers · 7-day rolling window · WebGL satellite base map<br>
+            Conflicts · Nuclear · Military · Sanctions · Weather · Waterways · Outages
         </p>
     </div>""", unsafe_allow_html=True)
+
     st.link_button("🌍 OPEN WORLD RISK MONITOR", WORLD_MONITOR_URL, use_container_width=True)
     st.caption(f"Opens in a new tab.  Source: {WORLD_MONITOR_URL.split('?')[0]}")
 
@@ -3381,11 +3431,12 @@ def show_world_monitor():
 # PAGE: VESSEL SUPPLY
 # ══════════════════════════════════════════════════════════════
 def show_vessel_supply():
-    VCOLS  = {"PREMIUM":"#00ffff","GASOIL":"#ffaa00","LPG":"#00ff88","NAPHTHA":"#ff6600"}
-    VICONS = {"PREMIUM":"⛽","GASOIL":"🚛","LPG":"🔵","NAPHTHA":"🟠"}
+    VCOLS  = {"PREMIUM":"#00ffff","GASOIL":"#ffaa00","LPG":"#00ff88","NAPHTHA":"#ff6600","CRUDE OIL":"#cc6600"}
+    VICONS = {"PREMIUM":"⛽","GASOIL":"🚛","LPG":"🔵","NAPHTHA":"🟠","CRUDE OIL":"🛢️"}
     MONTH_ORDER = ["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"]
 
     st.markdown("<h2>🚢 VESSEL SUPPLY TRACKER</h2>", unsafe_allow_html=True)
+
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
@@ -3401,7 +3452,7 @@ def show_vessel_supply():
                                   key="vessel_url")
     with col2:
         year_opts = ["2025","2024","2026"]
-        prev_year = st.session_state.get("vessel_year_sel","2025")
+        prev_year = st.session_state.get("vessel_year_sel", "2025")
         year_idx  = year_opts.index(prev_year) if prev_year in year_opts else 0
         year_sel  = st.selectbox("Data Year", year_opts, index=year_idx, key="vessel_year_sel")
 
@@ -3430,6 +3481,23 @@ def show_vessel_supply():
     discharged = df[df["Status"]=="DISCHARGED"]
     pending    = df[df["Status"]=="PENDING"]
 
+    # ── Crude Oil toggle ─────────────────────────────────────
+    all_prods     = df["Product"].unique().tolist()
+    has_crude     = "CRUDE OIL" in all_prods
+    show_crude    = False
+    if has_crude:
+        show_crude = st.toggle(
+            "🛢️ Include Crude Oil in view",
+            value=st.session_state.get("vessel_show_crude", False),
+            key="vessel_show_crude",
+            help="Toggle to show or hide Crude Oil vessels in all counts, charts and tables below.",
+        )
+    if not show_crude:
+        df         = df[df["Product"] != "CRUDE OIL"]
+        discharged = discharged[discharged["Product"] != "CRUDE OIL"]
+        pending    = pending[pending["Product"] != "CRUDE OIL"]
+    # ─────────────────────────────────────────────────────────
+
     c1,c2,c3,c4 = st.columns(4)
     c1.metric("Total Vessels", len(df))
     c2.metric("Discharged",    f"{len(discharged)}  ({discharged['Quantity_Litres'].sum()/1e6:.2f}M LT)")
@@ -3440,14 +3508,12 @@ def show_vessel_supply():
     st.markdown("### ⏳ PENDING VESSELS — Supply Pipeline")
 
     if pending.empty:
-        st.success("✅ No pending vessels.")
+        st.success("✅ No pending vessels — all recorded vessels have discharged.")
     else:
-        pp    = pending.groupby("Product").agg(
-            Vessels=("Vessel_Name","count"),
-            Volume_LT=("Quantity_Litres","sum"),
-            Volume_MT=("Quantity_MT","sum"),
-        ).reset_index()
-        pcols = st.columns(min(len(pp), 4))
+        pp = pending.groupby("Product").agg(Vessels=("Vessel_Name","count"),
+                                            Volume_LT=("Quantity_Litres","sum"),
+                                            Volume_MT=("Quantity_MT","sum")).reset_index()
+        pcols = st.columns(min(len(pp),4))
         for col,(_, row) in zip(pcols, pp.iterrows()):
             prod  = row["Product"]
             color = VCOLS.get(prod,"#fff")
@@ -3474,8 +3540,10 @@ def show_vessel_supply():
 
     with tab1:
         if not discharged.empty:
-            monthly = (discharged.groupby(["Month","Product"])["Quantity_Litres"].sum().reset_index())
-            monthly["Month"] = pd.Categorical(monthly["Month"], categories=MONTH_ORDER, ordered=True)
+            monthly = (discharged.groupby(["Month","Product"])["Quantity_Litres"]
+                       .sum().reset_index())
+            monthly["Month"] = pd.Categorical(monthly["Month"],
+                                              categories=MONTH_ORDER, ordered=True)
             monthly = monthly.sort_values("Month")
             fig = go.Figure()
             for prod in monthly["Product"].unique():
@@ -3503,7 +3571,9 @@ def show_vessel_supply():
                          use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    excel_bytes = _to_excel_bytes({"All Vessels": df, "Discharged": discharged, "Pending": pending})
+    excel_bytes = _to_excel_bytes({
+        "All Vessels": df, "Discharged": discharged, "Pending": pending,
+    })
     st.download_button("⬇️ DOWNLOAD VESSEL EXCEL", excel_bytes,
                        f"vessel_data_{yr_lbl}.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
@@ -3523,7 +3593,8 @@ def main():
     </div>""", unsafe_allow_html=True)
 
     with st.sidebar:
-        st.markdown("<h2 style='text-align:center;'>🎯 MISSION CONTROL</h2>", unsafe_allow_html=True)
+        st.markdown("<h2 style='text-align:center;'>🎯 MISSION CONTROL</h2>",
+                    unsafe_allow_html=True)
 
         choice = st.radio("", [
             "🏦 BDC BALANCE",
@@ -3541,37 +3612,33 @@ def main():
         n_bdcs = len(BDC_USER_MAP)
 
         has_bal  = bool(st.session_state.get("bdc_records"))
-        has_omc  = not st.session_state.get("omc_df",       pd.DataFrame()).empty
-        has_dly  = not st.session_state.get("daily_df",     pd.DataFrame()).empty
+        has_omc  = not st.session_state.get("omc_df", pd.DataFrame()).empty
+        has_dly  = not st.session_state.get("daily_df", pd.DataFrame()).empty
         has_txn  = not st.session_state.get("stock_txn_df", pd.DataFrame()).empty
-        has_ves  = not st.session_state.get("vessel_data",  pd.DataFrame()).empty
-        has_out  = not st.session_state.get("outturn_df",   pd.DataFrame()).empty
+        has_ves  = not st.session_state.get("vessel_data", pd.DataFrame()).empty
+        has_out  = not st.session_state.get("outturn_df", pd.DataFrame()).empty
 
         badges = {
-            "Balance":   "✅" if has_bal  else "○",
-            "OMC Load":  "✅" if has_omc  else "○",
-            "Daily Ord": "✅" if has_dly  else "○",
-            "Stock Txn": "✅" if has_txn  else "○",
-            "Vessels":   "✅" if has_ves  else "○",
-            "Outturn":   "✅" if has_out  else "○",
+            "Balance":   ("🟢","✅" if has_bal  else "○"),
+            "OMC Load":  ("🟢","✅" if has_omc  else "○"),
+            "Daily Ord": ("🟢","✅" if has_dly  else "○"),
+            "Stock Txn": ("🟢","✅" if has_txn  else "○"),
+            "Vessels":   ("🟢","✅" if has_ves  else "○"),
+            "Outturn":   ("🟢","✅" if has_out  else "○"),
         }
 
-        st.markdown(
-            "<div style='background:rgba(0,255,255,0.05);padding:14px;border-radius:10px;"
-            "border:1px solid #00ffff44;font-size:13px;'>"
-            "<b style='color:#00ffff;'>📊 DATA STATUS</b><br>" +
-            "".join([
-                f"<span style='color:{'#00ff88' if v=='✅' else '#888'};'>{v} {k}</span><br>"
-                for k, v in badges.items()
-            ]) +
-            f"<br><span style='color:#888;font-size:11px;'>{n_bdcs} BDCs in .env</span>"
-            "</div>",
-            unsafe_allow_html=True,
-        )
+        st.markdown("""
+        <div style='background:rgba(0,255,255,0.05);padding:14px;border-radius:10px;
+                    border:1px solid #00ffff44;font-size:13px;'>
+        <b style='color:#00ffff;'>📊 DATA STATUS</b><br>""" +
+        "".join([f"<span style='color:{'#00ff88' if v[1]=='✅' else '#888'};'>"
+                 f"{v[1]} {k}</span><br>" for k,v in badges.items()]) +
+        f"<br><span style='color:#888;font-size:11px;'>{n_bdcs} BDCs in .env</span>"
+        "</div>", unsafe_allow_html=True)
 
         st.markdown("---")
 
-        # Safe two-click clear cache
+        # ── SAFE CLEAR CACHE — requires confirmation to prevent accidental trigger ──
         st.markdown(
             "<div style='background:rgba(255,0,0,0.08);padding:10px;border-radius:8px;"
             "border:1px solid #ff000044;'>"
@@ -3579,28 +3646,25 @@ def main():
             "</div>",
             unsafe_allow_html=True,
         )
-
-        armed = st.session_state.get("_clear_armed", False)
-        if not armed:
-            if st.button("🗑️ CLEAR ALL CACHED DATA", key="clear_cache_arm_btn"):
-                st.session_state["_clear_armed"] = True
-                st.rerun()
-        else:
-            st.warning("⚠️ This will wipe **all** fetched data permanently. Are you sure?")
-            col_y, col_n = st.columns(2)
-            with col_y:
-                if st.button("✅ Yes, clear", key="clear_confirm_yes"):
-                    _clear_all_persisted()
-                    st.session_state["_clear_armed"] = False
-                    st.success("✅ All cached data cleared.")
-                    st.rerun()
-            with col_n:
-                if st.button("❌ Cancel", key="clear_confirm_no"):
-                    st.session_state["_clear_armed"] = False
-                    st.rerun()
+        confirm_clear = st.checkbox(
+            "✔ Confirm: I want to clear all cached data",
+            value=False,
+            key="confirm_clear_cache",
+        )
+        clear_btn = st.button(
+            "🗑️ CLEAR ALL CACHED DATA",
+            key="clear_cache_btn",
+            disabled=not confirm_clear,
+        )
+        if clear_btn and confirm_clear:
+            _clear_all_persisted()
+            # Reset the confirmation checkbox
+            st.session_state["confirm_clear_cache"] = False
+            st.success("✅ All cached data cleared.")
+            st.rerun()
 
         st.markdown("""
-        <div style='text-align:center;padding:12px;background:rgba(255,0,0,0.08);
+        <div style='text-align:center;padding:12px;background:rgba(255,0,255,0.08);
                     border-radius:10px;border:2px solid #ff00ff;'>
             <b style='color:#ff00ff;'>⚙️ SYSTEM STATUS</b><br>
             <span style='color:#00ff88;font-size:16px;'>🟢 OPERATIONAL</span>
