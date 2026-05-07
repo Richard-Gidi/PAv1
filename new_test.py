@@ -39,6 +39,18 @@ Fixed version:
       * Removed widget-key mutation that caused StreamlitAPIException on clear.
       * All widget selections (dates, multiselects, checkboxes) are persisted
         in session_state so they survive menu navigation.
+  - VESSEL DOUBLE-COUNT FIX:
+      * National Stockout stores raw balance_by_prod (WITHOUT vessels) and
+        applies vessel uplift only at display time, never baking it into stored
+        results. Toggling the checkbox or rerunning the page no longer
+        accumulates vessel volumes on top of previous vessel volumes.
+  - WIDGET STATE PERSISTENCE FIX:
+      * All date_input / multiselect / checkbox / selectbox widgets now pass
+        their persisted value through the `value=` / `default=` parameter
+        rather than relying on the key-based session_state write, which
+        Streamlit can silently discard when a widget is destroyed on navigation.
+        The on_change callback pattern writes back to a separate shadow key so
+        the value survives page switches cleanly.
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -353,6 +365,11 @@ _PERSIST_KEYS = {
 }
 
 # ── Widget-state persistence keys (selections that survive menu nav) ──
+# These are SHADOW keys — we write to them via on_change callbacks and
+# read them back as `value=` / `default=` parameters.  Streamlit then
+# manages the widget's own key independently, which avoids the
+# "widget key mutated after render" exception and keeps values alive
+# when the widget is temporarily destroyed during navigation.
 _WIDGET_STATE_DEFAULTS = {
     # BDC Balance
     "bal_bdc_select":      [],
@@ -431,7 +448,7 @@ def _restore_session_state() -> None:
         if key not in st.session_state:
             st.session_state[key] = _load_state(key)
 
-    # Restore widget selections
+    # Restore widget shadow-state selections
     _today = datetime.now().date()
     _date_defaults = {
         "omc_start":   _today - timedelta(days=7),
@@ -473,6 +490,93 @@ def _clear_all_persisted() -> None:
             except Exception:
                 pass
         st.session_state[key] = default
+
+
+# ══════════════════════════════════════════════════════════════
+# WIDGET SHADOW-STATE HELPERS
+# ══════════════════════════════════════════════════════════════
+# Pattern: every interactive widget uses a SHADOW key (e.g. "omc_start")
+# for its persisted value, and a WIDGET key (e.g. "_w_omc_start") for
+# Streamlit's own internal tracking.  An on_change callback copies the
+# widget key → shadow key so the value is never lost on navigation.
+
+def _ss(shadow_key: str):
+    """Read from shadow key with safe fallback."""
+    return st.session_state.get(shadow_key)
+
+
+def _make_cb(widget_key: str, shadow_key: str):
+    """Return an on_change callback that copies widget → shadow."""
+    def _cb():
+        st.session_state[shadow_key] = st.session_state[widget_key]
+    return _cb
+
+
+def _date_input(label: str, shadow_key: str, fallback, **kwargs):
+    """date_input wired to shadow-state persistence."""
+    val = st.session_state.get(shadow_key, fallback)
+    widget_key = f"_w_{shadow_key}"
+    result = st.date_input(
+        label, value=val, key=widget_key,
+        on_change=_make_cb(widget_key, shadow_key), **kwargs
+    )
+    st.session_state[shadow_key] = result
+    return result
+
+
+def _checkbox(label: str, shadow_key: str, fallback: bool = False, **kwargs):
+    """checkbox wired to shadow-state persistence."""
+    val = st.session_state.get(shadow_key, fallback)
+    widget_key = f"_w_{shadow_key}"
+    result = st.checkbox(
+        label, value=val, key=widget_key,
+        on_change=_make_cb(widget_key, shadow_key), **kwargs
+    )
+    st.session_state[shadow_key] = result
+    return result
+
+
+def _multiselect(label: str, options: list, shadow_key: str, fallback=None, **kwargs):
+    """multiselect wired to shadow-state persistence."""
+    saved = st.session_state.get(shadow_key, fallback if fallback is not None else [])
+    # Guard: remove stale options that no longer exist
+    if isinstance(saved, list):
+        saved = [v for v in saved if v in options]
+    widget_key = f"_w_{shadow_key}"
+    result = st.multiselect(
+        label, options, default=saved, key=widget_key,
+        on_change=_make_cb(widget_key, shadow_key), **kwargs
+    )
+    st.session_state[shadow_key] = result
+    return result
+
+
+def _selectbox(label: str, options: list, shadow_key: str, fallback=None, **kwargs):
+    """selectbox wired to shadow-state persistence."""
+    saved = st.session_state.get(shadow_key, fallback)
+    idx = 0
+    if saved in options:
+        idx = options.index(saved)
+    widget_key = f"_w_{shadow_key}"
+    result = st.selectbox(
+        label, options, index=idx, key=widget_key,
+        on_change=_make_cb(widget_key, shadow_key), **kwargs
+    )
+    st.session_state[shadow_key] = result
+    return result
+
+
+def _radio(label: str, options: list, shadow_key: str, fallback=None, **kwargs):
+    """radio wired to shadow-state persistence."""
+    saved = st.session_state.get(shadow_key, fallback if fallback else options[0])
+    idx = options.index(saved) if saved in options else 0
+    widget_key = f"_w_{shadow_key}"
+    result = st.radio(
+        label, options, index=idx, key=widget_key,
+        on_change=_make_cb(widget_key, shadow_key), **kwargs
+    )
+    st.session_state[shadow_key] = result
+    return result
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1805,23 +1909,23 @@ def show_bdc_balance():
 
     col1, col2 = st.columns([3,1])
     with col1:
-        selected = st.multiselect(
+        selected = _multiselect(
             f"Select specific BDCs to fetch  (leave blank to fetch all {n_configured})",
-            all_bdc_names, key="bal_bdc_select",
+            all_bdc_names, shadow_key="bal_bdc_select",
         )
     with col2:
         st.markdown("<br>", unsafe_allow_html=True)
-        fetch_all_flag = st.checkbox("Fetch ALL BDCs", value=st.session_state.get("bal_fetch_all", True), key="bal_fetch_all")
+        fetch_all_flag = _checkbox("Fetch ALL BDCs", shadow_key="bal_fetch_all", fallback=True)
 
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
 
     has_previous = bool(st.session_state.get("bdc_records"))
     merge_prev   = False
     if has_previous:
-        merge_prev = st.checkbox(
+        merge_prev = _checkbox(
             "🔀 Merge this fetch with previous results "
             "(adds any BDCs that were missing last time, keeps best balance for duplicates)",
-            value=st.session_state.get("bal_merge_prev", True), key="bal_merge_prev",
+            shadow_key="bal_merge_prev", fallback=True,
         )
 
     st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** will be queried  "
@@ -1910,10 +2014,10 @@ def show_bdc_balance():
 
     st.markdown("---")
     st.markdown("### 🔍 FILTER & EXPLORE")
-    ft = st.selectbox("Filter by", ["Product","BDC","Depot"], key="bal_ftype")
+    ft = _selectbox("Filter by", ["Product","BDC","Depot"], shadow_key="bal_ftype")
     _cmap = {"Product":"Product","BDC":"BDC","Depot":"DEPOT"}
     opts  = ["ALL"] + sorted(df[_cmap[ft]].unique().tolist())
-    fval  = st.selectbox("Value", opts, key="bal_fval")
+    fval  = _selectbox("Value", opts, shadow_key="bal_fval")
     filt  = df if fval=="ALL" else df[df[_cmap[ft]]==fval]
 
     st.caption(f"Showing **{len(filt):,}** records  |  "
@@ -1957,17 +2061,19 @@ def show_omc_loadings():
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start Date", value=st.session_state.get("omc_start", datetime.now()-timedelta(days=7)), key="omc_start")
+        start_date = _date_input("Start Date", shadow_key="omc_start",
+                                 fallback=datetime.now().date()-timedelta(days=7))
     with col2:
-        end_date = st.date_input("End Date", value=st.session_state.get("omc_end", datetime.now()), key="omc_end")
+        end_date = _date_input("End Date", shadow_key="omc_end",
+                               fallback=datetime.now().date())
 
     col3, col4 = st.columns([3,1])
     with col3:
-        selected = st.multiselect(f"Select BDCs (blank = all {n_configured})",
-                                  all_bdc_names, key="omc_bdc_select")
+        selected = _multiselect(f"Select BDCs (blank = all {n_configured})",
+                                all_bdc_names, shadow_key="omc_bdc_select")
     with col4:
         st.markdown("<br>", unsafe_allow_html=True)
-        fetch_all_flag = st.checkbox("Fetch ALL", value=st.session_state.get("omc_fetch_all", True), key="omc_fetch_all")
+        fetch_all_flag = _checkbox("Fetch ALL", shadow_key="omc_fetch_all", fallback=True)
 
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
     period_days   = max((end_date - start_date).days, 1)
@@ -1975,9 +2081,9 @@ def show_omc_loadings():
     has_previous = not st.session_state.get("omc_df", pd.DataFrame()).empty
     merge_prev   = False
     if has_previous:
-        merge_prev = st.checkbox(
+        merge_prev = _checkbox(
             "🔀 Merge this fetch with previous results",
-            value=st.session_state.get("omc_merge_prev", True), key="omc_merge_prev",
+            shadow_key="omc_merge_prev", fallback=True,
         )
 
     st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
@@ -2063,10 +2169,10 @@ def show_omc_loadings():
     st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    ft    = st.selectbox("Filter by", ["Product","OMC","BDC","Depot"], key="omc_ftype")
+    ft    = _selectbox("Filter by", ["Product","OMC","BDC","Depot"], shadow_key="omc_ftype")
     _cmap = {"Product":"Product","OMC":"OMC","BDC":"BDC","Depot":"Depot"}
     opts  = ["ALL"] + sorted(df[_cmap[ft]].unique().tolist())
-    fval  = st.selectbox("Value", opts, key="omc_fval")
+    fval  = _selectbox("Value", opts, shadow_key="omc_fval")
     filt  = df if fval=="ALL" else df[df[_cmap[ft]]==fval]
     st.caption(f"Showing **{len(filt):,}** records | "
                f"Volume: **{filt['Quantity'].sum():,.0f} LT**")
@@ -2121,17 +2227,19 @@ def show_daily_orders():
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input("Start Date", value=st.session_state.get("daily_start", datetime.now()-timedelta(days=1)), key="daily_start")
+        start_date = _date_input("Start Date", shadow_key="daily_start",
+                                 fallback=datetime.now().date()-timedelta(days=1))
     with col2:
-        end_date = st.date_input("End Date", value=st.session_state.get("daily_end", datetime.now()), key="daily_end")
+        end_date = _date_input("End Date", shadow_key="daily_end",
+                               fallback=datetime.now().date())
 
     col3, col4 = st.columns([3,1])
     with col3:
-        selected = st.multiselect(f"Select BDCs (blank = all {n_configured})",
-                                  all_bdc_names, key="daily_bdc_select")
+        selected = _multiselect(f"Select BDCs (blank = all {n_configured})",
+                                all_bdc_names, shadow_key="daily_bdc_select")
     with col4:
         st.markdown("<br>", unsafe_allow_html=True)
-        fetch_all_flag = st.checkbox("Fetch ALL", value=st.session_state.get("daily_fetch_all", True), key="daily_fetch_all")
+        fetch_all_flag = _checkbox("Fetch ALL", shadow_key="daily_fetch_all", fallback=True)
 
     bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
     period_days   = max((end_date - start_date).days, 1)
@@ -2139,9 +2247,9 @@ def show_daily_orders():
     has_previous = not st.session_state.get("daily_df", pd.DataFrame()).empty
     merge_prev   = False
     if has_previous:
-        merge_prev = st.checkbox(
+        merge_prev = _checkbox(
             "🔀 Merge this fetch with previous results",
-            value=st.session_state.get("daily_merge_prev", True), key="daily_merge_prev",
+            shadow_key="daily_merge_prev", fallback=True,
         )
 
     omc_df_for_lookup = st.session_state.get("omc_df", pd.DataFrame())
@@ -2284,13 +2392,13 @@ def show_daily_orders():
     st.dataframe(pivot.sort_values("TOTAL", ascending=False), use_container_width=True, hide_index=True)
 
     st.markdown("---")
-    ft    = st.selectbox("Filter by", ["Product","BDC","Depot","Status","OMC Name"], key="daily_ftype")
+    ft    = _selectbox("Filter by", ["Product","BDC","Depot","Status","OMC Name"], shadow_key="daily_ftype")
     _cmap = {"Product":"Product","BDC":"BDC","Depot":"Depot","Status":"Status","OMC Name":"OMC Name"}
     col_for_filter = _cmap[ft]
     if col_for_filter not in df.columns:
         df[col_for_filter] = ""
     opts  = ["ALL"] + sorted(df[col_for_filter].dropna().unique().tolist())
-    fval  = st.selectbox("Value", opts, key="daily_fval")
+    fval  = _selectbox("Value", opts, shadow_key="daily_fval")
     filt  = df if fval=="ALL" else df[df[col_for_filter]==fval]
     st.caption(f"Showing **{len(filt):,}** records | "
                f"Volume: **{filt['Quantity'].sum():,.0f} LT**")
@@ -2354,10 +2462,7 @@ def show_market_share():
         set(loadings_df["BDC"].unique() if not loadings_df.empty else [])
     )
 
-    prev_bdc = st.session_state.get("ms_bdc")
-    default_idx = all_bdcs.index(prev_bdc) if prev_bdc and prev_bdc in all_bdcs else 0
-
-    selected_bdc = st.selectbox("Choose BDC to analyse:", all_bdcs, index=default_idx, key="ms_bdc")
+    selected_bdc = _selectbox("Choose BDC to analyse:", all_bdcs, shadow_key="ms_bdc")
     if not selected_bdc:
         return
 
@@ -2448,25 +2553,20 @@ def show_stock_transaction():
     all_bdcs   = sorted(BDC_MAP.keys())
     all_depots = sorted(DEPOT_MAP.keys())
 
-    prev_bdc     = st.session_state.get("txn_bdc_label")
-    prev_depot   = st.session_state.get("txn_depot_label")
-    prev_product = st.session_state.get("txn_product_label")
-    bdc_idx      = all_bdcs.index(prev_bdc)     if prev_bdc     and prev_bdc     in all_bdcs   else 0
-    depot_idx    = all_depots.index(prev_depot)  if prev_depot   and prev_depot   in all_depots else 0
-    prod_idx     = PRODUCT_OPTIONS.index(prev_product) if prev_product and prev_product in PRODUCT_OPTIONS else 0
-
     c1, c2 = st.columns(2)
     with c1:
-        selected_bdc     = st.selectbox("BDC",     all_bdcs,         index=bdc_idx,  key="txn_bdc")
-        selected_product = st.selectbox("Product",  PRODUCT_OPTIONS,  index=prod_idx, key="txn_prod")
+        selected_bdc     = _selectbox("BDC",     all_bdcs,         shadow_key="txn_bdc_label")
+        selected_product = _selectbox("Product",  PRODUCT_OPTIONS,  shadow_key="txn_product_label")
     with c2:
-        selected_depot   = st.selectbox("Depot",    all_depots,       index=depot_idx, key="txn_depot")
+        selected_depot   = _selectbox("Depot",    all_depots,       shadow_key="txn_depot_label")
 
     c3, c4 = st.columns(2)
     with c3:
-        start_date = st.date_input("Start Date", value=st.session_state.get("txn_start", datetime.now()-timedelta(days=30)), key="txn_start")
+        start_date = _date_input("Start Date", shadow_key="txn_start",
+                                 fallback=datetime.now().date()-timedelta(days=30))
     with c4:
-        end_date   = st.date_input("End Date",   value=st.session_state.get("txn_end",   datetime.now()),                    key="txn_end")
+        end_date   = _date_input("End Date",   shadow_key="txn_end",
+                                 fallback=datetime.now().date())
 
     if st.button("📊 FETCH TRANSACTION REPORT", key="txn_fetch"):
         bdc_id     = BDC_MAP[selected_bdc]
@@ -2583,27 +2683,25 @@ def show_product_outturn():
 
     col1, col2 = st.columns(2)
     with col1:
-        start_date = st.date_input(
-            "Start Date",
-            value=st.session_state.get("ot_start", datetime.now() - timedelta(days=30)),
-            key="ot_start",
-        )
+        start_date = _date_input("Start Date", shadow_key="ot_start",
+                                 fallback=datetime.now().date()-timedelta(days=30))
     with col2:
-        end_date = st.date_input("End Date", value=st.session_state.get("ot_end", datetime.now()), key="ot_end")
+        end_date = _date_input("End Date", shadow_key="ot_end",
+                               fallback=datetime.now().date())
 
     all_bdc_names = sorted(BDC_MAP.keys())
     n_total_bdcs  = len(all_bdc_names)
 
     col3, col4 = st.columns([3, 1])
     with col3:
-        sel_bdcs = st.multiselect(
+        sel_bdcs = _multiselect(
             f"Select BDCs  (blank = all {n_total_bdcs})",
             all_bdc_names,
-            key="ot_bdc_select",
+            shadow_key="ot_bdc_select",
         )
     with col4:
         st.markdown("<br>", unsafe_allow_html=True)
-        fetch_all_bdcs = st.checkbox("All BDCs", value=st.session_state.get("ot_all_bdcs", True), key="ot_all_bdcs")
+        fetch_all_bdcs = _checkbox("All BDCs", shadow_key="ot_all_bdcs", fallback=True)
 
     bdcs_to_sweep = all_bdc_names if (fetch_all_bdcs or not sel_bdcs) else sel_bdcs
 
@@ -2614,12 +2712,15 @@ def show_product_outturn():
 
     col5, col6 = st.columns([4, 1])
     with col5:
+        _saved_depots = st.session_state.get("ot_depots_selection", _resolve_default_depots())
+        _valid_saved  = [d for d in _saved_depots if d in all_depot_names]
         sel_depots = st.multiselect(
-            f"Depots  (default {len(st.session_state.get('ot_depots_selection', []))}, total {n_total_depots})",
+            f"Depots  (default {len(_valid_saved)}, total {n_total_depots})",
             options=all_depot_names,
-            default=st.session_state.get("ot_depots_selection", _resolve_default_depots()),
-            key="ot_depot_multiselect",
+            default=_valid_saved,
+            key="_w_ot_depot_multiselect",
         )
+        st.session_state["ot_depots_selection"] = sel_depots
     with col6:
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("↩️ Reset", key="ot_reset_depots"):
@@ -2627,13 +2728,15 @@ def show_product_outturn():
             st.rerun()
 
     depots_to_sweep = sel_depots if sel_depots else st.session_state.get("ot_depots_selection", _resolve_default_depots())
-    st.session_state["ot_depots_selection"] = depots_to_sweep
 
+    _saved_products = st.session_state.get("ot_products", PRODUCT_OPTIONS[:])
+    _valid_products = [p for p in _saved_products if p in PRODUCT_OPTIONS]
     sel_products = st.multiselect(
         "Products", PRODUCT_OPTIONS,
-        default=st.session_state.get("ot_products", PRODUCT_OPTIONS[:]),
-        key="ot_products",
+        default=_valid_products,
+        key="_w_ot_products",
     )
+    st.session_state["ot_products"] = sel_products
     if not sel_products:
         sel_products = PRODUCT_OPTIONS
 
@@ -2655,9 +2758,9 @@ def show_product_outturn():
     merge_prev = False
     has_prev   = not st.session_state.get("outturn_df", pd.DataFrame()).empty
     if has_prev:
-        merge_prev = st.checkbox(
+        merge_prev = _checkbox(
             "🔀 Merge with previous outturn results",
-            value=st.session_state.get("ot_merge_prev", True), key="ot_merge_prev",
+            shadow_key="ot_merge_prev", fallback=True,
         )
 
     running = st.session_state.ot_sweep_running
@@ -3029,49 +3132,46 @@ def show_national_stockout():
 
     c1, c2 = st.columns(2)
     with c1:
-        start_date = st.date_input("Loadings History — From",
-                                   value=st.session_state.get("ns_start", datetime.now()-timedelta(days=30)), key="ns_start")
+        start_date = _date_input("Loadings History — From", shadow_key="ns_start",
+                                 fallback=datetime.now().date()-timedelta(days=30))
     with c2:
-        end_date   = st.date_input("Loadings History — To",
-                                   value=st.session_state.get("ns_end", datetime.now()), key="ns_end")
+        end_date   = _date_input("Loadings History — To", shadow_key="ns_end",
+                                 fallback=datetime.now().date())
 
     start_str   = start_date.strftime("%m/%d/%Y")
     end_str     = end_date.strftime("%m/%d/%Y")
     period_days = max((end_date - start_date).days, 1)
 
-    day_type = st.radio(
+    day_type = _radio(
         "Day-type for daily rate denominator",
         ["📆 Calendar Days (default)","💼 Business Days (Mon–Fri only)"],
-        index=["📆 Calendar Days (default)","💼 Business Days (Mon–Fri only)"].index(
-            st.session_state.get("ns_day_type", "📆 Calendar Days (default)")
-        ),
-        horizontal=True, key="ns_day_type",
+        shadow_key="ns_day_type",
+        fallback="📆 Calendar Days (default)",
+        horizontal=True,
     )
     use_biz = "Business" in day_type
 
-    depl_mode = st.radio(
+    depl_mode = _radio(
         "Depletion rate method",
         ["📊 Average Daily Loadings","🔥 Maximum Single-Day Loading (stress test)","📊 Median Daily Loadings"],
-        index=["📊 Average Daily Loadings","🔥 Maximum Single-Day Loading (stress test)","📊 Median Daily Loadings"].index(
-            st.session_state.get("ns_depl_mode", "📊 Average Daily Loadings")
-        ),
-        key="ns_depl_mode",
+        shadow_key="ns_depl_mode",
+        fallback="📊 Average Daily Loadings",
     )
     use_max    = "Maximum" in depl_mode
     use_median = "Median"  in depl_mode
 
-    exclude_tor = st.checkbox(
+    exclude_tor = _checkbox(
         "❌ Exclude TEMA OIL REFINERY (TOR) from LPG stock",
-        value=st.session_state.get("ns_excl_tor", False), key="ns_excl_tor",
+        shadow_key="ns_excl_tor", fallback=False,
     )
 
     _vessel_df     = st.session_state.get("vessel_data", pd.DataFrame())
     _vessel_loaded = isinstance(_vessel_df, pd.DataFrame) and not _vessel_df.empty
     _pending_n     = int((_vessel_df["Status"]=="PENDING").sum()) if _vessel_loaded else 0
 
-    include_vessels = st.checkbox(
+    include_vessels = _checkbox(
         "🚢 Add pending vessel cargo to stock totals",
-        value=st.session_state.get("ns_vessels", False), key="ns_vessels",
+        shadow_key="ns_vessels", fallback=False,
     )
     if include_vessels and not _vessel_loaded:
         st.warning("No vessel data loaded — go to 🚢 Vessel Supply and fetch first.")
@@ -3115,7 +3215,8 @@ def show_national_stockout():
                     excl_v = bal_df[mask][col_bal].sum()
                     bal_df = bal_df[~mask].copy()
                     st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
-                balance_by_prod = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
+                # Store RAW balance totals (WITHOUT vessel uplift) — vessels applied at display time
+                balance_by_prod_raw = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
         else:
             with st.status("📡 Step 1 / 2 — Fetching BDC stock balances…", expanded=True):
                 prog1      = st.progress(0, text="Starting…")
@@ -3144,16 +3245,8 @@ def show_national_stockout():
                     bal_df = bal_df[~mask].copy()
                     st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
 
-                balance_by_prod = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
-
-        if include_vessels and _vessel_loaded:
-            pend = _vessel_df[_vessel_df["Status"]=="PENDING"]
-            if not pend.empty:
-                for prod, vol in pend.groupby("Product")["Quantity_Litres"].sum().items():
-                    balance_by_prod[prod] = balance_by_prod.get(prod, 0) + vol
-                st.write(f"🚢 Vessel pipeline added: "
-                         + " | ".join([f"{p}: +{v:,.0f} LT" for p,v in
-                                       pend.groupby("Product")["Quantity_Litres"].sum().items()]))
+                # Store RAW balance totals (WITHOUT vessel uplift)
+                balance_by_prod_raw = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
 
         with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings…", expanded=True):
             st.write(f"Querying {n_total} BDCs for loadings from "
@@ -3195,13 +3288,18 @@ def show_national_stockout():
         DISPLAY = {"PREMIUM":"PREMIUM (PMS)","GASOIL":"GASOIL (AGO)","LPG":"LPG"}
         rows_out = []
         for prod in ["PREMIUM","GASOIL","LPG"]:
-            stock = float(balance_by_prod.get(prod, 0))
+            stock = float(balance_by_prod_raw.get(prod, 0))   # raw, no vessel uplift
             dep   = float(omc_by_prod.get(prod, 0))
             daily = dep if (use_median or use_max) else (dep / effective_days if effective_days else 0)
             days  = stock / daily if daily > 0 else float("inf")
-            rows_out.append({"product":prod,"display_name":DISPLAY[prod],
-                             "total_balance":stock,"omc_sales":dep,
-                             "daily_rate":daily,"days_remaining":days})
+            rows_out.append({
+                "product":       prod,
+                "display_name":  DISPLAY[prod],
+                "total_balance": stock,
+                "omc_sales":     dep,
+                "daily_rate":    daily,
+                "days_remaining":days,
+            })
 
         forecast_df = pd.DataFrame(rows_out)
 
@@ -3216,21 +3314,23 @@ def show_national_stockout():
             bdc_pivot["Market Share %"] = (bdc_pivot["TOTAL"] / nat_total * 100).round(2)
             bdc_pivot = bdc_pivot.sort_values("TOTAL", ascending=False)
 
+        # ── Store RAW results — vessel uplift is applied at display time only ──
         st.session_state.ns_results = {
-            "forecast_df":   forecast_df,
-            "bal_df":        bal_df,
-            "omc_df":        omc_df,
-            "bdc_pivot":     bdc_pivot,
-            "period_days":   period_days,
-            "eff_days":      effective_days,
-            "day_lbl":       day_lbl,
-            "depl_lbl":      depl_lbl,
-            "start_str":     start_str,
-            "end_str":       end_str,
-            "bal_summary":   bal_summary,
-            "omc_summary":   omc_summary,
-            "n_bal_records": len(all_records),
-            "n_omc_records": len(omc_df),
+            "forecast_df":       forecast_df,         # raw balance, no vessels baked in
+            "balance_by_prod_raw": balance_by_prod_raw,  # keep raw Series for vessel uplift
+            "bal_df":            bal_df,
+            "omc_df":            omc_df,
+            "bdc_pivot":         bdc_pivot,
+            "period_days":       period_days,
+            "eff_days":          effective_days,
+            "day_lbl":           day_lbl,
+            "depl_lbl":          depl_lbl,
+            "start_str":         start_str,
+            "end_str":           end_str,
+            "bal_summary":       bal_summary,
+            "omc_summary":       omc_summary,
+            "n_bal_records":     len(all_records),
+            "n_omc_records":     len(omc_df),
         }
         _save_national_snapshot(forecast_df, f"{period_days}d")
         st.success("✅ Analysis complete — scroll down to see the forecast.")
@@ -3240,12 +3340,34 @@ def show_national_stockout():
         st.info("👆 Configure options above and click **FETCH & ANALYSE**.")
         return
 
-    res         = st.session_state.ns_results
-    forecast_df = res["forecast_df"]
-    bdc_pivot   = res["bdc_pivot"]
-    omc_df      = res["omc_df"]
-    depl_lbl    = res["depl_lbl"]
-    day_lbl     = res["day_lbl"]
+    res              = st.session_state.ns_results
+    forecast_df_raw  = res["forecast_df"]          # raw, vessel-free
+    balance_by_prod_raw = res.get("balance_by_prod_raw", pd.Series(dtype=float))
+    bdc_pivot        = res["bdc_pivot"]
+    omc_df           = res["omc_df"]
+    depl_lbl         = res["depl_lbl"]
+    day_lbl          = res["day_lbl"]
+
+    # ── Apply vessel uplift HERE at display time, every render ──
+    # This means toggling the checkbox instantly updates numbers
+    # without re-fetching and without double-counting.
+    forecast_df = forecast_df_raw.copy()
+    if include_vessels and _vessel_loaded and _pending_n > 0:
+        pend = _vessel_df[_vessel_df["Status"]=="PENDING"]
+        vessel_extra = pend.groupby("Product")["Quantity_Litres"].sum()
+        for i, row in forecast_df.iterrows():
+            prod  = row["product"]
+            extra = float(vessel_extra.get(prod, 0))
+            if extra > 0:
+                new_stock = row["total_balance"] + extra
+                daily     = row["daily_rate"]
+                new_days  = new_stock / daily if daily > 0 else float("inf")
+                forecast_df.at[i, "total_balance"]  = new_stock
+                forecast_df.at[i, "days_remaining"] = new_days
+        st.info(
+            "🚢 Pending vessel cargo included: "
+            + " | ".join([f"{p}: +{v:,.0f} LT" for p,v in vessel_extra.items()])
+        )
 
     st.markdown("---")
     st.markdown(f"<h3>🇬🇭 NATIONAL FUEL SUPPLY — {res['start_str']} → {res['end_str']}</h3>",
@@ -3386,14 +3508,16 @@ def show_vessel_supply():
 
     col1, col2 = st.columns([3,1])
     with col1:
-        sheet_url = st.text_input("Google Sheets URL or File ID",
-                                  value=st.session_state.get("vessel_url", VESSEL_SHEET_URL),
-                                  key="vessel_url")
+        # Use a plain text_input here — no shadow needed, value is self-contained
+        sheet_url = st.text_input(
+            "Google Sheets URL or File ID",
+            value=st.session_state.get("vessel_url", VESSEL_SHEET_URL),
+            key="_w_vessel_url",
+            on_change=lambda: st.session_state.update({"vessel_url": st.session_state["_w_vessel_url"]}),
+        )
     with col2:
         year_opts = ["2025","2024","2026"]
-        prev_year = st.session_state.get("vessel_year_sel", "2025")
-        year_idx  = year_opts.index(prev_year) if prev_year in year_opts else 0
-        year_sel  = st.selectbox("Data Year", year_opts, index=year_idx, key="vessel_year_sel")
+        year_sel  = _selectbox("Data Year", year_opts, shadow_key="vessel_year_sel", fallback="2025")
 
     if st.button("🔄 FETCH VESSEL DATA", key="vessel_fetch"):
         with st.spinner("Loading vessel schedule from Google Sheets…"):
@@ -3561,10 +3685,6 @@ def main():
         st.markdown("---")
 
         # ── SAFE CLEAR CACHE — two-click arm/confirm, no checkbox ──
-        # A checkbox was used here previously but it was accidentally triggered
-        # by Ctrl+C (copy). This two-button pattern avoids that entirely and
-        # also fixes the StreamlitAPIException caused by manually mutating a
-        # widget-owned session_state key after render.
         st.markdown(
             "<div style='background:rgba(255,0,0,0.08);padding:10px;border-radius:8px;"
             "border:1px solid #ff000044;'>"
