@@ -359,9 +359,10 @@ _PERSIST_KEYS = {
     "bdc_records":    [],
     "omc_df":         pd.DataFrame(),
     "daily_df":       pd.DataFrame(),
-    "stock_txn_df":   pd.DataFrame(),
-    "vessel_data":    pd.DataFrame(),
-    "outturn_df":     pd.DataFrame(),
+    "stock_txn_df":    pd.DataFrame(),
+    "depot_txn_df":    pd.DataFrame(),
+    "vessel_data":     pd.DataFrame(),
+    "outturn_df":      pd.DataFrame(),
 }
 
 # ── Widget-state persistence keys (selections that survive menu nav) ──
@@ -396,6 +397,13 @@ _WIDGET_STATE_DEFAULTS = {
     # Stock Transaction
     "txn_start":           None,
     "txn_end":             None,
+    # Depot Stock Transaction
+    "dtxn_start":          None,
+    "dtxn_end":            None,
+    "dtxn_depot_label":    None,
+    "dtxn_product_label":  None,
+    "dtxn_actions":        [],
+    "dtxn_bdc_filter":     "ALL",
     # Market Share
     "ms_bdc":              None,
     # Product Outturn
@@ -2643,6 +2651,355 @@ def show_stock_transaction():
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+
+
+# ══════════════════════════════════════════════════════════════
+# PAGE: DEPOT STOCK TRANSACTION
+# ══════════════════════════════════════════════════════════════
+
+_DEPOT_TXN_ACTIONS = [
+    "Custody Transfer In",
+    "Custody Transfer Out",
+    "Product Outturn",
+    "Sale",
+    "Stock Take",
+]
+
+
+def _fetch_depot_txn_for_bdc(
+    bdc_name: str,
+    depot_id: int,
+    product_id: int,
+    start_str: str,
+    end_str: str,
+    depot_name: str,
+    product_name: str,
+    action_filter: list = None,
+) -> list:
+    """Fetch stock transaction PDF for one BDC at a given depot/product.
+
+    If action_filter is a non-empty list, only rows whose Description matches
+    one of the listed action types are returned.  All other rows are discarded
+    immediately after parsing so the stored dataset is already pre-filtered.
+    """
+    bdc_id = BDC_MAP.get(bdc_name)
+    if not bdc_id:
+        return []
+    params = {
+        "lngProductId": product_id,
+        "lngBDCId":     bdc_id,
+        "lngDepotId":   depot_id,
+        "dtpStartDate": start_str,
+        "dtpEndDate":   end_str,
+        "lngUserId":    NPA_CONFIG["USER_ID"],
+    }
+    for attempt in range(1, 4):
+        try:
+            r = _requests.get(
+                NPA_CONFIG["STOCK_TRANSACTION_URL"],
+                params=params,
+                headers=_HTTP_HEADERS,
+                timeout=_HTTP_TIMEOUT,
+            )
+            if r.status_code in (429, 503):
+                time.sleep(2.0 * attempt)
+                continue
+            r.raise_for_status()
+            pdf_bytes = r.content
+            if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
+                return []
+            rows = _parse_stock_transaction_pdf_full(
+                pdf_bytes,
+                bdc_name=bdc_name,
+                depot_name=depot_name,
+                product_name=product_name,
+            )
+            # Apply pre-fetch action filter if specified
+            if action_filter:
+                action_set = set(action_filter)
+                rows = [row for row in rows if row.get("Description") in action_set]
+            return rows
+        except Exception:
+            if attempt < 3:
+                time.sleep(1.5 * attempt)
+    return []
+
+
+def show_depot_stock_transaction():
+    st.markdown("<h2>🏭 DEPOT STOCK TRANSACTION ANALYZER</h2>", unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
+    <b style='color:#00ffff;'>What this page does</b><br>
+    Sweeps <b>all BDCs</b> at a selected <b>depot</b> and product, combining every BDC's
+    stock transaction ledger into a single unified view — so you can see the full picture
+    of activity at, say, <b>BOST GLOBAL</b> across every BDC that holds stock there.<br><br>
+    <b style='color:#ff00ff;'>Select action type(s) before fetching</b> — only those
+    transaction types will be retrieved and stored (e.g. fetch only
+    "Custody Transfer In" + "Product Outturn" for an inflow-only report).
+    Leave blank to fetch all action types.
+    </div>
+    """, unsafe_allow_html=True)
+
+    if "depot_txn_df" not in st.session_state:
+        st.session_state.depot_txn_df = pd.DataFrame()
+
+    all_depots = sorted(DEPOT_MAP.keys())
+    all_bdcs   = sorted(BDC_MAP.keys())
+
+    # ── Row 1: depot, product, dates ─────────────────────────
+    c1, c2 = st.columns(2)
+    with c1:
+        selected_depot   = _selectbox("Depot",   all_depots,      shadow_key="dtxn_depot_label")
+        selected_product = _selectbox("Product", PRODUCT_OPTIONS, shadow_key="dtxn_product_label")
+    with c2:
+        start_date = _date_input("Start Date", shadow_key="dtxn_start",
+                                 fallback=datetime.now().date() - timedelta(days=30))
+        end_date   = _date_input("End Date",   shadow_key="dtxn_end",
+                                 fallback=datetime.now().date())
+
+    # ── Row 2: action type pre-filter (BEFORE fetch) ──────────
+    st.markdown("**🎯 Action Type Filter** — select which transaction types to fetch "
+                "(leave blank to fetch all)")
+    selected_actions = _multiselect(
+        "Action Types",
+        options=_DEPOT_TXN_ACTIONS,
+        shadow_key="dtxn_actions",
+        fallback=[],
+    )
+
+    action_label = (
+        ", ".join(selected_actions) if selected_actions else "ALL action types"
+    )
+    st.info(
+        f"📋 Will query **{len(all_bdcs)} BDCs** at **{selected_depot}** · "
+        f"Product: **{selected_product}** · "
+        f"Actions: **{action_label}** · "
+        f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}**"
+    )
+
+    # ── Fetch button ──────────────────────────────────────────
+    if st.button("🔄 FETCH DEPOT TRANSACTIONS", key="dtxn_fetch"):
+        depot_id   = DEPOT_MAP.get(selected_depot)
+        product_id = STOCK_PRODUCT_MAP.get(selected_product)
+
+        if not depot_id or not product_id:
+            st.error("❌ Depot or product ID not found in configuration.")
+            return
+
+        start_str = start_date.strftime("%m/%d/%Y")
+        end_str   = end_date.strftime("%m/%d/%Y")
+        # Capture the action filter at fetch time so it's baked into stored data
+        fetch_actions = selected_actions[:]   # empty list = fetch all
+
+        prog      = st.progress(0, text="Starting depot sweep…")
+        log_box   = st.empty()
+        log_lines = []
+
+        all_records  = []
+        success_bdcs = []
+        nodata_bdcs  = []
+        failed_bdcs  = []
+
+        total = len(all_bdcs)
+        for idx, bdc_name in enumerate(all_bdcs):
+            prog.progress(
+                (idx + 1) / total,
+                text=f"Querying {bdc_name} ({idx + 1}/{total})…",
+            )
+            try:
+                rows = _fetch_depot_txn_for_bdc(
+                    bdc_name, depot_id, product_id,
+                    start_str, end_str,
+                    selected_depot, selected_product,
+                    action_filter=fetch_actions,
+                )
+                if rows:
+                    all_records.extend(rows)
+                    success_bdcs.append(bdc_name)
+                    log_lines.append(f"✅ {bdc_name}: {len(rows)} row(s)")
+                else:
+                    nodata_bdcs.append(bdc_name)
+            except Exception as exc:
+                failed_bdcs.append(bdc_name)
+                log_lines.append(f"❌ {bdc_name}: {str(exc)[:60]}")
+
+            log_box.markdown(
+                "<div class='fetch-log'>" + "<br>".join(log_lines[-14:]) + "</div>",
+                unsafe_allow_html=True,
+            )
+
+        prog.progress(1.0, text="✅ Depot sweep complete")
+
+        st.markdown(
+            f"**Sweep summary** — "
+            f"✅ {len(success_bdcs)} BDCs with data · "
+            f"⚠️ {len(nodata_bdcs)} empty · "
+            f"❌ {len(failed_bdcs)} failed · "
+            f"**{len(all_records):,} total records**"
+        )
+
+        if all_records:
+            df_dtxn = pd.DataFrame(all_records)
+            for col in ("Volume", "Balance"):
+                if col in df_dtxn.columns:
+                    df_dtxn[col] = pd.to_numeric(df_dtxn[col], errors="coerce").fillna(0)
+            st.session_state.depot_txn_df            = df_dtxn
+            st.session_state["dtxn_depot_label"]     = selected_depot
+            st.session_state["dtxn_product_label"]   = selected_product
+            st.session_state["dtxn_fetched_actions"] = fetch_actions
+            _save_state("depot_txn_df", df_dtxn)
+            action_note = (
+                f" (filtered to: {', '.join(fetch_actions)})" if fetch_actions else ""
+            )
+            st.success(
+                f"✅ {len(all_records):,} records fetched from "
+                f"{len(success_bdcs)} BDC(s){action_note}."
+            )
+        else:
+            st.warning(
+                "No transactions found for this depot / product / date range / "
+                "action type combination."
+            )
+            st.session_state.depot_txn_df = pd.DataFrame()
+            _save_state("depot_txn_df", pd.DataFrame())
+
+    # ── Display ───────────────────────────────────────────────
+    df = st.session_state.get("depot_txn_df", pd.DataFrame())
+    if df.empty:
+        st.info("👆 Configure the parameters above and click **FETCH DEPOT TRANSACTIONS**.")
+        return
+
+    disp_depot         = st.session_state.get("dtxn_depot_label",     selected_depot)
+    disp_product       = st.session_state.get("dtxn_product_label",   selected_product)
+    fetched_actions    = st.session_state.get("dtxn_fetched_actions",  [])
+
+    st.markdown("---")
+    st.markdown(f"### 🏭 {disp_depot} — {disp_product}")
+    if fetched_actions:
+        st.caption(
+            f"⚙️ Fetched with action filter: **{', '.join(fetched_actions)}**  |  "
+            "Re-fetch with different actions to change scope."
+        )
+
+    # ── Post-fetch BDC filter (display-only) ─────────────────
+    bdc_options = ["ALL"] + sorted(df["BDC"].dropna().unique().tolist())
+    bdc_filter  = _selectbox(
+        "Narrow view by BDC (display only — does not require re-fetch)",
+        bdc_options, shadow_key="dtxn_bdc_filter", fallback="ALL",
+    )
+    df_view = df if bdc_filter == "ALL" else df[df["BDC"] == bdc_filter]
+
+    # ── Summary metrics ───────────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📊 Summary Metrics")
+
+    def _vol_for(desc_list):
+        return float(df_view[df_view["Description"].isin(desc_list)]["Volume"].sum())
+
+    inflows  = _vol_for(["Custody Transfer In", "Product Outturn"])
+    outflows = _vol_for(["Custody Transfer Out", "Sale"])
+    sales    = _vol_for(["Sale"])
+    xfer_in  = _vol_for(["Custody Transfer In"])
+    outturn  = _vol_for(["Product Outturn"])
+    xfer_out = _vol_for(["Custody Transfer Out"])
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("📥 Total Inflows",        f"{inflows:,.0f} LT")
+    c2.metric("📤 Total Outflows",       f"{outflows:,.0f} LT")
+    c3.metric("🏢 BDCs with Activity",   str(df_view["BDC"].nunique()))
+    c4.metric("📋 Total Records",        f"{len(df_view):,}")
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("📦 Custody Transfer In",  f"{xfer_in:,.0f} LT")
+    c6.metric("⛴️ Product Outturn",      f"{outturn:,.0f} LT")
+    c7.metric("🔄 Custody Transfer Out", f"{xfer_out:,.0f} LT")
+    c8.metric("💰 OMC Sales",            f"{sales:,.0f} LT")
+
+    # ── Action breakdown table ────────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📋 Breakdown by Action Type")
+    if not df_view.empty:
+        txn_sum = (
+            df_view.groupby("Description")
+            .agg(
+                Total_Volume=("Volume",  "sum"),
+                Record_Count=("Trans #", "count"),
+                BDCs_Involved=("BDC",   "nunique"),
+            )
+            .reset_index()
+            .sort_values("Total_Volume", ascending=False)
+            .rename(columns={
+                "Description":   "Action Type",
+                "Total_Volume":  "Total Volume (LT)",
+                "Record_Count":  "# Records",
+                "BDCs_Involved": "# BDCs",
+            })
+        )
+        st.dataframe(txn_sum, use_container_width=True, hide_index=True)
+
+    # ── BDC contribution breakdown ────────────────────────────
+    st.markdown("---")
+    st.markdown("### 🏢 BDC Contribution at This Depot")
+    bdc_agg = pd.DataFrame()
+    if not df_view.empty:
+        bdc_agg = (
+            df_view.groupby("BDC")
+            .agg(
+                Total_Volume=("Volume",      "sum"),
+                Records=("Trans #",          "count"),
+                Actions=("Description", lambda x: ", ".join(sorted(x.unique()))),
+            )
+            .reset_index()
+            .sort_values("Total_Volume", ascending=False)
+            .rename(columns={"Total_Volume": "Total Volume (LT)"})
+        )
+        st.dataframe(bdc_agg, use_container_width=True, hide_index=True)
+
+    # ── Full transaction history ──────────────────────────────
+    st.markdown("---")
+    st.markdown("### 📄 Full Transaction History")
+    st.caption(
+        f"Showing **{len(df_view):,}** records | "
+        f"**{df_view['BDC'].nunique()}** BDCs | "
+        f"Depot: **{disp_depot}** | Product: **{disp_product}**"
+    )
+    display_cols = [
+        c for c in ["Date", "Trans #", "BDC", "Description", "Account",
+                    "Volume", "Balance", "Product"]
+        if c in df_view.columns
+    ]
+    st.dataframe(
+        df_view[display_cols].sort_values("Date", na_position="last"),
+        use_container_width=True, hide_index=True, height=450,
+    )
+
+    # ── Download ──────────────────────────────────────────────
+    st.markdown("---")
+    txn_sum_dl = (
+        df.groupby("Description")
+        .agg(Total_Volume=("Volume", "sum"), Record_Count=("Trans #", "count"),
+             BDCs_Involved=("BDC", "nunique"))
+        .reset_index()
+    ) if not df.empty else pd.DataFrame()
+
+    excel_bytes = _to_excel_bytes({
+        "All Transactions": df,
+        "Filtered by BDC":  df_view,
+        "By Action Type":   txn_sum_dl,
+        "By BDC":           bdc_agg,
+    })
+    _ts         = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe_depot  = re.sub(r"[^A-Z0-9]", "_", disp_depot.upper())[:30]
+    st.download_button(
+        "⬇️ DOWNLOAD EXCEL",
+        excel_bytes,
+        f"depot_txn_{safe_depot}_{disp_product}_{_ts}.xlsx",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 # ══════════════════════════════════════════════════════════════
 # PAGE: PRODUCT OUTTURN
 # ══════════════════════════════════════════════════════════════
@@ -3648,6 +4005,7 @@ def main():
             "📅 DAILY ORDERS",
             "📊 MARKET SHARE",
             "📈 STOCK TRANSACTION",
+            "🏭 DEPOT STOCK TRANSACTION",
             "⛴️ PRODUCT OUTTURN",
             "🌍 NATIONAL STOCKOUT",
             "🌐 WORLD RISK MONITOR",
@@ -3661,16 +4019,18 @@ def main():
         has_omc  = not st.session_state.get("omc_df", pd.DataFrame()).empty
         has_dly  = not st.session_state.get("daily_df", pd.DataFrame()).empty
         has_txn  = not st.session_state.get("stock_txn_df", pd.DataFrame()).empty
+        has_dtxn = not st.session_state.get("depot_txn_df", pd.DataFrame()).empty
         has_ves  = not st.session_state.get("vessel_data", pd.DataFrame()).empty
         has_out  = not st.session_state.get("outturn_df", pd.DataFrame()).empty
 
         badges = {
-            "Balance":   ("🟢","✅" if has_bal  else "○"),
-            "OMC Load":  ("🟢","✅" if has_omc  else "○"),
-            "Daily Ord": ("🟢","✅" if has_dly  else "○"),
-            "Stock Txn": ("🟢","✅" if has_txn  else "○"),
-            "Vessels":   ("🟢","✅" if has_ves  else "○"),
-            "Outturn":   ("🟢","✅" if has_out  else "○"),
+            "Balance":    ("🟢","✅" if has_bal  else "○"),
+            "OMC Load":   ("🟢","✅" if has_omc  else "○"),
+            "Daily Ord":  ("🟢","✅" if has_dly  else "○"),
+            "Stock Txn":  ("🟢","✅" if has_txn  else "○"),
+            "Depot Txn":  ("🟢","✅" if has_dtxn else "○"),
+            "Vessels":    ("🟢","✅" if has_ves  else "○"),
+            "Outturn":    ("🟢","✅" if has_out  else "○"),
         }
 
         st.markdown("""
@@ -3720,15 +4080,16 @@ def main():
             <span style='color:#00ff88;font-size:16px;'>🟢 OPERATIONAL</span>
         </div>""", unsafe_allow_html=True)
 
-    if   choice == "🏦 BDC BALANCE":       show_bdc_balance()
-    elif choice == "🚚 OMC LOADINGS":       show_omc_loadings()
-    elif choice == "📅 DAILY ORDERS":       show_daily_orders()
-    elif choice == "📊 MARKET SHARE":       show_market_share()
-    elif choice == "📈 STOCK TRANSACTION":  show_stock_transaction()
-    elif choice == "⛴️ PRODUCT OUTTURN":   show_product_outturn()
-    elif choice == "🌍 NATIONAL STOCKOUT":  show_national_stockout()
-    elif choice == "🌐 WORLD RISK MONITOR": show_world_monitor()
-    elif choice == "🚢 VESSEL SUPPLY":      show_vessel_supply()
+    if   choice == "🏦 BDC BALANCE":               show_bdc_balance()
+    elif choice == "🚚 OMC LOADINGS":               show_omc_loadings()
+    elif choice == "📅 DAILY ORDERS":               show_daily_orders()
+    elif choice == "📊 MARKET SHARE":               show_market_share()
+    elif choice == "📈 STOCK TRANSACTION":          show_stock_transaction()
+    elif choice == "🏭 DEPOT STOCK TRANSACTION":    show_depot_stock_transaction()
+    elif choice == "⛴️ PRODUCT OUTTURN":           show_product_outturn()
+    elif choice == "🌍 NATIONAL STOCKOUT":          show_national_stockout()
+    elif choice == "🌐 WORLD RISK MONITOR":         show_world_monitor()
+    elif choice == "🚢 VESSEL SUPPLY":              show_vessel_supply()
 
 
 main()
