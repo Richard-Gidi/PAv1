@@ -972,8 +972,11 @@ class StockBalanceScraper:
                             avail   = float(m.group(3).replace(",", ""))
                             if product not in self.allowed_products:
                                 continue
-                            if self._is_bost_depot(cur_depot) and not self._is_bost_global(cur_depot):
-                                continue
+                            # For BOST: include ALL individual depots
+                            # (Accra Plains, Akosombo, Bolgatanga, Buipe, Kumasi, etc.)
+                            # so that their balances sum to the true BOST total per product.
+                            # Previously only BOST GLOBAL DEPOT was kept — that single depot
+                            # value did not reflect the full national BOST holding.
                             if actual <= 0:
                                 continue
                             norm_depot = self._ns(cur_depot)
