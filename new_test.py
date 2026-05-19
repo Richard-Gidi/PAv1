@@ -51,14 +51,6 @@ Fixed version:
         Streamlit can silently discard when a widget is destroyed on navigation.
         The on_change callback pattern writes back to a separate shadow key so
         the value survives page switches cleanly.
-  - BOST BDC DEPOT AGGREGATION FIX:
-      * When the owning BDC is "BOST" itself, all BOST sub-depots
-        (ACCRA PLAINS, BUIPE, KUMASI, AKOSOMBO, BOLGATANGA, etc.) are summed
-        together and emitted as a single synthetic "BOST GLOBAL" record so the
-        full BOST self-stock is visible in one line.
-      * For every OTHER BDC (including BOST-G40), the original behaviour is
-        preserved: only records whose depot is literally "BOST GLOBAL DEPOT"
-        are kept; all other BOST sub-depots are silently dropped.
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -250,28 +242,6 @@ VESSEL_SHEET_URL = os.getenv(
 )
 
 # ══════════════════════════════════════════════════════════════
-# BOST BDC DETECTION
-# ══════════════════════════════════════════════════════════════
-# The canonical display name for the BOST BDC as it will appear
-# after name resolution (matches the BDC_USER_MAP key exactly).
-_BOST_BDC_CANONICAL = "BOST"
-
-# Normalised form used for fuzzy matching during resolution
-_BOST_BDC_NORM = _normalise_name(_BOST_BDC_CANONICAL)
-
-
-def _is_bost_bdc(bdc_name: str) -> bool:
-    """Return True only when the BDC is BOST itself (not BOST-G40, etc.)."""
-    if not bdc_name:
-        return False
-    # Exact match first
-    if bdc_name.strip().upper() == _BOST_BDC_CANONICAL:
-        return True
-    # Normalised match — must be exactly "bost" with nothing else
-    return _normalise_name(bdc_name) == _BOST_BDC_NORM
-
-
-# ══════════════════════════════════════════════════════════════
 # DEFAULT OUTTURN DEPOTS
 # ══════════════════════════════════════════════════════════════
 _OUTTURN_DEFAULT_DEPOT_NAMES = [
@@ -395,6 +365,12 @@ _PERSIST_KEYS = {
     "outturn_df":      pd.DataFrame(),
 }
 
+# ── Widget-state persistence keys (selections that survive menu nav) ──
+# These are SHADOW keys — we write to them via on_change callbacks and
+# read them back as `value=` / `default=` parameters.  Streamlit then
+# manages the widget's own key independently, which avoids the
+# "widget key mutated after render" exception and keeps values alive
+# when the widget is temporarily destroyed during navigation.
 _WIDGET_STATE_DEFAULTS = {
     # BDC Balance
     "bal_bdc_select":      [],
@@ -475,10 +451,12 @@ def _load_state(key: str):
 
 
 def _restore_session_state() -> None:
+    # Restore data blobs
     for key in _PERSIST_KEYS:
         if key not in st.session_state:
             st.session_state[key] = _load_state(key)
 
+    # Restore widget shadow-state selections
     _today = datetime.now().date()
     _date_defaults = {
         "omc_start":   _today - timedelta(days=7),
@@ -506,6 +484,7 @@ def _restore_session_state() -> None:
     if "ot_products" not in st.session_state or st.session_state["ot_products"] is None:
         st.session_state["ot_products"] = PRODUCT_OPTIONS[:]
 
+    # Internal flags (never widget keys)
     if "_clear_cache_armed" not in st.session_state:
         st.session_state["_clear_cache_armed"] = False
 
@@ -524,18 +503,25 @@ def _clear_all_persisted() -> None:
 # ══════════════════════════════════════════════════════════════
 # WIDGET SHADOW-STATE HELPERS
 # ══════════════════════════════════════════════════════════════
+# Pattern: every interactive widget uses a SHADOW key (e.g. "omc_start")
+# for its persisted value, and a WIDGET key (e.g. "_w_omc_start") for
+# Streamlit's own internal tracking.  An on_change callback copies the
+# widget key → shadow key so the value is never lost on navigation.
 
 def _ss(shadow_key: str):
+    """Read from shadow key with safe fallback."""
     return st.session_state.get(shadow_key)
 
 
 def _make_cb(widget_key: str, shadow_key: str):
+    """Return an on_change callback that copies widget → shadow."""
     def _cb():
         st.session_state[shadow_key] = st.session_state[widget_key]
     return _cb
 
 
 def _date_input(label: str, shadow_key: str, fallback, **kwargs):
+    """date_input wired to shadow-state persistence."""
     val = st.session_state.get(shadow_key, fallback)
     widget_key = f"_w_{shadow_key}"
     result = st.date_input(
@@ -547,6 +533,7 @@ def _date_input(label: str, shadow_key: str, fallback, **kwargs):
 
 
 def _checkbox(label: str, shadow_key: str, fallback: bool = False, **kwargs):
+    """checkbox wired to shadow-state persistence."""
     val = st.session_state.get(shadow_key, fallback)
     widget_key = f"_w_{shadow_key}"
     result = st.checkbox(
@@ -558,7 +545,9 @@ def _checkbox(label: str, shadow_key: str, fallback: bool = False, **kwargs):
 
 
 def _multiselect(label: str, options: list, shadow_key: str, fallback=None, **kwargs):
+    """multiselect wired to shadow-state persistence."""
     saved = st.session_state.get(shadow_key, fallback if fallback is not None else [])
+    # Guard: remove stale options that no longer exist
     if isinstance(saved, list):
         saved = [v for v in saved if v in options]
     widget_key = f"_w_{shadow_key}"
@@ -571,6 +560,7 @@ def _multiselect(label: str, options: list, shadow_key: str, fallback=None, **kw
 
 
 def _selectbox(label: str, options: list, shadow_key: str, fallback=None, **kwargs):
+    """selectbox wired to shadow-state persistence."""
     saved = st.session_state.get(shadow_key, fallback)
     idx = 0
     if saved in options:
@@ -585,6 +575,7 @@ def _selectbox(label: str, options: list, shadow_key: str, fallback=None, **kwar
 
 
 def _radio(label: str, options: list, shadow_key: str, fallback=None, **kwargs):
+    """radio wired to shadow-state persistence."""
     saved = st.session_state.get(shadow_key, fallback if fallback else options[0])
     idx = options.index(saved) if saved in options else 0
     widget_key = f"_w_{shadow_key}"
@@ -907,26 +898,6 @@ def _result_is_empty(result) -> bool:
 
 # ── BDC Balance ──────────────────────────────────────────────
 class StockBalanceScraper:
-    """
-    Parses a BDC stock-balance PDF into a list of records.
-
-    BOST-BDC special handling
-    ─────────────────────────
-    When the owning BDC resolves to "BOST" (and ONLY for "BOST"):
-      • Every BOST sub-depot (ACCRA PLAINS, BUIPE, KUMASI, AKOSOMBO,
-        BOLGATANGA, etc.) is collected and their balances summed per
-        product.
-      • The aggregated totals are emitted as a single synthetic record
-        whose DEPOT field is "BOST GLOBAL DEPOT".
-      • BOST GLOBAL DEPOT itself (if present in the PDF) is also included
-        in the aggregation — no double-counting because we use the raw
-        per-depot rows before any summation.
-
-    For every other BDC (including BOST-G40):
-      • BOST sub-depots are silently dropped (original behaviour).
-      • Only BOST GLOBAL DEPOT records pass through.
-    """
-
     def __init__(self):
         self.allowed_products = {"PREMIUM", "GASOIL", "LPG"}
         _pat = "|".join(sorted(self.allowed_products))
@@ -956,7 +927,6 @@ class StockBalanceScraper:
         return clean
 
     def _is_bost_depot(self, depot):
-        """True for any depot whose name starts with BOST (inc. BOST GLOBAL DEPOT)."""
         return self._ns((depot or "").replace("-", " ")).upper().startswith("BOST ")
 
     def _is_bost_global(self, depot):
@@ -971,135 +941,132 @@ class StockBalanceScraper:
                 pass
         return None
 
-    # ------------------------------------------------------------------ #
-    #  Main entry point                                                    #
-    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _owning_bdc_is_bost(owning_bdc_name: str) -> bool:
+        """Return True only when the PDF being fetched belongs to the BOST BDC itself.
+
+        BOST-G40 and any other BDC whose balance PDF happens to list BOST depots
+        should NOT be treated as the BOST BDC — only the literal "BOST" entry is.
+        """
+        norm = re.sub(r"\s+", " ", (owning_bdc_name or "").strip()).upper()
+        return norm == "BOST"
+
     def parse_pdf_bytes(self, pdf_bytes: bytes, owning_bdc_name: str = "") -> list:
-        """
-        Parse the PDF and return a list of balance record dicts.
+        # ── Decide mode up-front ──────────────────────────────────────────────
+        # bost_mode  → this PDF was fetched for the "BOST" BDC.
+        #              Rule: collect ALL individual BOST depot rows (Accra Plains,
+        #              Akosombo, Bolgatanga, Buipe, Kumasi …), sum their actual /
+        #              available balances per product, then emit exactly ONE record
+        #              per product labelled "BOST GLOBAL DEPOT".
+        #
+        # normal_mode → every other BDC (including BOST-G40).
+        #              Rule: skip individual BOST depots; keep only BOST GLOBAL DEPOT
+        #              (original behaviour, unchanged).
+        bost_mode = self._owning_bdc_is_bost(owning_bdc_name)
 
-        If owning_bdc_name resolves to the BOST BDC, all BOST sub-depot
-        rows are aggregated into a single BOST GLOBAL DEPOT record per
-        product per date.  For all other BDCs the original filtering
-        logic is preserved.
-        """
-        col_act  = "ACTUAL BALANCE (LT\\KG)"
-        col_avail = "AVAILABLE BALANCE (LT\\KG)"
+        # Accumulators used only in bost_mode
+        # { product: {"actual": float, "avail": float, "date": str} }
+        bost_accum: dict = {}
 
-        # --- Phase 1: parse every raw row from the PDF -------------------
-        raw_rows = []          # all rows before any BOST filtering
-        seen_raw = set()
-
+        records = []
+        seen    = set()
         try:
             reader    = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
             cur_bdc   = owning_bdc_name
             cur_depot = None
             cur_date  = None
-
             for page in reader.pages:
                 text  = page.extract_text() or ""
                 lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-
                 for line in lines:
                     up = line.upper()
-
                     if "DATE AS AT" in up:
                         d = self._parse_date(line)
                         if d:
                             cur_date = d
-
                     if up.startswith("BDC :") or up.startswith("BDC:"):
                         raw = re.sub(r"^BDC\s*:\s*", "", line, flags=re.IGNORECASE).strip()
                         resolved = self._resolve_bdc_name(raw)
-                        cur_bdc  = resolved if resolved else (owning_bdc_name or raw)
-
+                        cur_bdc = resolved if resolved else (owning_bdc_name or raw)
                     if up.startswith("DEPOT :") or up.startswith("DEPOT:"):
                         cur_depot = re.sub(r"^DEPOT\s*:\s*", "", line, flags=re.IGNORECASE).strip()
-
                     if cur_bdc and cur_depot and cur_date:
                         m = self.product_re.match(line)
                         if m:
                             product = m.group(1).upper()
                             actual  = float(m.group(2).replace(",", ""))
                             avail   = float(m.group(3).replace(",", ""))
-
                             if product not in self.allowed_products:
                                 continue
                             if actual <= 0:
                                 continue
 
-                            norm_depot = self._ns(cur_depot)
-                            key = (cur_bdc, norm_depot, product, cur_date)
-                            if key in seen_raw:
-                                continue
-                            seen_raw.add(key)
+                            is_bost_dep    = self._is_bost_depot(cur_depot)
+                            is_bost_global = self._is_bost_global(cur_depot)
 
-                            raw_rows.append({
-                                "Date":    cur_date,
-                                "BDC":     cur_bdc,
-                                "DEPOT":   norm_depot,
-                                "Product": product,
-                                col_act:   actual,
-                                col_avail: avail,
-                            })
+                            if bost_mode:
+                                # ── BOST BDC: accumulate every BOST depot
+                                #    (individual + global) into one bucket.
+                                if is_bost_dep:
+                                    if product not in bost_accum:
+                                        bost_accum[product] = {
+                                            "actual": 0.0,
+                                            "avail":  0.0,
+                                            "date":   cur_date,
+                                        }
+                                    bost_accum[product]["actual"] += actual
+                                    bost_accum[product]["avail"]  += avail
+                                    # keep the latest date seen
+                                    if cur_date > bost_accum[product]["date"]:
+                                        bost_accum[product]["date"] = cur_date
+                                # Non-BOST depots in BOST's PDF handled normally below
+                                else:
+                                    norm_depot = self._ns(cur_depot)
+                                    key = (cur_bdc, norm_depot, product, cur_date)
+                                    if key not in seen:
+                                        seen.add(key)
+                                        records.append({
+                                            "Date":                       cur_date,
+                                            "BDC":                        cur_bdc,
+                                            "DEPOT":                      norm_depot,
+                                            "Product":                    product,
+                                            "ACTUAL BALANCE (LT\\KG)":    actual,
+                                            "AVAILABLE BALANCE (LT\\KG)": avail,
+                                        })
+                            else:
+                                # ── All other BDCs: original behaviour ──────────
+                                # Skip individual BOST depots; keep BOST GLOBAL only
+                                if is_bost_dep and not is_bost_global:
+                                    continue
+                                norm_depot = self._ns(cur_depot)
+                                key = (cur_bdc, norm_depot, product, cur_date)
+                                if key in seen:
+                                    continue
+                                seen.add(key)
+                                records.append({
+                                    "Date":                       cur_date,
+                                    "BDC":                        cur_bdc,
+                                    "DEPOT":                      norm_depot,
+                                    "Product":                    product,
+                                    "ACTUAL BALANCE (LT\\KG)":    actual,
+                                    "AVAILABLE BALANCE (LT\\KG)": avail,
+                                })
         except Exception:
             pass
 
-        # --- Phase 2: apply per-BDC BOST depot logic --------------------
-        #
-        # Determine the effective BDC name for the whole PDF.
-        # In most PDFs all rows share the same BDC, but we use owning_bdc_name
-        # as the ground truth (it is already resolved by the fetcher).
-        effective_bdc = owning_bdc_name
+        # ── Flush BOST accumulator → one "BOST GLOBAL DEPOT" row per product ──
+        if bost_mode and bost_accum:
+            for product, vals in bost_accum.items():
+                records.append({
+                    "Date":                       vals["date"],
+                    "BDC":                        owning_bdc_name,
+                    "DEPOT":                      "BOST GLOBAL DEPOT",
+                    "Product":                    product,
+                    "ACTUAL BALANCE (LT\\KG)":    vals["actual"],
+                    "AVAILABLE BALANCE (LT\\KG)": vals["avail"],
+                })
 
-        if _is_bost_bdc(effective_bdc):
-            # ── BOST BDC: aggregate ALL BOST depots → one "BOST GLOBAL DEPOT" row ──
-            records = []
-            # Collect non-BOST-depot rows as-is (depot belongs to another terminal)
-            # and accumulate BOST sub-depot rows for aggregation.
-            bost_accum: dict = {}   # key: (bdc, date, product) → {col_act, col_avail}
-
-            for row in raw_rows:
-                if self._is_bost_depot(row["DEPOT"]):
-                    # Aggregate into BOST GLOBAL bucket
-                    key = (row["BDC"], row["Date"], row["Product"])
-                    if key not in bost_accum:
-                        bost_accum[key] = {col_act: 0.0, col_avail: 0.0}
-                    bost_accum[key][col_act]   += row[col_act]
-                    bost_accum[key][col_avail] += row[col_avail]
-                else:
-                    # Non-BOST depot — keep as-is (applies when BOST's PDF
-                    # happens to include a non-BOST terminal)
-                    records.append(row)
-
-            # Emit one synthetic BOST GLOBAL DEPOT record per (bdc, date, product)
-            for (bdc, date, product), vals in bost_accum.items():
-                if vals[col_act] > 0:
-                    records.append({
-                        "Date":    date,
-                        "BDC":     bdc,
-                        "DEPOT":   "BOST GLOBAL DEPOT",
-                        "Product": product,
-                        col_act:   vals[col_act],
-                        col_avail: vals[col_avail],
-                    })
-
-            return records
-
-        else:
-            # ── All other BDCs: original behaviour ──
-            # Keep only BOST GLOBAL DEPOT; drop all other BOST sub-depots.
-            records = []
-            seen    = set()
-            for row in raw_rows:
-                if self._is_bost_depot(row["DEPOT"]) and not self._is_bost_global(row["DEPOT"]):
-                    continue    # drop BOST sub-depots for non-BOST BDCs
-                key = (row["BDC"], row["DEPOT"], row["Product"], row["Date"])
-                if key in seen:
-                    continue
-                seen.add(key)
-                records.append(row)
-            return records
+        return records
 
 
 # ── OMC Loadings ─────────────────────────────────────────────
@@ -2016,10 +1983,7 @@ def show_bdc_balance():
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
     Shows the current live stock balance for every BDC — broken down by depot and product
-    (PREMIUM / GASOIL / LPG) — giving a unified national stock picture.<br>
-    <b style='color:#ff00ff;'>BOST BDC note:</b> All BOST sub-depots (Accra Plains, Buipe,
-    Kumasi, Akosombo, Bolgatanga, etc.) are automatically aggregated into a single
-    <b>BOST GLOBAL DEPOT</b> row. Other BDCs show only their BOST GLOBAL DEPOT exposure.
+    (PREMIUM / GASOIL / LPG) — giving a unified national stock picture.
     </div>
     """, unsafe_allow_html=True)
 
@@ -2762,6 +2726,8 @@ def show_stock_transaction():
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 
+
+
 # ══════════════════════════════════════════════════════════════
 # PAGE: DEPOT STOCK TRANSACTION
 # ══════════════════════════════════════════════════════════════
@@ -2785,6 +2751,12 @@ def _fetch_depot_txn_for_bdc(
     product_name: str,
     action_filter: list = None,
 ) -> list:
+    """Fetch stock transaction PDF for one BDC at a given depot/product.
+
+    If action_filter is a non-empty list, only rows whose Description matches
+    one of the listed action types are returned.  All other rows are discarded
+    immediately after parsing so the stored dataset is already pre-filtered.
+    """
     bdc_id = BDC_MAP.get(bdc_name)
     if not bdc_id:
         return []
@@ -2817,6 +2789,7 @@ def _fetch_depot_txn_for_bdc(
                 depot_name=depot_name,
                 product_name=product_name,
             )
+            # Apply pre-fetch action filter if specified
             if action_filter:
                 action_set = set(action_filter)
                 rows = [row for row in rows if row.get("Description") in action_set]
@@ -2850,6 +2823,7 @@ def show_depot_stock_transaction():
     all_depots = sorted(DEPOT_MAP.keys())
     all_bdcs   = sorted(BDC_MAP.keys())
 
+    # ── Row 1: depot, product, dates ─────────────────────────
     c1, c2 = st.columns(2)
     with c1:
         selected_depot   = _selectbox("Depot",   all_depots,      shadow_key="dtxn_depot_label")
@@ -2860,6 +2834,7 @@ def show_depot_stock_transaction():
         end_date   = _date_input("End Date",   shadow_key="dtxn_end",
                                  fallback=datetime.now().date())
 
+    # ── Row 2: action type pre-filter (BEFORE fetch) ──────────
     st.markdown("**🎯 Action Type Filter** — select which transaction types to fetch "
                 "(leave blank to fetch all)")
     selected_actions = _multiselect(
@@ -2879,6 +2854,7 @@ def show_depot_stock_transaction():
         f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}**"
     )
 
+    # ── Fetch button ──────────────────────────────────────────
     if st.button("🔄 FETCH DEPOT TRANSACTIONS", key="dtxn_fetch"):
         depot_id   = DEPOT_MAP.get(selected_depot)
         product_id = STOCK_PRODUCT_MAP.get(selected_product)
@@ -2889,7 +2865,8 @@ def show_depot_stock_transaction():
 
         start_str = start_date.strftime("%m/%d/%Y")
         end_str   = end_date.strftime("%m/%d/%Y")
-        fetch_actions = selected_actions[:]
+        # Capture the action filter at fetch time so it's baked into stored data
+        fetch_actions = selected_actions[:]   # empty list = fetch all
 
         prog      = st.progress(0, text="Starting depot sweep…")
         log_box   = st.empty()
@@ -2963,6 +2940,7 @@ def show_depot_stock_transaction():
             st.session_state.depot_txn_df = pd.DataFrame()
             _save_state("depot_txn_df", pd.DataFrame())
 
+    # ── Display ───────────────────────────────────────────────
     df = st.session_state.get("depot_txn_df", pd.DataFrame())
     if df.empty:
         st.info("👆 Configure the parameters above and click **FETCH DEPOT TRANSACTIONS**.")
@@ -2980,6 +2958,7 @@ def show_depot_stock_transaction():
             "Re-fetch with different actions to change scope."
         )
 
+    # ── Post-fetch BDC filter (display-only) ─────────────────
     bdc_options = ["ALL"] + sorted(df["BDC"].dropna().unique().tolist())
     bdc_filter  = _selectbox(
         "Narrow view by BDC (display only — does not require re-fetch)",
@@ -2987,6 +2966,7 @@ def show_depot_stock_transaction():
     )
     df_view = df if bdc_filter == "ALL" else df[df["BDC"] == bdc_filter]
 
+    # ── Summary metrics ───────────────────────────────────────
     st.markdown("---")
     st.markdown("### 📊 Summary Metrics")
 
@@ -3012,6 +2992,7 @@ def show_depot_stock_transaction():
     c7.metric("🔄 Custody Transfer Out", f"{xfer_out:,.0f} LT")
     c8.metric("💰 OMC Sales",            f"{sales:,.0f} LT")
 
+    # ── Action breakdown table ────────────────────────────────
     st.markdown("---")
     st.markdown("### 📋 Breakdown by Action Type")
     if not df_view.empty:
@@ -3033,6 +3014,7 @@ def show_depot_stock_transaction():
         )
         st.dataframe(txn_sum, use_container_width=True, hide_index=True)
 
+    # ── BDC contribution breakdown ────────────────────────────
     st.markdown("---")
     st.markdown("### 🏢 BDC Contribution at This Depot")
     bdc_agg = pd.DataFrame()
@@ -3050,6 +3032,7 @@ def show_depot_stock_transaction():
         )
         st.dataframe(bdc_agg, use_container_width=True, hide_index=True)
 
+    # ── Full transaction history ──────────────────────────────
     st.markdown("---")
     st.markdown("### 📄 Full Transaction History")
     st.caption(
@@ -3067,6 +3050,7 @@ def show_depot_stock_transaction():
         use_container_width=True, hide_index=True, height=450,
     )
 
+    # ── Download ──────────────────────────────────────────────
     st.markdown("---")
     txn_sum_dl = (
         df.groupby("Description")
@@ -3663,6 +3647,7 @@ def show_national_stockout():
                     excl_v = bal_df[mask][col_bal].sum()
                     bal_df = bal_df[~mask].copy()
                     st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
+                # Store RAW balance totals (WITHOUT vessel uplift) — vessels applied at display time
                 balance_by_prod_raw = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
         else:
             with st.status("📡 Step 1 / 2 — Fetching BDC stock balances…", expanded=True):
@@ -3692,6 +3677,7 @@ def show_national_stockout():
                     bal_df = bal_df[~mask].copy()
                     st.write(f"TOR LPG excluded from national total ({excl_v:,.0f} LT removed)")
 
+                # Store RAW balance totals (WITHOUT vessel uplift)
                 balance_by_prod_raw = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
 
         with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings…", expanded=True):
@@ -3734,7 +3720,7 @@ def show_national_stockout():
         DISPLAY = {"PREMIUM":"PREMIUM (PMS)","GASOIL":"GASOIL (AGO)","LPG":"LPG"}
         rows_out = []
         for prod in ["PREMIUM","GASOIL","LPG"]:
-            stock = float(balance_by_prod_raw.get(prod, 0))
+            stock = float(balance_by_prod_raw.get(prod, 0))   # raw, no vessel uplift
             dep   = float(omc_by_prod.get(prod, 0))
             daily = dep if (use_median or use_max) else (dep / effective_days if effective_days else 0)
             days  = stock / daily if daily > 0 else float("inf")
@@ -3760,22 +3746,23 @@ def show_national_stockout():
             bdc_pivot["Market Share %"] = (bdc_pivot["TOTAL"] / nat_total * 100).round(2)
             bdc_pivot = bdc_pivot.sort_values("TOTAL", ascending=False)
 
+        # ── Store RAW results — vessel uplift is applied at display time only ──
         st.session_state.ns_results = {
-            "forecast_df":          forecast_df,
-            "balance_by_prod_raw":  balance_by_prod_raw,
-            "bal_df":               bal_df,
-            "omc_df":               omc_df,
-            "bdc_pivot":            bdc_pivot,
-            "period_days":          period_days,
-            "eff_days":             effective_days,
-            "day_lbl":              day_lbl,
-            "depl_lbl":             depl_lbl,
-            "start_str":            start_str,
-            "end_str":              end_str,
-            "bal_summary":          bal_summary,
-            "omc_summary":          omc_summary,
-            "n_bal_records":        len(all_records),
-            "n_omc_records":        len(omc_df),
+            "forecast_df":       forecast_df,         # raw balance, no vessels baked in
+            "balance_by_prod_raw": balance_by_prod_raw,  # keep raw Series for vessel uplift
+            "bal_df":            bal_df,
+            "omc_df":            omc_df,
+            "bdc_pivot":         bdc_pivot,
+            "period_days":       period_days,
+            "eff_days":          effective_days,
+            "day_lbl":           day_lbl,
+            "depl_lbl":          depl_lbl,
+            "start_str":         start_str,
+            "end_str":           end_str,
+            "bal_summary":       bal_summary,
+            "omc_summary":       omc_summary,
+            "n_bal_records":     len(all_records),
+            "n_omc_records":     len(omc_df),
         }
         _save_national_snapshot(forecast_df, f"{period_days}d")
         st.success("✅ Analysis complete — scroll down to see the forecast.")
@@ -3786,13 +3773,16 @@ def show_national_stockout():
         return
 
     res              = st.session_state.ns_results
-    forecast_df_raw  = res["forecast_df"]
+    forecast_df_raw  = res["forecast_df"]          # raw, vessel-free
     balance_by_prod_raw = res.get("balance_by_prod_raw", pd.Series(dtype=float))
     bdc_pivot        = res["bdc_pivot"]
     omc_df           = res["omc_df"]
     depl_lbl         = res["depl_lbl"]
     day_lbl          = res["day_lbl"]
 
+    # ── Apply vessel uplift HERE at display time, every render ──
+    # This means toggling the checkbox instantly updates numbers
+    # without re-fetching and without double-counting.
     forecast_df = forecast_df_raw.copy()
     if include_vessels and _vessel_loaded and _pending_n > 0:
         pend = _vessel_df[_vessel_df["Status"]=="PENDING"]
@@ -3950,6 +3940,7 @@ def show_vessel_supply():
 
     col1, col2 = st.columns([3,1])
     with col1:
+        # Use a plain text_input here — no shadow needed, value is self-contained
         sheet_url = st.text_input(
             "Google Sheets URL or File ID",
             value=st.session_state.get("vessel_url", VESSEL_SHEET_URL),
@@ -4128,7 +4119,7 @@ def main():
 
         st.markdown("---")
 
-        # ── SAFE CLEAR CACHE — two-click arm/confirm ──
+        # ── SAFE CLEAR CACHE — two-click arm/confirm, no checkbox ──
         st.markdown(
             "<div style='background:rgba(255,0,0,0.08);padding:10px;border-radius:8px;"
             "border:1px solid #ff000044;'>"
