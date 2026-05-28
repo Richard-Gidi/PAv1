@@ -51,6 +51,7 @@ ACTIVE_BDC_KEYWORDS = [
     "reston",
     "veritas",
     "matrix",
+    "bazuka",
     "nenser",
     "international petroleum",
     "cirrus",
