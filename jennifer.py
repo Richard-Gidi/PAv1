@@ -16,6 +16,7 @@ Configured BDCs:
   8. Chase
   9. Everstone
   10. Bazuka
+  11. Misyl
 
 INSTALLATION:
     pip install streamlit pandas pdfplumber PyPDF2 openpyxl python-dotenv plotly requests psutil
@@ -57,6 +58,7 @@ ACTIVE_BDC_KEYWORDS = [
     "cirrus",
     "chase",
     "everstone",
+    "misyl",
 ]
 
 def _bdc_is_active(name: str) -> bool:
@@ -828,7 +830,7 @@ def show_bdc_balance():
         st.error(
             "No matching BDCs found in your .env file. "
             "Please add BDC_USER_ entries for: Maranatha, Reston, Veritas, Matrix, "
-            "Nenser, International Petroleum, Cirrus, Bazuka, Chase, Everstone."
+            "Nenser, International Petroleum, misyl, Cirrus, Bazuka, Chase, Everstone."
         )
         return
 
@@ -1004,7 +1006,7 @@ def show_daily_orders():
         st.error(
             "No matching BDCs found in your .env file. "
             "Please add BDC_USER_ entries for: Maranatha, Reston, Veritas, Matrix, "
-            "Nenser, International Petroleum, Cirrus, Bazuka, Chase, Everstone."
+            "Nenser, International Petroleum, misyl, Cirrus, Bazuka, Chase, Everstone."
         )
         return
 
