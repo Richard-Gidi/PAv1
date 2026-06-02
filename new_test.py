@@ -4615,7 +4615,10 @@ def show_bdc_balance_summary():
     st.markdown("---")
     _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    # Wide pivot: Date as rows, BDC|Depot|Product as columns — great for charting
+    # Safe sheet name
+    safe_snapshot_name = f"Snapshot {latest_date.replace('/', '-')}"
+
+    # Wide pivot: Date as rows, BDC|Depot|Product as columns
     try:
         pivot_wide = df.pivot_table(
             index="Date",
@@ -4631,7 +4634,7 @@ def show_bdc_balance_summary():
     excel_bytes = _to_excel_bytes({
         "Daily Balances":    df[display_cols].sort_values(
                                  ["BDC Name", "Depot", "Product", "Date"]),
-        f"Snapshot {latest_date}": latest_df[display_cols],
+        safe_snapshot_name:  latest_df[display_cols],
         "By BDC (latest)":   bdc_snap,
         "By Product (latest)": prod_snap,
         "Wide Pivot":        pivot_wide,
