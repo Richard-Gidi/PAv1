@@ -4067,48 +4067,6 @@ def show_vessel_supply():
 # PAGE: BDC BALANCE SUMMARY (Stock Transaction — Balance View)
 # ══════════════════════════════════════════════════════════════
 
-"""
-BDC BALANCE SUMMARY — DROP-IN REPLACEMENT
-==========================================
-
-WHAT CHANGED
-------------
-1. `_fetch_bdc_balance_summary_for_bdc`  (helper — kept for API completeness but no
-   longer called by the page; can be deleted if unused elsewhere)
-
-   OLD: fetched one row per depot/product — the *last* transaction's balance.
-   NEW: fetches the full transaction range, reconstructs a **daily closing balance**
-        for every calendar day in the window (last transaction balance each day,
-        forward-filled for gap days), returning one row per (day, depot, product).
-
-2. `show_bdc_balance_summary`  (the Streamlit page function)
-
-   OLD: looped per-BDC using the helper; progress bar advanced per BDC only.
-   NEW: inlines the depot × product loop so the progress bar advances after
-        EVERY single API call. Adds a time-series chart and a "Latest Snapshot"
-        view on top of the daily table.
-
-HOW TO APPLY
-------------
-In your `new_test.py`, find the comment block:
-
-    # ══════════════════════════════════════════════════════════════
-    # PAGE: BDC BALANCE SUMMARY (Stock Transaction — Balance View)
-    # ══════════════════════════════════════════════════════════════
-
-Delete everything from that comment down to (but NOT including):
-
-    # ══════════════════════════════════════════════════════════════
-    # MAIN
-    # ══════════════════════════════════════════════════════════════
-
-Then paste the code below in its place.
-"""
-
-# ══════════════════════════════════════════════════════════════
-# PAGE: BDC BALANCE SUMMARY (Stock Transaction — Balance View)
-# ══════════════════════════════════════════════════════════════
-
 
 def _fetch_bdc_balance_summary_for_bdc(
     bdc_name: str,
