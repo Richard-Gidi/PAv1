@@ -357,7 +357,6 @@ os.makedirs(PERSIST_DIR, exist_ok=True)
 
 _PERSIST_KEYS = {
     "bdc_records":    [],
-    "bdc_balance_summary_df": pd.DataFrame(),
     "omc_df":         pd.DataFrame(),
     "daily_df":       pd.DataFrame(),
     "stock_txn_df":    pd.DataFrame(),
@@ -415,9 +414,6 @@ _WIDGET_STATE_DEFAULTS = {
     "ot_depots_selection": None,
     "ot_products":         None,
     "ot_merge_prev":       True,
-    # BDC Balance Summary
-    "bbs_bdc_select":      [],
-    "bbs_merge_prev":      True,
     # National Stockout
     "ns_start":            None,
     "ns_end":              None,
@@ -473,8 +469,6 @@ def _restore_session_state() -> None:
         "ot_end":      _today,
         "ns_start":    _today - timedelta(days=30),
         "ns_end":      _today,
-        "bbs_start":   _today - timedelta(days=30),
-        "bbs_end":     _today,
     }
     for key, default in _WIDGET_STATE_DEFAULTS.items():
         if key not in st.session_state:
@@ -4064,340 +4058,6 @@ def show_vessel_supply():
 
 
 # ══════════════════════════════════════════════════════════════
-# PAGE: BDC BALANCE SUMMARY (Stock Transaction — Balance View)
-# ══════════════════════════════════════════════════════════════
-
-def _fetch_bdc_balance_summary_for_bdc(
-    bdc_name: str,
-    start_str: str,
-    end_str: str,
-) -> pd.DataFrame:
-    """
-    For a single BDC, sweep every depot × product combination and collect
-    the last known Balance row from the stock transaction report.
-
-    Returns a DataFrame with columns:
-        Date, BDC Name, Balance, Depot, Product
-    """
-    bdc_id = BDC_MAP.get(bdc_name)
-    if not bdc_id:
-        return pd.DataFrame()
-
-    rows = []
-    for depot_name, depot_id in DEPOT_MAP.items():
-        for product_label, product_id in STOCK_PRODUCT_MAP.items():
-            params = {
-                "lngProductId": product_id,
-                "lngBDCId":     bdc_id,
-                "lngDepotId":   depot_id,
-                "dtpStartDate": start_str,
-                "dtpEndDate":   end_str,
-                "lngUserId":    NPA_CONFIG["USER_ID"],
-            }
-            for attempt in range(1, 4):
-                try:
-                    r = _requests.get(
-                        NPA_CONFIG["STOCK_TRANSACTION_URL"],
-                        params=params,
-                        headers=_HTTP_HEADERS,
-                        timeout=_HTTP_TIMEOUT,
-                    )
-                    if r.status_code in (429, 503):
-                        time.sleep(2.0 * attempt)
-                        continue
-                    r.raise_for_status()
-                    pdf_bytes = r.content
-                    if not pdf_bytes or pdf_bytes[:4] != b"%PDF":
-                        break
-                    records = _parse_stock_transaction_pdf_full(
-                        pdf_bytes,
-                        bdc_name=bdc_name,
-                        depot_name=depot_name,
-                        product_name=product_label,
-                    )
-                    if records:
-                        # Take the last record's balance (most recent closing balance)
-                        last = records[-1]
-                        rows.append({
-                            "Date":     last.get("Date", ""),
-                            "BDC Name": bdc_name,
-                            "Balance":  last.get("Balance", 0),
-                            "Depot":    depot_name,
-                            "Product":  product_label,
-                        })
-                    break
-                except Exception:
-                    if attempt < 3:
-                        time.sleep(1.5 * attempt)
-
-    if not rows:
-        return pd.DataFrame()
-    return pd.DataFrame(rows)
-
-
-def show_bdc_balance_summary():
-    st.markdown("<h2>📋 BDC BALANCE SUMMARY</h2>", unsafe_allow_html=True)
-
-    st.markdown("""
-    <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
-                border-radius:10px;padding:14px;margin-bottom:16px;'>
-    <b style='color:#00ffff;'>What this page does</b><br>
-    Fetches the <b>closing balance</b> from the Stock Transaction report for each selected BDC,
-    across every depot and product combination — producing a clean 5-column summary table:<br><br>
-    <span style='color:#ff00ff;'>📅 Date &nbsp;&nbsp; 🏦 BDC Name &nbsp;&nbsp; 💰 Balance &nbsp;&nbsp;
-    🏭 Depot &nbsp;&nbsp; 🛢️ Product</span><br><br>
-    Select one or more BDCs, set the date range, then fetch.
-    Results from multiple runs can be merged and deduplicated.
-    </div>
-    """, unsafe_allow_html=True)
-
-    if "bdc_balance_summary_df" not in st.session_state:
-        st.session_state.bdc_balance_summary_df = pd.DataFrame()
-
-    all_bdc_names = sorted(BDC_MAP.keys())
-    today         = datetime.now().date()
-
-    # ── BDC multi-select ─────────────────────────────────────
-    selected_bdcs = _multiselect(
-        f"Select BDCs to fetch  ({len(all_bdc_names)} available — select one or more)",
-        all_bdc_names,
-        shadow_key="bbs_bdc_select",
-        fallback=[],
-    )
-
-    if not selected_bdcs:
-        st.warning("⚠️ Please select at least one BDC before fetching.")
-
-    # ── Date range ───────────────────────────────────────────
-    c1, c2 = st.columns(2)
-    with c1:
-        start_date = _date_input(
-            "Start Date", shadow_key="bbs_start",
-            fallback=today - timedelta(days=30),
-        )
-    with c2:
-        end_date = _date_input(
-            "End Date", shadow_key="bbs_end",
-            fallback=today,
-        )
-
-    # ── Merge toggle ─────────────────────────────────────────
-    has_previous = not st.session_state.bdc_balance_summary_df.empty
-    merge_prev   = False
-    if has_previous:
-        merge_prev = _checkbox(
-            "🔀 Merge this fetch with previous results and deduplicate",
-            shadow_key="bbs_merge_prev", fallback=True,
-        )
-
-    n_depots   = len(DEPOT_MAP)
-    n_products = len(STOCK_PRODUCT_MAP)
-    n_bdcs     = len(selected_bdcs)
-    n_calls    = n_bdcs * n_depots * n_products
-
-    if selected_bdcs:
-        st.info(
-            f"📋 **{n_bdcs} BDC(s)** × **{n_depots} depots** × **{n_products} products** "
-            f"= **{n_calls:,} API calls**  |  "
-            f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}**"
-        )
-
-    # ── Fetch ─────────────────────────────────────────────────
-    if st.button(
-        "📋 FETCH BDC BALANCE SUMMARY",
-        key="bbs_fetch",
-        disabled=not selected_bdcs,
-    ):
-        start_str = start_date.strftime("%m/%d/%Y")
-        end_str   = end_date.strftime("%m/%d/%Y")
-
-        prog      = st.progress(0, text="Initialising sweep…")
-        log_box   = st.empty()
-        log_lines = []
-
-        all_frames    = []
-        success_bdcs  = []
-        nodata_bdcs   = []
-        failed_bdcs   = []
-
-        total = len(selected_bdcs)
-        for idx, bdc_name in enumerate(selected_bdcs):
-            prog.progress(
-                (idx + 0.5) / total,
-                text=f"Fetching {bdc_name}  ({idx + 1} / {total})…",
-            )
-            try:
-                df_bdc = _fetch_bdc_balance_summary_for_bdc(
-                    bdc_name, start_str, end_str
-                )
-                if df_bdc is not None and not df_bdc.empty:
-                    all_frames.append(df_bdc)
-                    success_bdcs.append(bdc_name)
-                    log_lines.append(f"✅ {bdc_name}: {len(df_bdc)} row(s)")
-                else:
-                    nodata_bdcs.append(bdc_name)
-                    log_lines.append(f"⚠️ {bdc_name}: no data")
-            except Exception as exc:
-                failed_bdcs.append(bdc_name)
-                log_lines.append(f"❌ {bdc_name}: {str(exc)[:70]}")
-
-            log_box.markdown(
-                "<div class='fetch-log'>" + "<br>".join(log_lines[-14:]) + "</div>",
-                unsafe_allow_html=True,
-            )
-
-        prog.progress(1.0, text="✅ Fetch complete")
-
-        if all_frames:
-            new_df = pd.concat(all_frames, ignore_index=True)
-
-            # Deduplicate within this fetch
-            new_df = new_df.drop_duplicates(
-                subset=["Date", "BDC Name", "Depot", "Product"], keep="last"
-            ).reset_index(drop=True)
-
-            # Merge with previous if requested
-            if merge_prev and has_previous:
-                prev = st.session_state.bdc_balance_summary_df
-                combined = pd.concat([prev, new_df], ignore_index=True)
-                combined = combined.drop_duplicates(
-                    subset=["Date", "BDC Name", "Depot", "Product"], keep="last"
-                ).reset_index(drop=True)
-                st.info(
-                    f"🔀 Merged with previous results — "
-                    f"**{len(combined):,}** total records after deduplication."
-                )
-                new_df = combined
-
-            st.session_state.bdc_balance_summary_df = new_df
-            _save_state("bdc_balance_summary_df", new_df)
-            st.success(
-                f"✅ **{len(new_df):,}** records from **{len(success_bdcs)}** BDC(s).  "
-                f"⚠️ {len(nodata_bdcs)} empty · ❌ {len(failed_bdcs)} failed."
-            )
-        else:
-            st.warning(
-                "No data returned. Try a wider date range or different BDC selection."
-            )
-
-    # ── Display ───────────────────────────────────────────────
-    df = st.session_state.bdc_balance_summary_df
-    if df is None or (isinstance(df, pd.DataFrame) and df.empty):
-        st.info("👆 Select BDCs and click **FETCH BDC BALANCE SUMMARY** to load data.")
-        return
-
-    st.markdown("---")
-
-    # Summary metrics
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("📋 Total Records",  f"{len(df):,}")
-    c2.metric("🏦 BDCs",           f"{df['BDC Name'].nunique()}")
-    c3.metric("🏭 Depots",         f"{df['Depot'].nunique()}")
-    c4.metric("💰 Total Balance",  f"{df['Balance'].sum():,.0f} LT")
-
-    # Product breakdown
-    st.markdown("### 🛢️ Balance by Product")
-    prod_sum = (
-        df.groupby("Product")
-        .agg(
-            Total_Balance=("Balance", "sum"),
-            Records=("Balance", "count"),
-            BDCs=("BDC Name", "nunique"),
-            Depots=("Depot", "nunique"),
-        )
-        .reset_index()
-        .sort_values("Total_Balance", ascending=False)
-        .rename(columns={"Total_Balance": "Total Balance (LT)"})
-    )
-    st.dataframe(prod_sum, use_container_width=True, hide_index=True)
-
-    # BDC breakdown
-    st.markdown("### 🏦 Balance by BDC")
-    bdc_sum = (
-        df.groupby("BDC Name")
-        .agg(
-            Total_Balance=("Balance", "sum"),
-            Records=("Balance", "count"),
-            Depots=("Depot", "nunique"),
-        )
-        .reset_index()
-        .sort_values("Total_Balance", ascending=False)
-        .rename(columns={"Total_Balance": "Total Balance (LT)"})
-    )
-    st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
-
-    # Main 5-column table
-    st.markdown("### 📄 Full Summary Table")
-    st.caption(
-        f"Showing **{len(df):,}** records  |  "
-        f"**{df['BDC Name'].nunique()}** BDCs  |  "
-        f"**{df['Depot'].nunique()}** depots"
-    )
-
-    # Filter controls
-    fc1, fc2 = st.columns(2)
-    with fc1:
-        filter_prod = st.selectbox(
-            "Filter by Product",
-            ["ALL"] + sorted(df["Product"].dropna().unique().tolist()),
-            key="bbs_filter_prod",
-        )
-    with fc2:
-        filter_bdc = st.selectbox(
-            "Filter by BDC",
-            ["ALL"] + sorted(df["BDC Name"].dropna().unique().tolist()),
-            key="bbs_filter_bdc",
-        )
-
-    filt = df.copy()
-    if filter_prod != "ALL":
-        filt = filt[filt["Product"] == filter_prod]
-    if filter_bdc != "ALL":
-        filt = filt[filt["BDC Name"] == filter_bdc]
-
-    # Show the 5 required columns in order
-    display_cols = ["Date", "BDC Name", "Balance", "Depot", "Product"]
-    display_cols = [c for c in display_cols if c in filt.columns]
-
-    st.dataframe(
-        filt[display_cols].sort_values(["BDC Name", "Depot", "Product"]),
-        use_container_width=True,
-        hide_index=True,
-        height=500,
-    )
-
-    # ── Download ──────────────────────────────────────────────
-    st.markdown("---")
-    _ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    # Pivot: BDC × Depot rows, Product columns
-    try:
-        pivot_df = df.pivot_table(
-            index=["BDC Name", "Depot"],
-            columns="Product",
-            values="Balance",
-            aggfunc="sum",
-            fill_value=0,
-        ).reset_index()
-        pivot_df.columns.name = None
-    except Exception:
-        pivot_df = pd.DataFrame()
-
-    excel_bytes = _to_excel_bytes({
-        "Summary (5 cols)": df[display_cols].sort_values(["BDC Name", "Depot", "Product"]),
-        "Pivot (BDC×Depot)": pivot_df,
-        "By BDC":            bdc_sum,
-        "By Product":        prod_sum,
-    })
-    st.download_button(
-        "⬇️ DOWNLOAD EXCEL",
-        excel_bytes,
-        f"bdc_balance_summary_{_ts}.xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-
-# ══════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════
 def main():
@@ -4421,7 +4081,6 @@ def main():
             "📊 MARKET SHARE",
             "📈 STOCK TRANSACTION",
             "🏭 DEPOT STOCK TRANSACTION",
-            "📋 BDC BALANCE SUMMARY",
             "⛴️ PRODUCT OUTTURN",
             "🌍 NATIONAL STOCKOUT",
             "🌐 WORLD RISK MONITOR",
@@ -4438,7 +4097,6 @@ def main():
         has_dtxn = not st.session_state.get("depot_txn_df", pd.DataFrame()).empty
         has_ves  = not st.session_state.get("vessel_data", pd.DataFrame()).empty
         has_out  = not st.session_state.get("outturn_df", pd.DataFrame()).empty
-        has_bbs  = not st.session_state.get("bdc_balance_summary_df", pd.DataFrame()).empty
 
         badges = {
             "Balance":    ("🟢","✅" if has_bal  else "○"),
@@ -4446,7 +4104,6 @@ def main():
             "Daily Ord":  ("🟢","✅" if has_dly  else "○"),
             "Stock Txn":  ("🟢","✅" if has_txn  else "○"),
             "Depot Txn":  ("🟢","✅" if has_dtxn else "○"),
-            "Bal Summary":("🟢","✅" if has_bbs  else "○"),
             "Vessels":    ("🟢","✅" if has_ves  else "○"),
             "Outturn":    ("🟢","✅" if has_out  else "○"),
         }
@@ -4504,7 +4161,6 @@ def main():
     elif choice == "📊 MARKET SHARE":               show_market_share()
     elif choice == "📈 STOCK TRANSACTION":          show_stock_transaction()
     elif choice == "🏭 DEPOT STOCK TRANSACTION":    show_depot_stock_transaction()
-    elif choice == "📋 BDC BALANCE SUMMARY":        show_bdc_balance_summary()
     elif choice == "⛴️ PRODUCT OUTTURN":           show_product_outturn()
     elif choice == "🌍 NATIONAL STOCKOUT":          show_national_stockout()
     elif choice == "🌐 WORLD RISK MONITOR":         show_world_monitor()
