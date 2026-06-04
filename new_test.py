@@ -4346,11 +4346,11 @@ def show_bdc_balance_summary():
                     if txn_df.empty:
                         continue
 
-                    # Last Balance per calendar day = closing balance
+                    # First Balance per calendar day = opening balance
                     daily_bal = (
                         txn_df.sort_values("_date")
                         .groupby(txn_df["_date"].dt.normalize())["Balance"]
-                        .last()
+                        .first()
                     )
                     # Expand to every day in the window; carry forward on gap days
                     daily_bal = daily_bal.reindex(
@@ -4441,7 +4441,7 @@ def show_bdc_balance_summary():
     c5.metric(
         f"💰 Balance on {latest_date}",
         f"{latest_df['Balance'].sum():,.0f} LT",
-        help="Sum of closing balances across all BDCs/depots/products on the most recent day",
+        help="Sum of opening balances across all BDCs/depots/products on the most recent day",
     )
 
     # ── Time-series chart ─────────────────────────────────────
@@ -4478,7 +4478,7 @@ def show_bdc_balance_summary():
             ))
         fig_ts.update_layout(
             title=dict(
-                text=f"Daily Closing Balance — grouped by {chart_group}",
+                text=f"Daily Opening Balance — grouped by {chart_group}",
                 font=dict(color="#00ffff", family="Orbitron"),
             ),
             paper_bgcolor="rgba(10,14,39,0.9)",
