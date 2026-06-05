@@ -3852,6 +3852,9 @@ def show_product_outturn():
 # ══════════════════════════════════════════════════════════════
 # PAGE: NATIONAL STOCKOUT
 # ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+# PAGE: NATIONAL STOCKOUT
+# ══════════════════════════════════════════════════════════════
 def show_national_stockout():
     st.markdown("<h2>🌍 NATIONAL STOCKOUT FORECAST</h2>", unsafe_allow_html=True)
 
@@ -3971,7 +3974,7 @@ def show_national_stockout():
                 _save_state("bdc_records", all_records)
 
                 n_bal_bdcs = bal_df["BDC"].nunique() if not bal_df.empty else 0
-                st.write(f"✅ **{len(all_records):,} balance records** from **{n_bal_bdcs} BDCs**  |  "
+                st.write(f"✅ **{len(all_records):,} balance records** from **{n_bal_bdcs} BDCs** |  "
                          f"✅ {len(bal_summary['success'])} succeeded  |  "
                          f"⚠️ {len(bal_summary['no_data'])} no data  |  "
                          f"❌ {len(bal_summary['failed'])} failed")
@@ -4000,7 +4003,7 @@ def show_national_stockout():
             omc_df, omc_summary = _combine_df_results(
                 results2, ["Order Number", "Truck", "Date", "Product"]
             )
-            st.write(f"✅ **{len(omc_df):,} loading records**  |  "
+            st.write(f"✅ **{len(omc_df):,} loading records** |  "
                      f"✅ {len(omc_summary['success'])} succeeded  |  "
                      f"⚠️ {len(omc_summary['no_data'])} no data  |  "
                      f"❌ {len(omc_summary['failed'])} failed")
@@ -4051,9 +4054,9 @@ def show_national_stockout():
             bdc_pivot["Market Share %"] = (bdc_pivot["TOTAL"] / nat_total * 100).round(2)
             bdc_pivot = bdc_pivot.sort_values("TOTAL", ascending=False)
 
-        # ── Store RAW results — vessel uplift is applied at display time only ──
+        # ── Store RAW results — vessel uplift and OMC filters are applied at display time ──
         st.session_state.ns_results = {
-            "forecast_df":       forecast_df,         # raw balance, no vessels baked in
+            "forecast_df":       forecast_df,         # raw balance, national avg, no vessels baked in
             "balance_by_prod_raw": balance_by_prod_raw,  # keep raw Series for vessel uplift
             "bal_df":            bal_df,
             "omc_df":            omc_df,
@@ -4078,17 +4081,63 @@ def show_national_stockout():
         return
 
     res              = st.session_state.ns_results
-    forecast_df_raw  = res["forecast_df"]          # raw, vessel-free
+    forecast_df_raw  = res["forecast_df"]          # raw, vessel-free, national average
     balance_by_prod_raw = res.get("balance_by_prod_raw", pd.Series(dtype=float))
     bdc_pivot        = res["bdc_pivot"]
     omc_df           = res["omc_df"]
     depl_lbl         = res["depl_lbl"]
     day_lbl          = res["day_lbl"]
+    
+    forecast_df = forecast_df_raw.copy()
+
+    # ── 🎯 DYNAMIC SINGLE OMC FILTER ──
+    # Runs instantly on every state change, no need to re-fetch
+    if not omc_df.empty:
+        all_omcs = sorted(omc_df["OMC"].dropna().astype(str).unique())
+        st.markdown("### 🎯 DEPLETION FILTER")
+        c_f1, c_f2 = st.columns([1, 2])
+        with c_f1:
+            use_single_omc = _checkbox(
+                "Isolate Single OMC Run-Rate",
+                shadow_key="ns_single_omc_toggle",
+                fallback=False
+            )
+        if use_single_omc:
+            with c_f2:
+                selected_omc = _selectbox(
+                    "Select OMC to project days-of-supply against national stock:",
+                    all_omcs,
+                    shadow_key="ns_single_omc_sel"
+                )
+
+            # Recalculate depletion using ONLY this OMC's liftings
+            filt = omc_df[(omc_df["OMC"] == selected_omc) & (omc_df["Product"].isin(["PREMIUM","GASOIL","LPG"]))].copy()
+            filt["Date"] = pd.to_datetime(filt["Date"], errors="coerce")
+            daily_agg = filt.groupby(["Date","Product"])["Quantity"].sum().reset_index()
+
+            if use_median:
+                new_omc_by_prod = daily_agg.groupby("Product")["Quantity"].median()
+                depl_lbl = f"Median Daily ({selected_omc})"
+            elif use_max:
+                new_omc_by_prod = daily_agg.groupby("Product")["Quantity"].max()
+                depl_lbl = f"Max Single-Day ({selected_omc})"
+            else:
+                new_omc_by_prod = filt.groupby("Product")["Quantity"].sum()
+                depl_lbl = f"Avg Daily ({selected_omc})"
+
+            # Overwrite daily_rate and omc_sales in the local forecast dataframe
+            for i, row in forecast_df.iterrows():
+                prod = row["product"]
+                dep  = float(new_omc_by_prod.get(prod, 0))
+                daily = dep if (use_median or use_max) else (dep / effective_days if effective_days else 0)
+
+                forecast_df.at[i, "omc_sales"]  = dep
+                forecast_df.at[i, "daily_rate"] = daily
+                # Calculate fresh baseline days (vessel uplift will append to this right after)
+                forecast_df.at[i, "days_remaining"] = row["total_balance"] / daily if daily > 0 else float("inf")
+            st.info(f"⚡ Projections are now scoped to calculate national lifespan assuming ONLY **{selected_omc}** is lifting product.")
 
     # ── Apply vessel uplift HERE at display time, every render ──
-    # This means toggling the checkbox instantly updates numbers
-    # without re-fetching and without double-counting.
-    forecast_df = forecast_df_raw.copy()
     if include_vessels and _vessel_loaded and _pending_n > 0:
         pend = _vessel_df[_vessel_df["Status"]=="PENDING"]
         vessel_extra = pend.groupby("Product")["Quantity_Litres"].sum()
@@ -4193,7 +4242,6 @@ def show_national_stockout():
     excel_bytes = _to_excel_bytes(excel_sheets)
     st.download_button("⬇️ DOWNLOAD NATIONAL REPORT", excel_bytes, "national_stockout.xlsx",
                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
 
 # ══════════════════════════════════════════════════════════════
 # PAGE: WORLD RISK MONITOR
