@@ -3852,9 +3852,8 @@ def show_product_outturn():
 # ══════════════════════════════════════════════════════════════
 # PAGE: NATIONAL STOCKOUT
 # ══════════════════════════════════════════════════════════════
-# ══════════════════════════════════════════════════════════════
-# PAGE: NATIONAL STOCKOUT
-# ══════════════════════════════════════════════════════════════
+
+
 def show_national_stockout():
     st.markdown("<h2>🌍 NATIONAL STOCKOUT FORECAST</h2>", unsafe_allow_html=True)
 
@@ -4002,24 +4001,56 @@ def show_national_stockout():
                 # Store RAW balance totals (WITHOUT vessel uplift)
                 balance_by_prod_raw = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
 
-        with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings…", expanded=True):
-            if _single_omc:
-                prog2 = st.progress(0, text="📡 Fetching consolidated OMC loadings PDF…")
-                with st.spinner("Fetching all OMC loadings in a single call…"):
-                    omc_df = _fetch_omc_single_endpoint(start_str, end_str)
-                prog2.progress(1.0, text="✅ Fetch complete")
+        # ══════════════════════════════════════════════════════════════
+        # 🚚 Step 2 / 2 — Fetching national OMC loadings (Optimized for 30+ Days)
+        # ══════════════════════════════════════════════════════════════
+        with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings…", expanded=True) as status_box:
+            
+            # Helper to split a large date range into manageable chunks (e.g., 7 days)
+            def _get_date_chunks(s_date, e_date, chunk_size=7):
+                chunks = []
+                curr_start = s_date
+                while curr_start <= e_date:
+                    curr_end = min(curr_start + timedelta(days=chunk_size - 1), e_date)
+                    chunks.append((curr_start, curr_end))
+                    curr_start = curr_end + timedelta(days=1)
+                return chunks
 
-                if not omc_df.empty:
-                    bdcs_found = list(omc_df["BDC"].dropna().unique())
+            if _single_omc:
+                # To prevent large payload timeouts, chunk requests into 7-day windows
+                date_chunks = _get_date_chunks(start_date, end_date, chunk_size=7)
+                all_chunks_df = []
+                
+                prog2 = st.progress(0, text="📡 Initializing chunked single-endpoint fetch…")
+                
+                for idx, (c_start, c_end) in enumerate(date_chunks):
+                    c_start_str = c_start.strftime("%m/%d/%Y")
+                    c_end_str = c_end.strftime("%m/%d/%Y")
+                    
+                    status_box.write(f"⏳ Pulling chunk {idx+1}/{len(date_chunks)}: {c_start.strftime('%d %b')} → {c_end.strftime('%d %b')}...")
+                    
+                    try:
+                        chunk_df = _fetch_omc_single_endpoint(c_start_str, c_end_str)
+                        if isinstance(chunk_df, pd.DataFrame) and not chunk_df.empty:
+                            all_chunks_df.append(chunk_df)
+                    except Exception as e:
+                        status_box.write(f"⚠️ Error skipping chunk {c_start_str} - {c_end_str}: {str(e)}")
+                    
+                    prog2.progress((idx + 1) / len(date_chunks), text=f"Chunk {idx+1}/{len(date_chunks)} processed")
+                
+                if all_chunks_df:
+                    omc_df = pd.concat(all_chunks_df, ignore_index=True)
+                    bdcs_found = list(omc_df["BDC"].dropna().unique()) if "BDC" in omc_df.columns else []
                     omc_summary = {"success": bdcs_found, "no_data": [], "failed": []}
-                    st.success(f"✅ Single-endpoint fetch returned **{len(omc_df):,} records** across **{len(bdcs_found)} BDCs**.")
+                    st.success(f"✅ Chunked fetch combined successfully! Totaling **{len(omc_df):,} records**.")
                 else:
-                    omc_summary = {"success": [], "no_data": [], "failed": ["single-endpoint"]}
-                    st.error("❌ No data returned from single-endpoint OMC fetch. Check NPA_USER_ID / OMC_LOADINGS_URL.")
+                    omc_df = pd.DataFrame()
+                    omc_summary = {"success": [], "no_data": [], "failed": ["all-chunks"]}
+                    st.error("❌ All single-endpoint chunk requests returned empty or failed.")
             else:
-                st.write(f"Querying {n_total} BDCs for loadings from "
-                         f"{start_date.strftime('%d %b')} to {end_date.strftime('%d %b %Y')}…")
-                prog2      = st.progress(0, text="Starting…")
+                # Per-BDC mode
+                st.write(f"Querying {n_total} BDCs for a wide window ({period_days} days). This may take some time...")
+                prog2      = st.progress(0, text="Starting sequential batch fetch…")
                 log_box2   = st.empty()
                 log_lines2 = []
                 results2   = _sequential_batch_fetch(
@@ -4031,27 +4062,40 @@ def show_national_stockout():
                 omc_df, omc_summary = _combine_df_results(
                     results2, ["Order Number", "Truck", "Date", "Product"]
                 )
-                st.write(f"✅ **{len(omc_df):,} loading records** |  "
-                         f"✅ {len(omc_summary['success'])} succeeded  |  "
-                         f"⚠️ {len(omc_summary['no_data'])} no data  |  "
-                         f"❌ {len(omc_summary['failed'])} failed")
+                st.write(f"✅ **{len(omc_df):,} loading records** recovered.")
+
+            # ── 🛡️ DEFENSIVE DATA AGGREGATION LAYER ──
+            required_cols = ["Product", "Quantity", "Date"]
+            for col in required_cols:
+                if col not in omc_df.columns:
+                    omc_df[col] = np.nan if col != "Quantity" else 0.0
 
             if omc_df.empty:
-                omc_by_prod = pd.Series({"PREMIUM":0.0,"GASOIL":0.0,"LPG":0.0})
+                omc_by_prod = pd.Series({"PREMIUM": 0.0, "GASOIL": 0.0, "LPG": 0.0})
                 depl_lbl    = "No Data"
             else:
-                filt = omc_df[omc_df["Product"].isin(["PREMIUM","GASOIL","LPG"])].copy()
-                filt["Date"] = pd.to_datetime(filt["Date"], errors="coerce")
-                daily_agg = filt.groupby(["Date","Product"])["Quantity"].sum().reset_index()
-                if use_median:
-                    omc_by_prod = daily_agg.groupby("Product")["Quantity"].median()
-                    depl_lbl    = "Median Daily Loading"
-                elif use_max:
-                    omc_by_prod = daily_agg.groupby("Product")["Quantity"].max()
-                    depl_lbl    = "Max Single-Day Loading"
+                omc_df["Product"]  = omc_df["Product"].astype(str).str.upper().str.strip()
+                omc_df["Quantity"] = pd.to_numeric(omc_df["Quantity"], errors="coerce").fillna(0.0)
+                omc_df["Date"]     = pd.to_datetime(omc_df["Date"], errors="coerce")
+                
+                filt = omc_df[omc_df["Product"].isin(["PREMIUM", "GASOIL", "LPG"])].copy()
+                
+                if filt.empty:
+                    omc_by_prod = pd.Series({"PREMIUM": 0.0, "GASOIL": 0.0, "LPG": 0.0})
+                    depl_lbl    = "No Valid Product Matches"
                 else:
-                    omc_by_prod = filt.groupby("Product")["Quantity"].sum()
-                    depl_lbl    = f"Avg Daily ({day_lbl})"
+                    filt = filt.dropna(subset=["Date"])
+                    daily_agg = filt.groupby(["Date", "Product"])["Quantity"].sum().reset_index()
+                    
+                    if use_median:
+                        omc_by_prod = daily_agg.groupby("Product")["Quantity"].median()
+                        depl_lbl    = "Median Daily Loading"
+                    elif use_max:
+                        omc_by_prod = daily_agg.groupby("Product")["Quantity"].max()
+                        depl_lbl    = "Max Single-Day Loading"
+                    else:
+                        omc_by_prod = filt.groupby("Product")["Quantity"].sum()
+                        depl_lbl    = f"Avg Daily ({day_lbl})"
 
         DISPLAY = {"PREMIUM":"PREMIUM (PMS)","GASOIL":"GASOIL (AGO)","LPG":"LPG"}
         rows_out = []
@@ -4119,7 +4163,7 @@ def show_national_stockout():
     forecast_df = forecast_df_raw.copy()
 
     # ── 🎯 DYNAMIC SINGLE OMC FILTER (DISPLAY LAYER) ──
-    if not omc_df.empty:
+    if not omc_df.empty and "OMC" in omc_df.columns:
         all_omcs = sorted(omc_df["OMC"].dropna().astype(str).unique())
         st.markdown("### 🎯 DEPLETION FILTER")
         c_f1, c_f2 = st.columns([1, 2])
@@ -4129,7 +4173,7 @@ def show_national_stockout():
                 shadow_key="ns_single_omc_toggle",
                 fallback=False
             )
-        if use_single_omc:
+        if use_single_omc and all_omcs:
             with c_f2:
                 selected_omc = _selectbox(
                     "Select OMC to project days-of-supply against national stock:",
@@ -4140,6 +4184,7 @@ def show_national_stockout():
             # Recalculate depletion using ONLY this OMC's liftings
             filt = omc_df[(omc_df["OMC"] == selected_omc) & (omc_df["Product"].isin(["PREMIUM","GASOIL","LPG"]))].copy()
             filt["Date"] = pd.to_datetime(filt["Date"], errors="coerce")
+            filt = filt.dropna(subset=["Date"])
             daily_agg = filt.groupby(["Date","Product"])["Quantity"].sum().reset_index()
 
             if use_median:
