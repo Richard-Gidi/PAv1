@@ -1,3 +1,4 @@
+```python
 """
 NPA ENERGY ANALYTICS — STREAMLIT DASHBOARD
 ===========================================
@@ -373,9 +374,6 @@ _PERSIST_KEYS = {
 # "widget key mutated after render" exception and keeps values alive
 # when the widget is temporarily destroyed during navigation.
 _WIDGET_STATE_DEFAULTS = {
-    # Fetch mode selectors
-    "bal_fetch_mode":      "📡 Per-BDC Aggregation (Thorough — one call per BDC)",
-    "omc_fetch_mode":      "📡 Per-BDC Aggregation (Thorough — one call per BDC)",
     # BDC Balance
     "bal_bdc_select":      [],
     "bal_fetch_all":       True,
@@ -1077,140 +1075,6 @@ class StockBalanceScraper:
 
         return records
 
-    def parse_pdf_bytes_global(self, pdf_bytes: bytes) -> list:
-        """Parse a *single-endpoint* (all-BDC) PDF.
-
-        Unlike ``parse_pdf_bytes``, which is called once per BDC with a known
-        owning BDC name, this method reads a PDF that contains every BDC in a
-        single document.  It detects the current BDC dynamically and applies
-        the BOST-accumulation rule on the fly:
-
-        * When the current BDC resolves to "BOST", individual BOST depots
-          (ACCRA PLAINS, AKOSOMBO, BOLGATANGA, BUIPE, KUMASI …) are
-          accumulated.  When the BDC changes (or at end-of-file) the
-          accumulated totals are flushed as a single "BOST GLOBAL DEPOT" row
-          per product — matching the behaviour of the per-BDC fetch.
-
-        * For every other BDC, individual BOST-labelled depots are skipped;
-          only BOST GLOBAL DEPOT rows are kept (original behaviour).
-        """
-        records     = []
-        seen        = set()
-        bost_accum: dict = {}   # product → {actual, avail, date}
-
-        cur_bdc    = ""
-        prev_bdc   = ""
-        cur_depot  = None
-        cur_date   = None
-
-        def _flush_bost_accum(bdc_label: str):
-            for product, vals in bost_accum.items():
-                records.append({
-                    "Date":                       vals["date"],
-                    "BDC":                        bdc_label,
-                    "DEPOT":                      "BOST GLOBAL DEPOT",
-                    "Product":                    product,
-                    "ACTUAL BALANCE (LT\\KG)":    vals["actual"],
-                    "AVAILABLE BALANCE (LT\\KG)": vals["avail"],
-                })
-            bost_accum.clear()
-
-        try:
-            reader = PyPDF2.PdfReader(io.BytesIO(pdf_bytes))
-            for page in reader.pages:
-                text  = page.extract_text() or ""
-                lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
-                for line in lines:
-                    up = line.upper()
-
-                    if "DATE AS AT" in up:
-                        d = self._parse_date(line)
-                        if d:
-                            cur_date = d
-
-                    if up.startswith("BDC :") or up.startswith("BDC:"):
-                        raw      = re.sub(r"^BDC\s*:\s*", "", line, flags=re.IGNORECASE).strip()
-                        resolved = self._resolve_bdc_name(raw)
-                        new_bdc  = resolved if resolved else raw
-
-                        if new_bdc != prev_bdc:
-                            # BDC changed — flush any pending BOST accumulator
-                            if bost_accum and self._owning_bdc_is_bost(prev_bdc):
-                                _flush_bost_accum(prev_bdc)
-                            prev_bdc = new_bdc
-
-                        cur_bdc = new_bdc
-
-                    if up.startswith("DEPOT :") or up.startswith("DEPOT:"):
-                        cur_depot = re.sub(r"^DEPOT\s*:\s*", "", line, flags=re.IGNORECASE).strip()
-
-                    if cur_bdc and cur_depot and cur_date:
-                        m = self.product_re.match(line)
-                        if m:
-                            product = m.group(1).upper()
-                            actual  = float(m.group(2).replace(",", ""))
-                            avail   = float(m.group(3).replace(",", ""))
-
-                            if product not in self.allowed_products:
-                                continue
-                            if actual <= 0:
-                                continue
-
-                            is_bost_dep    = self._is_bost_depot(cur_depot)
-                            is_bost_global = self._is_bost_global(cur_depot)
-                            is_bdc_bost    = self._owning_bdc_is_bost(cur_bdc)
-
-                            if is_bdc_bost:
-                                # ── BOST BDC: accumulate every BOST depot
-                                if is_bost_dep:
-                                    if product not in bost_accum:
-                                        bost_accum[product] = {
-                                            "actual": 0.0, "avail": 0.0, "date": cur_date,
-                                        }
-                                    bost_accum[product]["actual"] += actual
-                                    bost_accum[product]["avail"]  += avail
-                                    if cur_date > bost_accum[product]["date"]:
-                                        bost_accum[product]["date"] = cur_date
-                                else:
-                                    # Non-BOST depot under BOST BDC — keep as-is
-                                    norm_depot = self._ns(cur_depot)
-                                    key = (cur_bdc, norm_depot, product, cur_date)
-                                    if key not in seen:
-                                        seen.add(key)
-                                        records.append({
-                                            "Date":                       cur_date,
-                                            "BDC":                        cur_bdc,
-                                            "DEPOT":                      norm_depot,
-                                            "Product":                    product,
-                                            "ACTUAL BALANCE (LT\\KG)":    actual,
-                                            "AVAILABLE BALANCE (LT\\KG)": avail,
-                                        })
-                            else:
-                                # ── All other BDCs: skip individual BOST depots
-                                if is_bost_dep and not is_bost_global:
-                                    continue
-                                norm_depot = self._ns(cur_depot)
-                                key = (cur_bdc, norm_depot, product, cur_date)
-                                if key in seen:
-                                    continue
-                                seen.add(key)
-                                records.append({
-                                    "Date":                       cur_date,
-                                    "BDC":                        cur_bdc,
-                                    "DEPOT":                      norm_depot,
-                                    "Product":                    product,
-                                    "ACTUAL BALANCE (LT\\KG)":    actual,
-                                    "AVAILABLE BALANCE (LT\\KG)": avail,
-                                })
-        except Exception:
-            pass
-
-        # Flush any remaining BOST accumulator
-        if bost_accum and self._owning_bdc_is_bost(cur_bdc):
-            _flush_bost_accum(cur_bdc)
-
-        return records
-
 
 # ── OMC Loadings ─────────────────────────────────────────────
 _PRODUCT_MAP_OMC = {"AGO": "GASOIL", "PMS": "PREMIUM", "LPG": "LPG"}
@@ -1837,65 +1701,6 @@ def _make_omc_fetcher(start_str: str, end_str: str):
     return _fn
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# SINGLE-ENDPOINT FETCH HELPERS
-# These mirror the "fast path" in the second notebook: one API call for all BDCs
-# instead of looping through each BDC's individual credentials.
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _fetch_bdc_balance_single_endpoint() -> list:
-    """Fetch the BDC stock balance report for ALL BDCs in a single API call.
-
-    Uses the global NPA_CONFIG['USER_ID'] (same credential the second notebook
-    uses) rather than iterating through each BDC's individual user ID.
-    Returns a list of balance records identical in schema to the per-BDC path.
-    BOST depots are accumulated into one "BOST GLOBAL DEPOT" row per product
-    via the StockBalanceScraper.parse_pdf_bytes_global() method.
-    """
-    params = {
-        "lngCompanyId":     NPA_CONFIG["COMPANY_ID"],
-        "strITSfromPersol": NPA_CONFIG["ITS_FROM_PERSOL"],
-        "strGroupBy":       "BDC",
-        "strGroupBy1":      "DEPOT",
-        "strQuery1": "", "strQuery2": "", "strQuery3": "", "strQuery4": "",
-        "strPicHeight": "1", "szPicWeight": "1",
-        "lngUserId":    NPA_CONFIG["USER_ID"],
-        "intAppId":     NPA_CONFIG["APP_ID"],
-    }
-    pdf_bytes = _fetch_pdf(NPA_CONFIG["BDC_BALANCE_URL"], params)
-    if not pdf_bytes:
-        return []
-    scraper = StockBalanceScraper()
-    return scraper.parse_pdf_bytes_global(pdf_bytes)
-
-
-def _fetch_omc_single_endpoint(start_str: str, end_str: str) -> pd.DataFrame:
-    """Fetch OMC loadings for ALL BDCs in a single API call.
-
-    Uses the global NPA_CONFIG['USER_ID'] so no per-BDC credential loop is
-    needed.  Returns a DataFrame in the same schema as the per-BDC path.
-    """
-    params = {
-        "lngCompanyId":   NPA_CONFIG["COMPANY_ID"],
-        "szITSfromPersol":"persol",
-        "strGroupBy":     "BDC",
-        "strGroupBy1":    "",
-        "strQuery1":      " and iorderstatus=4",
-        "strQuery2":      start_str,
-        "strQuery3":      end_str,
-        "strQuery4":      "",
-        "strPicHeight":   "",
-        "strPicWeight":   "",
-        "intPeriodID":    "4",
-        "iUserId":        NPA_CONFIG["USER_ID"],
-        "iAppId":         NPA_CONFIG["APP_ID"],
-    }
-    pdf_bytes = _fetch_pdf(NPA_CONFIG["OMC_LOADINGS_URL"], params)
-    if not pdf_bytes:
-        return pd.DataFrame(columns=_ONLY_COLS)
-    return extract_omc_loadings_from_pdf(pdf_bytes, bdc_name="")
-
-
 def _make_daily_fetcher(start_str: str, end_str: str):
     def _fn(bdc_name: str):
         user_id = BDC_USER_MAP.get(bdc_name)
@@ -2192,41 +1997,17 @@ def show_bdc_balance():
     all_bdc_names = sorted(BDC_USER_MAP.keys())
     n_configured  = len(all_bdc_names)
 
-    # ── Fetch-mode selector ────────────────────────────────────────────────────
-    bal_fetch_mode = _radio(
-        "🔌 Fetch Mode",
-        [
-            "🌐 Single Endpoint  (Fast — one API call for all BDCs)",
-            "📡 Per-BDC Aggregation  (Thorough — one call per BDC, with retry)",
-        ],
-        shadow_key="bal_fetch_mode",
-        fallback="📡 Per-BDC Aggregation  (Thorough — one call per BDC, with retry)",
-        horizontal=True,
-    )
-
-    _single_bal = "Single Endpoint" in bal_fetch_mode
-
-    if _single_bal:
-        st.info(
-            "🌐 **Single Endpoint mode** — fetches the consolidated balance PDF in one call "
-            "using the global NPA user credential. Fast but coverage depends on that credential. "
-            "BOST individual depots (Accra Plains, Akosombo, Bolgatanga, Buipe, Kumasi …) "
-            "are automatically summed into a single **BOST GLOBAL DEPOT** value."
+    col1, col2 = st.columns([3,1])
+    with col1:
+        selected = _multiselect(
+            f"Select specific BDCs to fetch  (leave blank to fetch all {n_configured})",
+            all_bdc_names, shadow_key="bal_bdc_select",
         )
-    else:
-        col1, col2 = st.columns([3,1])
-        with col1:
-            selected = _multiselect(
-                f"Select specific BDCs to fetch  (leave blank to fetch all {n_configured})",
-                all_bdc_names, shadow_key="bal_bdc_select",
-            )
-        with col2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            fetch_all_flag = _checkbox("Fetch ALL BDCs", shadow_key="bal_fetch_all", fallback=True)
+    with col2:
+        st.markdown("<br>", unsafe_allow_html=True)
+        fetch_all_flag = _checkbox("Fetch ALL BDCs", shadow_key="bal_fetch_all", fallback=True)
 
-    bdcs_to_fetch = [] if _single_bal else (
-        all_bdc_names if (fetch_all_flag or not selected) else selected
-    )
+    bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
 
     has_previous = bool(st.session_state.get("bdc_records"))
     merge_prev   = False
@@ -2237,51 +2018,23 @@ def show_bdc_balance():
             shadow_key="bal_merge_prev", fallback=True,
         )
 
-    if _single_bal:
-        st.info("📋 **1 API call** — all BDCs in one shot  "
-                "(TOR is included automatically when present in the global PDF)")
-    else:
-        st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** will be queried  "
-                f"({'all configured' if len(bdcs_to_fetch)==n_configured else 'custom selection'})  "
-                "| TOR is included if `BDC_USER_TEMA_OIL_REFINERY_TOR` is set in .env")
+    st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** will be queried  "
+            f"({'all configured' if len(bdcs_to_fetch)==n_configured else 'custom selection'})")
 
     if st.button("🔄 FETCH BDC BALANCE DATA", key="bal_fetch"):
-        if _single_bal:
-            # ── Single-endpoint path ─────────────────────────────────────────
-            prog = st.progress(0, text="📡 Fetching consolidated balance PDF…")
-            with st.spinner("Fetching all BDC balances in a single call…"):
-                all_records = _fetch_bdc_balance_single_endpoint()
-            prog.progress(1.0, text="✅ Fetch complete")
+        prog      = st.progress(0, text="Initialising…")
+        log_box   = st.empty()
+        log_lines = []
 
-            if all_records:
-                bdcs_found = list({r["BDC"] for r in all_records})
-                summary = {"success": bdcs_found, "no_data": [], "failed": []}
-                st.success(
-                    f"✅ Single-endpoint fetch returned **{len(all_records)} records** "
-                    f"across **{len(bdcs_found)} BDCs**."
-                )
-            else:
-                summary = {"success": [], "no_data": [], "failed": ["single-endpoint"]}
-                st.error("❌ No data returned from single-endpoint fetch. "
-                         "Check NPA_USER_ID / BDC_BALANCE_URL in .env.")
+        results = _sequential_batch_fetch(
+            bdcs_to_fetch,
+            _make_balance_fetcher(),
+            prog, log_box, log_lines,
+            second_pass=True,
+        )
+        prog.progress(1.0, text="✅ Fetch complete")
 
-            n_queried = 1  # one API call
-        else:
-            # ── Per-BDC aggregation path (original) ─────────────────────────
-            prog      = st.progress(0, text="Initialising…")
-            log_box   = st.empty()
-            log_lines = []
-
-            results = _sequential_batch_fetch(
-                bdcs_to_fetch,
-                _make_balance_fetcher(),
-                prog, log_box, log_lines,
-                second_pass=True,
-            )
-            prog.progress(1.0, text="✅ Fetch complete")
-
-            all_records, summary = _combine_balance_results(results)
-            n_queried = len(bdcs_to_fetch)
+        all_records, summary = _combine_balance_results(results)
 
         if merge_prev and has_previous:
             prev = st.session_state.bdc_records
@@ -2290,11 +2043,11 @@ def show_bdc_balance():
 
         st.session_state.bdc_records       = all_records
         st.session_state.bdc_fetch_summary = summary
-        st.session_state.bdc_fetched_count = n_queried
+        st.session_state.bdc_fetched_count = len(bdcs_to_fetch)
         _save_state("bdc_records", all_records)
 
         st.markdown("---")
-        _render_fetch_summary(summary, n_queried, len(all_records), "Balance Records")
+        _render_fetch_summary(summary, len(bdcs_to_fetch), len(all_records), "Balance Records")
 
     records = st.session_state.get("bdc_records", [])
     if not records:
@@ -2404,37 +2157,15 @@ def show_omc_loadings():
         end_date = _date_input("End Date", shadow_key="omc_end",
                                fallback=datetime.now().date())
 
-    # ── Fetch-mode selector ────────────────────────────────────────────────────
-    omc_fetch_mode = _radio(
-        "🔌 Fetch Mode",
-        [
-            "🌐 Single Endpoint  (Fast — one API call for all BDCs)",
-            "📡 Per-BDC Aggregation  (Thorough — one call per BDC, with retry)",
-        ],
-        shadow_key="omc_fetch_mode",
-        fallback="📡 Per-BDC Aggregation  (Thorough — one call per BDC, with retry)",
-        horizontal=True,
-    )
+    col3, col4 = st.columns([3,1])
+    with col3:
+        selected = _multiselect(f"Select BDCs (blank = all {n_configured})",
+                                all_bdc_names, shadow_key="omc_bdc_select")
+    with col4:
+        st.markdown("<br>", unsafe_allow_html=True)
+        fetch_all_flag = _checkbox("Fetch ALL", shadow_key="omc_fetch_all", fallback=True)
 
-    _single_omc = "Single Endpoint" in omc_fetch_mode
-
-    if _single_omc:
-        st.info(
-            "🌐 **Single Endpoint mode** — fetches all BDC loadings in one call "
-            "using the global NPA user credential. Fast but coverage depends on that credential."
-        )
-    else:
-        col3, col4 = st.columns([3,1])
-        with col3:
-            selected = _multiselect(f"Select BDCs (blank = all {n_configured})",
-                                    all_bdc_names, shadow_key="omc_bdc_select")
-        with col4:
-            st.markdown("<br>", unsafe_allow_html=True)
-            fetch_all_flag = _checkbox("Fetch ALL", shadow_key="omc_fetch_all", fallback=True)
-
-    bdcs_to_fetch = [] if _single_omc else (
-        all_bdc_names if (fetch_all_flag or not selected) else selected
-    )
+    bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
     period_days   = max((end_date - start_date).days, 1)
 
     has_previous = not st.session_state.get("omc_df", pd.DataFrame()).empty
@@ -2445,57 +2176,28 @@ def show_omc_loadings():
             shadow_key="omc_merge_prev", fallback=True,
         )
 
-    if _single_omc:
-        st.info(f"📋 **1 API call** · "
-                f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
-                f"({period_days} days)")
-    else:
-        st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
-                f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
-                f"({period_days} days)")
+    st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
+            f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
+            f"({period_days} days)")
 
     if st.button("🔄 FETCH OMC LOADINGS", key="omc_fetch"):
         start_str = start_date.strftime("%m/%d/%Y")
         end_str   = end_date.strftime("%m/%d/%Y")
+        prog      = st.progress(0, text="Initialising…")
+        log_box   = st.empty()
+        log_lines = []
 
-        if _single_omc:
-            # ── Single-endpoint path ─────────────────────────────────────────
-            prog = st.progress(0, text="📡 Fetching consolidated OMC loadings PDF…")
-            with st.spinner("Fetching all OMC loadings in a single call…"):
-                combined = _fetch_omc_single_endpoint(start_str, end_str)
-            prog.progress(1.0, text="✅ Fetch complete")
+        results = _sequential_batch_fetch(
+            bdcs_to_fetch,
+            _make_omc_fetcher(start_str, end_str),
+            prog, log_box, log_lines,
+            second_pass=True,
+        )
+        prog.progress(1.0, text="✅ Fetch complete")
 
-            if not combined.empty:
-                bdcs_found = list(combined["BDC"].dropna().unique())
-                summary    = {"success": bdcs_found, "no_data": [], "failed": []}
-                st.success(
-                    f"✅ Single-endpoint fetch returned **{len(combined)} records** "
-                    f"across **{len(bdcs_found)} BDCs**."
-                )
-            else:
-                summary = {"success": [], "no_data": [], "failed": ["single-endpoint"]}
-                st.error("❌ No data returned from single-endpoint OMC fetch. "
-                         "Check NPA_USER_ID / OMC_LOADINGS_URL in .env.")
-
-            n_queried = 1
-        else:
-            # ── Per-BDC aggregation path (original) ─────────────────────────
-            prog      = st.progress(0, text="Initialising…")
-            log_box   = st.empty()
-            log_lines = []
-
-            results = _sequential_batch_fetch(
-                bdcs_to_fetch,
-                _make_omc_fetcher(start_str, end_str),
-                prog, log_box, log_lines,
-                second_pass=True,
-            )
-            prog.progress(1.0, text="✅ Fetch complete")
-
-            combined, summary = _combine_df_results(
-                results, ["Order Number", "Truck", "Date", "Product"]
-            )
-            n_queried = len(bdcs_to_fetch)
+        combined, summary = _combine_df_results(
+            results, ["Order Number", "Truck", "Date", "Product"]
+        )
 
         if merge_prev and has_previous:
             prev = st.session_state.omc_df
@@ -2505,13 +2207,13 @@ def show_omc_loadings():
 
         st.session_state.omc_df            = combined
         st.session_state.omc_fetch_summary = summary
-        st.session_state.omc_fetched_count = n_queried
+        st.session_state.omc_fetched_count = len(bdcs_to_fetch)
         st.session_state.omc_start_date    = start_date
         st.session_state.omc_end_date      = end_date
         _save_state("omc_df", combined)
 
         st.markdown("---")
-        _render_fetch_summary(summary, n_queried,
+        _render_fetch_summary(summary, len(bdcs_to_fetch),
                               len(combined) if not combined.empty else 0,
                               "Loading Records")
 
@@ -5019,3 +4721,4 @@ def main():
 
 
 main()
+```
