@@ -3927,6 +3927,20 @@ def show_national_stockout():
     _existing_bdc_records = st.session_state.get("bdc_records", [])
     _has_bdc_balance      = bool(_existing_bdc_records)
 
+    st.markdown("---")
+    # ── Fetch-mode selector for OMC Loadings ──────────────────────────────────
+    omc_fetch_mode = _radio(
+        "🔌 OMC Fetch Mode",
+        [
+            "🌐 Single Endpoint  (Fast — one API call for all BDCs)",
+            "📡 Per-BDC Aggregation  (Thorough — one call per BDC, with retry)",
+        ],
+        shadow_key="ns_omc_fetch_mode",
+        fallback="📡 Per-BDC Aggregation  (Thorough — one call per BDC, with retry)",
+        horizontal=True,
+    )
+    _single_omc = "Single Endpoint" in omc_fetch_mode
+
     if _has_bdc_balance:
         st.success(f"✅ BDC Balance already loaded — **{len(_existing_bdc_records):,} records** "
                    f"from a previous fetch will be used. Only OMC Loadings will be fetched fresh.")
@@ -3989,24 +4003,38 @@ def show_national_stockout():
                 balance_by_prod_raw = bal_df.groupby("Product")[col_bal].sum() if not bal_df.empty else pd.Series(dtype=float)
 
         with st.status("🚚 Step 2 / 2 — Fetching national OMC loadings…", expanded=True):
-            st.write(f"Querying {n_total} BDCs for loadings from "
-                     f"{start_date.strftime('%d %b')} to {end_date.strftime('%d %b %Y')}…")
-            prog2      = st.progress(0, text="Starting…")
-            log_box2   = st.empty()
-            log_lines2 = []
-            results2   = _sequential_batch_fetch(
-                all_bdc_names, _make_omc_fetcher(start_str, end_str),
-                prog2, log_box2, log_lines2,
-                second_pass=True,
-            )
-            prog2.progress(1.0, text="✅ Loadings fetch complete")
-            omc_df, omc_summary = _combine_df_results(
-                results2, ["Order Number", "Truck", "Date", "Product"]
-            )
-            st.write(f"✅ **{len(omc_df):,} loading records** |  "
-                     f"✅ {len(omc_summary['success'])} succeeded  |  "
-                     f"⚠️ {len(omc_summary['no_data'])} no data  |  "
-                     f"❌ {len(omc_summary['failed'])} failed")
+            if _single_omc:
+                prog2 = st.progress(0, text="📡 Fetching consolidated OMC loadings PDF…")
+                with st.spinner("Fetching all OMC loadings in a single call…"):
+                    omc_df = _fetch_omc_single_endpoint(start_str, end_str)
+                prog2.progress(1.0, text="✅ Fetch complete")
+
+                if not omc_df.empty:
+                    bdcs_found = list(omc_df["BDC"].dropna().unique())
+                    omc_summary = {"success": bdcs_found, "no_data": [], "failed": []}
+                    st.success(f"✅ Single-endpoint fetch returned **{len(omc_df):,} records** across **{len(bdcs_found)} BDCs**.")
+                else:
+                    omc_summary = {"success": [], "no_data": [], "failed": ["single-endpoint"]}
+                    st.error("❌ No data returned from single-endpoint OMC fetch. Check NPA_USER_ID / OMC_LOADINGS_URL.")
+            else:
+                st.write(f"Querying {n_total} BDCs for loadings from "
+                         f"{start_date.strftime('%d %b')} to {end_date.strftime('%d %b %Y')}…")
+                prog2      = st.progress(0, text="Starting…")
+                log_box2   = st.empty()
+                log_lines2 = []
+                results2   = _sequential_batch_fetch(
+                    all_bdc_names, _make_omc_fetcher(start_str, end_str),
+                    prog2, log_box2, log_lines2,
+                    second_pass=True,
+                )
+                prog2.progress(1.0, text="✅ Loadings fetch complete")
+                omc_df, omc_summary = _combine_df_results(
+                    results2, ["Order Number", "Truck", "Date", "Product"]
+                )
+                st.write(f"✅ **{len(omc_df):,} loading records** |  "
+                         f"✅ {len(omc_summary['success'])} succeeded  |  "
+                         f"⚠️ {len(omc_summary['no_data'])} no data  |  "
+                         f"❌ {len(omc_summary['failed'])} failed")
 
             if omc_df.empty:
                 omc_by_prod = pd.Series({"PREMIUM":0.0,"GASOIL":0.0,"LPG":0.0})
@@ -4090,8 +4118,7 @@ def show_national_stockout():
     
     forecast_df = forecast_df_raw.copy()
 
-    # ── 🎯 DYNAMIC SINGLE OMC FILTER ──
-    # Runs instantly on every state change, no need to re-fetch
+    # ── 🎯 DYNAMIC SINGLE OMC FILTER (DISPLAY LAYER) ──
     if not omc_df.empty:
         all_omcs = sorted(omc_df["OMC"].dropna().astype(str).unique())
         st.markdown("### 🎯 DEPLETION FILTER")
