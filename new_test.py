@@ -5007,6 +5007,7 @@ def main():
             "🌐 WORLD RISK MONITOR",
             "🚢 VESSEL SUPPLY",
             "📄 BALANCE REPORT (PDF)",
+            "📄 LOADINGS REPORT (PDF)",
         ], index=0, label_visibility="collapsed")
 
         st.markdown("---")
@@ -5091,6 +5092,7 @@ def main():
     elif choice == "🌐 WORLD RISK MONITOR":         show_world_monitor()
     elif choice == "🚢 VESSEL SUPPLY":              show_vessel_supply()
     elif choice == "📄 BALANCE REPORT (PDF)":     show_report_generator()
+    elif choice == "📄 LOADINGS REPORT (PDF)":    show_loadings_report_generator()
 
 
 main()

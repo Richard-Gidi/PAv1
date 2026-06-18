@@ -149,8 +149,9 @@ def _card(fig, x, y, w, h, *, facecolor, edgecolor, lines, text_color):
                 fontsize=size, fontweight=weight, color=text_color)
 
 
-def _bar_panel(fig, rect, names, values, color, color_dark):
-    """Draw a single bar chart panel with M-formatted value labels."""
+def _bar_panel(fig, rect, names, values, color, color_dark,
+               label_fmt=_fmt_m, label_size=5.4, tick_size=4.6, wrap_width=11):
+    """Draw a single bar chart panel with value labels above each bar."""
     ax = fig.add_axes(rect)
     x = range(len(values))
     bars = ax.bar(x, values, color=color, width=0.72,
@@ -159,13 +160,13 @@ def _bar_panel(fig, rect, names, values, color, color_dark):
     top = max(values) if len(values) else 1
     ax.set_ylim(0, top * 1.18)
     for xi, v in zip(x, values):
-        ax.text(xi, v + top * 0.015, _fmt_m(v),
-                ha="center", va="bottom", fontsize=5.4,
+        ax.text(xi, v + top * 0.015, label_fmt(v),
+                ha="center", va="bottom", fontsize=label_size,
                 fontweight="bold", color="#222222")
 
     ax.set_xticks(list(x))
-    ax.set_xticklabels([_wrap_label(n) for n in names], fontsize=4.6,
-                       color="#333333", linespacing=0.9)
+    ax.set_xticklabels([_wrap_label(n, wrap_width) for n in names],
+                       fontsize=tick_size, color="#333333", linespacing=0.9)
     ax.set_yticks([])
     for s in ("top", "right", "left"):
         ax.spines[s].set_visible(False)
@@ -300,7 +301,11 @@ def generate_bdc_balance_report_pdf(records, report_date=None,
 # ══════════════════════════════════════════════════════════════
 # STREAMLIT PAGE  (drop-in for the NPA dashboard)
 # ══════════════════════════════════════════════════════════════
-import streamlit as st
+# Streamlit is only needed for the in-app pages; the PDF generators work without it.
+try:
+    import streamlit as st
+except ImportError:                      # pragma: no cover
+    st = None
 
 
 def show_report_generator():
@@ -386,3 +391,261 @@ def show_report_generator():
         fname = f"bdc_balance_report_{report_date.strftime('%Y%m%d')}.pdf"
         st.download_button("⬇️ DOWNLOAD PDF REPORT", pdf_bytes, fname,
                            "application/pdf", key="rpt_download")
+
+
+# ══════════════════════════════════════════════════════════════
+# DAILY LOADINGS REPORT  (from OMC Loadings data / omc_df)
+# ══════════════════════════════════════════════════════════════
+# Layout differs from the balance report:
+#   * gray page background, single white rounded chart panel
+#   * THREE fully-coloured header cards (market share / total / BDC count)
+#   * one "TOTAL <product> by BDC" bar chart, raw comma-formatted labels
+# Data source: st.session_state.omc_df  (cols: Product, BDC, Quantity, …)
+
+_LOADINGS_PAGE_BG = "#D4D4D4"
+_TOP_N_LOAD       = 15
+
+# Page order matches the uploaded Daily Loadings Report
+_LOADINGS_PRODUCTS = ["GASOIL", "PREMIUM", "LPG"]
+
+_LOADINGS_CFG = {
+    "GASOIL":  {"display": "GASOIL",  "unit": "Ltrs",
+                "color": "#1FAE54", "color_dark": "#178E43"},
+    "PREMIUM": {"display": "PREMIUM", "unit": "Ltrs",
+                "color": "#ED1C25", "color_dark": "#C20E26"},
+    "LPG":     {"display": "LPG",     "unit": "KG",
+                "color": "#2196F3", "color_dark": "#1577C7"},
+}
+
+_QTY_COL = "Quantity"
+
+
+def _fmt_commas0(value: float) -> str:
+    return f"{value:,.0f}"
+
+
+def _render_loadings_page(pdf, df_prod, cfg, date_str, highlight_name, share_label):
+    fig = plt.figure(figsize=(8.27, 11.69))           # A4 portrait
+    fig.patch.set_facecolor(_LOADINGS_PAGE_BG)
+
+    color, color_dark = cfg["color"], cfg["color_dark"]
+    display, unit     = cfg["display"], cfg["unit"]
+
+    # ── Title block ───────────────────────────────────────────
+    fig.text(0.5, 0.958, "DAILY LOADINGS REPORT", ha="center", va="center",
+             fontsize=22, fontweight="bold", color="#111111")
+    fig.text(0.5, 0.930, date_str, ha="center", va="center",
+             fontsize=17, fontweight="bold", color="#111111")
+    fig.text(0.5, 0.882, display, ha="center", va="center",
+             fontsize=14, fontweight="bold", color="#111111")
+
+    # ── Aggregate by BDC ──────────────────────────────────────
+    by_bdc = (df_prod.groupby("BDC")[_QTY_COL].sum()
+              .sort_values(ascending=False))
+    by_bdc = by_bdc[by_bdc > 0]
+    total  = float(by_bdc.sum())
+    n_bdc  = int(by_bdc.shape[0])
+
+    # OILCORP (highlight) market share, derived from the BDC totals
+    hi_val = 0.0
+    hk = str(highlight_name).strip().upper()
+    for name, val in by_bdc.items():
+        if str(name).strip().upper() == hk:
+            hi_val = float(val)
+            break
+    share_pct = (hi_val / total * 100) if total else 0.0
+
+    top = by_bdc.head(_TOP_N_LOAD)
+
+    # ── Three coloured header cards ───────────────────────────
+    _card(fig, 0.045, 0.795, 0.30, 0.062,
+          facecolor=color, edgecolor=color_dark,
+          lines=[(share_label, 9, "bold"),
+                 (f"{share_pct:.2f}", 17, "bold")],
+          text_color="white")
+    _card(fig, 0.365, 0.795, 0.32, 0.062,
+          facecolor=color, edgecolor=color_dark,
+          lines=[(f"{display}({unit})", 11, "bold"),
+                 (f"{total:,.2f}", 17, "bold")],
+          text_color="white")
+    _card(fig, 0.705, 0.795, 0.25, 0.062,
+          facecolor=color, edgecolor=color_dark,
+          lines=[("BDCS", 11, "bold"),
+                 (str(n_bdc), 17, "bold")],
+          text_color="white")
+
+    # ── White rounded chart panel ─────────────────────────────
+    ax_bg = fig.add_axes([0, 0, 1, 1]); ax_bg.axis("off")
+    ax_bg.set_xlim(0, 1); ax_bg.set_ylim(0, 1)
+    ax_bg.add_patch(FancyBboxPatch(
+        (0.04, 0.40), 0.92, 0.375,
+        boxstyle="round,pad=0,rounding_size=0.012",
+        linewidth=1.0, edgecolor="#cfcfcf", facecolor="white",
+        clip_on=False, zorder=0,
+    ))
+
+    panel_title = f"TOTAL {display} by BDC"
+    if n_bdc > _TOP_N_LOAD:
+        panel_title += f"(TOP {_TOP_N_LOAD})"
+    fig.text(0.5, 0.752, panel_title, ha="center", va="center",
+             fontsize=11, fontweight="bold", color="#333333", zorder=3)
+
+    _bar_panel(fig, [0.065, 0.47, 0.875, 0.255],
+               top.index.tolist(), top.values.tolist(),
+               color, color_dark,
+               label_fmt=_fmt_commas0, label_size=6.2,
+               tick_size=5.0, wrap_width=12)
+
+    pdf.savefig(fig, facecolor=fig.get_facecolor())
+    plt.close(fig)
+
+
+def generate_daily_loadings_report_pdf(records, report_date=None,
+                                       highlight_name="OILCORP ENERGIA LIMITED",
+                                       products=None) -> bytes:
+    """Build the styled Daily Loadings PDF (one page per product) and return bytes.
+
+    Parameters
+    ----------
+    records : list[dict] | pd.DataFrame
+        The `omc_df` collected by the OMC Loadings page
+        (needs at least Product, BDC, Quantity columns).
+    report_date : date | str | None
+        Date printed under the title. Defaults to the latest date in the data.
+    highlight_name : str
+        BDC whose market share fills the first card. The card label is derived
+        from its first word, e.g. "OILCORP ENERGIA LIMITED" -> "OILCORP'S MARKET SHARE (%)".
+    products : list[str] | None
+        Subset / order of products. Defaults to GASOIL, PREMIUM, LPG.
+    """
+    df = pd.DataFrame(records) if not isinstance(records, pd.DataFrame) else records.copy()
+    if df.empty or _QTY_COL not in df.columns or "BDC" not in df.columns:
+        raise ValueError("No loadings records (need Product, BDC, Quantity columns).")
+
+    df[_QTY_COL] = pd.to_numeric(df[_QTY_COL], errors="coerce").fillna(0)
+
+    if report_date is None:
+        report_date = df["Date"].max() if "Date" in df.columns else None
+    date_str = _fmt_date(report_date)
+
+    first_word  = str(highlight_name).strip().split()[0] if str(highlight_name).strip() else "OMC"
+    share_label = f"{first_word.upper()}'S MARKET SHARE (%)"
+
+    products = products or _LOADINGS_PRODUCTS
+
+    buf = io.BytesIO()
+    with PdfPages(buf) as pdf:
+        for prod in products:
+            cfg = _LOADINGS_CFG.get(prod)
+            if cfg is None:
+                continue
+            df_prod = df[df["Product"] == prod]
+            if df_prod.empty:
+                continue
+            _render_loadings_page(pdf, df_prod, cfg, date_str,
+                                  highlight_name, share_label)
+    return buf.getvalue()
+
+
+def show_loadings_report_generator():
+    st.markdown("<h2>📄 DAILY LOADINGS REPORT (PDF)</h2>", unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
+                border-radius:10px;padding:14px;margin-bottom:16px;'>
+    <b style='color:#00ffff;'>What this page does</b><br>
+    Builds the styled <b>DAILY LOADINGS REPORT</b> PDF — one page per product
+    (GASOIL · PREMIUM · LPG), each showing a highlighted OMC market-share card,
+    the product total, the BDC count, and a <b>TOTAL by BDC</b> bar chart —
+    straight from the data fetched on the <b>🚚 OMC LOADINGS</b> page.
+    </div>
+    """, unsafe_allow_html=True)
+
+    omc_df = st.session_state.get("omc_df", pd.DataFrame())
+    if not isinstance(omc_df, pd.DataFrame) or omc_df.empty:
+        st.warning("⚠️ No loadings data in session. Open **🚚 OMC LOADINGS** and "
+                   "click **FETCH OMC LOADINGS** first, then come back here.")
+        return
+
+    df = omc_df.copy()
+    df[_QTY_COL] = pd.to_numeric(df.get(_QTY_COL, 0), errors="coerce").fillna(0)
+
+    default_date = datetime.now().date()
+    if "Date" in df.columns and not df.empty:
+        try:
+            default_date = pd.to_datetime(df["Date"], errors="coerce").max().date()
+        except Exception:
+            pass
+
+    # Pre-select the configured OMC name if the app exposes it
+    default_highlight = "OILCORP ENERGIA LIMITED"
+    try:
+        default_highlight = NPA_CONFIG.get("OMC_NAME", default_highlight)  # noqa: F821
+    except Exception:
+        pass
+
+    c1, c2 = st.columns([1, 1])
+    with c1:
+        report_date = st.date_input("Report date (printed under the title)",
+                                    value=default_date, key="loadrpt_date")
+    with c2:
+        bdc_options = sorted(df["BDC"].dropna().astype(str).unique().tolist()) if "BDC" in df.columns else []
+        idx = bdc_options.index(default_highlight) if default_highlight in bdc_options else 0
+        highlight = st.selectbox(
+            "Highlight BDC for the market-share card",
+            bdc_options or [default_highlight],
+            index=idx if bdc_options else 0,
+            key="loadrpt_highlight",
+        )
+
+    avail  = [p for p in _LOADINGS_PRODUCTS if p in set(df.get("Product", []))]
+    chosen = st.multiselect(
+        "Products to include (page order is fixed)",
+        _LOADINGS_PRODUCTS,
+        default=avail or _LOADINGS_PRODUCTS,
+        key="loadrpt_products",
+        format_func=lambda p: _LOADINGS_CFG[p]["display"],
+    )
+
+    st.markdown("#### 📊 What the report will contain")
+    prev = []
+    for prod in (chosen or _LOADINGS_PRODUCTS):
+        sub = df[df["Product"] == prod]
+        if sub.empty:
+            continue
+        by_bdc = sub.groupby("BDC")[_QTY_COL].sum()
+        tot    = float(by_bdc.sum())
+        hi     = float(by_bdc.get(highlight, 0.0))
+        prev.append({
+            "Page":               _LOADINGS_CFG[prod]["display"],
+            "Unit":               _LOADINGS_CFG[prod]["unit"],
+            f"Total":             f"{tot:,.2f}",
+            "BDCs":               int((by_bdc > 0).sum()),
+            f"{str(highlight).split()[0]} Share %":
+                                  f"{(hi/tot*100) if tot else 0:.2f}",
+        })
+    if prev:
+        st.dataframe(pd.DataFrame(prev), use_container_width=True, hide_index=True)
+
+    if st.button("📄 GENERATE LOADINGS PDF", key="loadrpt_generate"):
+        if not chosen:
+            st.error("Select at least one product.")
+            return
+        with st.spinner("Rendering report…"):
+            try:
+                pdf_bytes = generate_daily_loadings_report_pdf(
+                    df, report_date=report_date,
+                    highlight_name=highlight, products=chosen,
+                )
+            except Exception as exc:
+                st.error(f"❌ Could not build report: {exc}")
+                return
+        st.session_state["loadrpt_pdf_bytes"] = pdf_bytes
+        st.success(f"✅ Report ready — {len(chosen)} page(s), "
+                   f"{len(pdf_bytes)/1024:.0f} KB.")
+
+    pdf_bytes = st.session_state.get("loadrpt_pdf_bytes")
+    if pdf_bytes:
+        fname = f"daily_loadings_report_{report_date.strftime('%Y%m%d')}.pdf"
+        st.download_button("⬇️ DOWNLOAD LOADINGS PDF", pdf_bytes, fname,
+                           "application/pdf", key="loadrpt_download")
