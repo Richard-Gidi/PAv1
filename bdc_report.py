@@ -649,3 +649,176 @@ def show_loadings_report_generator():
         fname = f"daily_loadings_report_{report_date.strftime('%Y%m%d')}.pdf"
         st.download_button("⬇️ DOWNLOAD LOADINGS PDF", pdf_bytes, fname,
                            "application/pdf", key="loadrpt_download")
+
+
+# ══════════════════════════════════════════════════════════════
+# WHATSAPP CAPTIONS  (auto-generated narrative for each report)
+# ══════════════════════════════════════════════════════════════
+# The factual parts (totals, BDC counts, highlight share/volume/rank, date)
+# are computed from the data. The qualitative words ("strong"/"moderate"/"low")
+# are derived from the highlight's RANK within each product — adjust the
+# thresholds in _sales_word / _insight_word to taste.
+
+def _ordinal_lc(n: int) -> str:
+    if 11 <= (n % 100) <= 13:
+        suf = "th"
+    else:
+        suf = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suf}"
+
+
+def _fmt_long_date(d) -> str:
+    """e.g. -> '16th June 2026'."""
+    if d is None:
+        d = datetime.now().date()
+    if isinstance(d, str):
+        for fmt in ("%Y/%m/%d", "%Y-%m-%d", "%d/%m/%Y"):
+            try:
+                d = datetime.strptime(d, fmt).date(); break
+            except ValueError:
+                continue
+        else:
+            d = datetime.now().date()
+    if hasattr(d, "hour"):          # datetime / pandas Timestamp -> take date part
+        d = d.date()
+    return f"{_ordinal_lc(d.day)} {d.strftime('%B')} {d.year}"
+
+
+def _coerce_report_date(report_date, df):
+    if report_date is None and isinstance(df, pd.DataFrame) and "Date" in df.columns and not df.empty:
+        try:
+            report_date = pd.to_datetime(df["Date"], errors="coerce").max()
+        except Exception:
+            report_date = None
+    return report_date
+
+
+def _sales_word(rank, n):
+    if not rank or not n:
+        return "low"
+    pct = rank / n
+    if pct <= 0.25:
+        return "strong"
+    if pct <= 0.50:
+        return "moderate"
+    if pct <= 0.75:
+        return "moderately low"
+    return "low"
+
+
+def _insight_word(rank, n):
+    if not rank or not n:
+        return "low"
+    pct = rank / n
+    if pct <= 0.25:
+        return "high"
+    if pct <= 0.50:
+        return "moderately okay"
+    if pct <= 0.75:
+        return "moderately low"
+    return "low"
+
+
+_LOAD_CAPTION_ORDER = ["LPG", "PREMIUM", "GASOIL"]
+_LOAD_WORDS = {
+    "LPG":     {"header": "LPG",     "share": "LPG",      "lift": "LPG",      "unit": "kg",     "friendly": "LPG"},
+    "PREMIUM": {"header": "PREMIUM", "share": "gasoline", "lift": "Gasoline", "unit": "litres", "friendly": "PMS"},
+    "GASOIL":  {"header": "GASOIL",  "share": "gasoil",   "lift": "AGO",      "unit": "litres", "friendly": "AGO"},
+}
+
+
+def _loading_stats(df, prod, highlight_name):
+    sub = df[df["Product"] == prod]
+    by = sub.groupby("BDC")[_QTY_COL].sum().sort_values(ascending=False)
+    by = by[by > 0]
+    total = float(by.sum())
+    n = int(by.shape[0])
+    hk = str(highlight_name).strip().upper()
+    hi_vol, rank = 0.0, None
+    for i, (name, val) in enumerate(by.items(), start=1):
+        if str(name).strip().upper() == hk:
+            hi_vol, rank = float(val), i
+            break
+    share = (hi_vol / total * 100) if total else 0.0
+    return {"total": total, "n": n, "hi": hi_vol, "share": share, "rank": rank}
+
+
+def build_loadings_caption(records, report_date=None,
+                           highlight_name="OILCORP ENERGIA LIMITED") -> str:
+    df = pd.DataFrame(records) if not isinstance(records, pd.DataFrame) else records.copy()
+    if df.empty or _QTY_COL not in df.columns:
+        return ""
+    df[_QTY_COL] = pd.to_numeric(df[_QTY_COL], errors="coerce").fillna(0)
+    report_date = _coerce_report_date(report_date, df)
+    date_str = _fmt_long_date(report_date)
+    short = highlight_name.strip().split()[0].title() if highlight_name.strip() else "OMC"
+
+    stats = {p: _loading_stats(df, p, highlight_name) for p in _LOAD_CAPTION_ORDER}
+
+    # Intro — best & weakest product for the highlight, by rank
+    ranked = [(p, stats[p]["rank"]) for p in _LOAD_CAPTION_ORDER if stats[p]["rank"]]
+    if ranked:
+        best  = min(ranked, key=lambda t: t[1])[0]
+        weak  = max(ranked, key=lambda t: t[1])[0]
+        intro = (f"{short} recorded its strongest position in "
+                 f"{_LOAD_WORDS[best]['friendly']}, while {_LOAD_WORDS[weak]['friendly']} "
+                 f"volume remained on the lower side.")
+    else:
+        intro = f"{short} had limited liftings on the stated date."
+
+    lines = [f"DAILY LOADING SUMMARY ({date_str})", "",
+             intro,
+             f"The figures below represent OMC liftings from {short} and other BDCs "
+             f"on the stated date, as captured from NPA's system.", ""]
+
+    for prod in _LOAD_CAPTION_ORDER:
+        w = _LOAD_WORDS[prod]
+        s = stats[prod]
+        lines.append(f"{w['header']} ({s['total']:,.0f} {w['unit']} total | {s['n']} BDCs)")
+        if s["rank"]:
+            lines.append(
+                f"{short} recorded {s['share']:.2f}% ({s['hi']:,.0f} {w['unit']}) of total "
+                f"{w['share']} market share ranking {_ordinal_lc(s['rank'])} overall. "
+                f"{w['lift']} liftings reflected {_sales_word(s['rank'], s['n'])} sales."
+            )
+        else:
+            lines.append(f"{short} recorded no {w['share']} liftings on this date.")
+        lines.append("")
+
+    lines.append("Summary Insight")
+    i = 1
+    for prod in ["PREMIUM", "GASOIL", "LPG"]:
+        s = stats[prod]
+        lines.append(f"{i}. {_LOAD_WORDS[prod]['friendly']} loadings were "
+                     f"{_insight_word(s['rank'], s['n'])}")
+        i += 1
+    lines.append(f"{i}. Overall, {short} demonstrated active market participation.")
+
+    return "\n".join(lines)
+
+
+def build_balance_caption(records, report_date=None) -> str:
+    df = pd.DataFrame(records) if not isinstance(records, pd.DataFrame) else records.copy()
+    if df.empty or _COL_BAL not in df.columns:
+        return ""
+    report_date = _coerce_report_date(report_date, df)
+    date_str = _fmt_long_date(report_date)
+    g = df.groupby("Product")[_COL_BAL].sum()
+    gasoil = float(g.get("GASOIL", 0))
+    pms    = float(g.get("PREMIUM", 0))
+    lpg    = float(g.get("LPG", 0))
+
+    return (
+        "Good morning team,\n\n"
+        "Please find attached a summary showing the remaining stock levels for each Bulk "
+        "Distribution Company (BDC) in Ghana across the three major products — Gasoil, "
+        "Premium, and LPG — along with the respective depots holding these products for "
+        f"this morning ({date_str}).\n\n"
+        "For ease of reference, the BDCs have been arranged in ascending order (by name), "
+        "allowing you to quickly locate specific companies.\n\n"
+        "Summary of BDC Stock Balances\n"
+        f"1. Gasoil: {gasoil:,.0f} litres\n"
+        f"2. Premium (PMS): {pms:,.0f} litres\n"
+        f"3. LPG: {lpg:,.0f} kg\n\n"
+        "Thank you"
+    )

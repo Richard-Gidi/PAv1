@@ -30,6 +30,8 @@ import pandas as pd
 from bdc_report import (
     generate_bdc_balance_report_pdf,
     generate_daily_loadings_report_pdf,
+    build_balance_caption,
+    build_loadings_caption,
 )
 
 logging.basicConfig(
@@ -134,9 +136,10 @@ def main(argv=None):
 
     items = []
     if bal_path:
-        items.append((bal_path, f"📊 BDC Balance Report — {report_day:%d %b %Y}"))
+        items.append((bal_path, build_balance_caption(records, report_day)))
     if load_path:
-        items.append((load_path, f"🚚 Daily Loadings Report — {loadings_day:%d %b %Y}"))
+        items.append((load_path, build_loadings_caption(
+            omc_df, loadings_day, highlight_name=OMC_NAME)))
 
     if dry_run:
         log.info("DRY-RUN: not sending. Would send %d file(s):", len(items))
