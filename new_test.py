@@ -71,7 +71,7 @@ import requests as _requests
 import psutil
 import queue
 import concurrent.futures as _cf
-from bdc_report import show_report_generator
+from bdc_report import show_report_generator, show_loadings_report_generator
 
 load_dotenv()
 
