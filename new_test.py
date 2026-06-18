@@ -71,6 +71,7 @@ import requests as _requests
 import psutil
 import queue
 import concurrent.futures as _cf
+from bdc_report import show_report_generator
 
 load_dotenv()
 
@@ -3852,9 +3853,6 @@ def show_product_outturn():
 # ══════════════════════════════════════════════════════════════
 # PAGE: NATIONAL STOCKOUT
 # ══════════════════════════════════════════════════════════════
-# ══════════════════════════════════════════════════════════════
-# PAGE: NATIONAL STOCKOUT
-# ══════════════════════════════════════════════════════════════
 def show_national_stockout():
     st.markdown("<h2>🌍 NATIONAL STOCKOUT FORECAST</h2>", unsafe_allow_html=True)
 
@@ -5008,6 +5006,7 @@ def main():
             "🌍 NATIONAL STOCKOUT",
             "🌐 WORLD RISK MONITOR",
             "🚢 VESSEL SUPPLY",
+            "📄 BALANCE REPORT (PDF)",
         ], index=0, label_visibility="collapsed")
 
         st.markdown("---")
@@ -5091,6 +5090,7 @@ def main():
     elif choice == "🌍 NATIONAL STOCKOUT":          show_national_stockout()
     elif choice == "🌐 WORLD RISK MONITOR":         show_world_monitor()
     elif choice == "🚢 VESSEL SUPPLY":              show_vessel_supply()
+    elif choice == "📄 BALANCE REPORT (PDF)":     show_report_generator()
 
 
 main()
