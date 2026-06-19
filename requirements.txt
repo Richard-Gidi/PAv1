@@ -12,11 +12,3 @@ streamlit_js_eval
 psutil
 matplotlib
 #queue
-
-# never commit secrets or generated output
-.env
-report_output/
-__pycache__/
-*.pyc
-.persist_state/
-national_snapshots/
