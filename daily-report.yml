@@ -2,7 +2,7 @@ name: Daily NPA Report
 
 on:
   schedule:
-    # 03:30 UTC == 03:30 Accra (Ghana is UTC+0, no DST)
+    # 3:30 UTC == 3:30 AM Accra (Ghana is UTC+0, no DST)
     - cron: '30 3 * * *'
   workflow_dispatch:        # lets you run it manually from the Actions tab
 
@@ -22,25 +22,19 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-job.txt
 
-      - name: Write .env (only used for per_bdc mode; harmless otherwise)
-        run: printf '%s' "$DOTENV" > .env
+      - name: Recreate .env from secret
         env:
           DOTENV: ${{ secrets.DOTENV }}
+        run: printf '%s' "$DOTENV" > .env
+
+      - name: Sanity-check .env (shows presence only, never values)
+        run: |
+          echo ".env line count: $(wc -l < .env)"
+          grep -q '^WHAPI_TOKEN=' .env        && echo "WHAPI_TOKEN: present"        || echo "WHAPI_TOKEN: MISSING"
+          grep -q '^WHATSAPP_GROUP_ID=' .env  && echo "WHATSAPP_GROUP_ID: present"  || echo "WHATSAPP_GROUP_ID: MISSING"
+          grep -q '^NPA_USER_ID=' .env        && echo "NPA_USER_ID: present"        || echo "NPA_USER_ID: MISSING"
 
       - name: Run daily report job
-        env:
-          NPA_USER_ID:            ${{ secrets.NPA_USER_ID }}
-          NPA_COMPANY_ID:         ${{ secrets.NPA_COMPANY_ID }}
-          NPA_APP_ID:             ${{ secrets.NPA_APP_ID }}
-          NPA_ITS_FROM_PERSOL:    ${{ secrets.NPA_ITS_FROM_PERSOL }}
-          NPA_BDC_BALANCE_URL:    ${{ secrets.NPA_BDC_BALANCE_URL }}
-          NPA_OMC_LOADINGS_URL:   ${{ secrets.NPA_OMC_LOADINGS_URL }}
-          REPORT_FETCH_MODE:      ${{ secrets.REPORT_FETCH_MODE }}
-          REPORT_LOADINGS_DAYS_BACK: ${{ secrets.REPORT_LOADINGS_DAYS_BACK }}
-          OMC_NAME:               ${{ secrets.OMC_NAME }}
-          WHATSAPP_PROVIDER:      ${{ secrets.WHATSAPP_PROVIDER }}
-          WHAPI_TOKEN:            ${{ secrets.WHAPI_TOKEN }}
-          WHATSAPP_GROUP_ID:      ${{ secrets.WHATSAPP_GROUP_ID }}
         run: python daily_report_job.py
 
       - name: Upload generated PDFs as artifacts

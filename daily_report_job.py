@@ -27,6 +27,12 @@ from datetime import timedelta, date
 
 import pandas as pd
 
+try:                                   # load .env first, so config below honors it
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    pass
+
 from bdc_report import (
     generate_bdc_balance_report_pdf,
     generate_daily_loadings_report_pdf,

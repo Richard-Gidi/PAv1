@@ -79,15 +79,15 @@ STOCK_PRODUCT_MAP = load_product_mappings()
 _BDC_USER_LOOKUP  = _build_lookup(BDC_USER_MAP)
 
 NPA_CONFIG = {
-    "COMPANY_ID":      os.getenv("NPA_COMPANY_ID", "1"),
-    "USER_ID":         os.getenv("NPA_USER_ID", "123292"),
-    "APP_ID":          os.getenv("NPA_APP_ID", "3"),
-    "ITS_FROM_PERSOL": os.getenv("NPA_ITS_FROM_PERSOL", "Persol Systems Limited"),
-    "BDC_BALANCE_URL": os.getenv("NPA_BDC_BALANCE_URL",
-        "https://iml.npa-enterprise.com/NPAAPILIVE/Home/CreateProductBalance"),
-    "OMC_LOADINGS_URL": os.getenv("NPA_OMC_LOADINGS_URL",
-        "https://iml.npa-enterprise.com/NewNPA/home/CreateOrdersReport"),
-    "OMC_NAME":        os.getenv("OMC_NAME", "OILCORP ENERGIA LIMITED"),
+    "COMPANY_ID":      os.getenv("NPA_COMPANY_ID") or "1",
+    "USER_ID":         os.getenv("NPA_USER_ID") or "123292",
+    "APP_ID":          os.getenv("NPA_APP_ID") or "3",
+    "ITS_FROM_PERSOL": os.getenv("NPA_ITS_FROM_PERSOL") or "Persol Systems Limited",
+    "BDC_BALANCE_URL": os.getenv("NPA_BDC_BALANCE_URL") or
+        "https://iml.npa-enterprise.com/NPAAPILIVE/Home/CreateProductBalance",
+    "OMC_LOADINGS_URL": os.getenv("NPA_OMC_LOADINGS_URL") or
+        "https://iml.npa-enterprise.com/NewNPA/home/CreateOrdersReport",
+    "OMC_NAME":        os.getenv("OMC_NAME") or "OILCORP ENERGIA LIMITED",
 }
 
 
