@@ -392,6 +392,16 @@ def show_report_generator():
         st.download_button("⬇️ DOWNLOAD PDF REPORT", pdf_bytes, fname,
                            "application/pdf", key="rpt_download")
 
+        # ── Copyable caption ──────────────────────────────────
+        st.markdown("---")
+        st.markdown("### 📋 Report Caption")
+        st.caption("Click the copy icon (top-right of the box) to copy.")
+        caption_text = build_balance_caption(df, report_date=report_date)
+        if caption_text:
+            st.code(caption_text, language=None)
+        else:
+            st.info("No caption could be generated from the current data.")
+
 
 # ══════════════════════════════════════════════════════════════
 # DAILY LOADINGS REPORT  (from OMC Loadings data / omc_df)
@@ -649,6 +659,17 @@ def show_loadings_report_generator():
         fname = f"daily_loadings_report_{report_date.strftime('%Y%m%d')}.pdf"
         st.download_button("⬇️ DOWNLOAD LOADINGS PDF", pdf_bytes, fname,
                            "application/pdf", key="loadrpt_download")
+
+        # ── Copyable caption ──────────────────────────────────
+        st.markdown("---")
+        st.markdown("### 📋 Report Caption")
+        st.caption("Click the copy icon (top-right of the box) to copy.")
+        caption_text = build_loadings_caption(df, report_date=report_date,
+                                              highlight_name=highlight)
+        if caption_text:
+            st.code(caption_text, language=None)
+        else:
+            st.info("No caption could be generated from the current data.")
 
 
 # ══════════════════════════════════════════════════════════════
