@@ -597,6 +597,263 @@ def _radio(label: str, options: list, shadow_key: str, fallback=None, **kwargs):
     st.session_state[shadow_key] = result
     return result
 
+# ══════════════════════════════════════════════════════════════
+# CURATED OMC ORDER-NUMBER PREFIX MAP
+# ══════════════════════════════════════════════════════════════
+# Mined from historical OMC Loadings exports (7,029 orders / 171 OMCs).
+# Validated coverage 89.9% at 99.34% precision on that sample.
+# MATCHING RULE (enforced in _match_omc_by_prefix):
+#   • Alpha orders: take the leading [A-Z]{2,} run, match LONGEST known
+#     prefix first (so "GPL"→GASO beats "GP"→GRID, "KSI"→VIVO beats "KS"→STAR).
+#   • Numeric orders: only when the order STARTS with a digit (never strip
+#     letters first — "STO/81/11" must NOT become SONABHY).
+# These are dominant-OMC prefixes; rare collisions are accepted as the
+# 0.66% error tail. Keep names spelled exactly as they appear in Loadings
+# so they line up with the OMC column.
+
+OMC_PREFIX_MAP = {
+    "AGA"         : "AGAPET LIMITED",
+    "AGEJ"        : "AGETHA ENERGY LIMITED",
+    "AIEPGMC"     : "AI ENERGY & PETROLEUM LIMITED",
+    "SOH"         : "ALINCO OIL COMPANY LIMITED",
+    "AG"          : "ALIVE GAS SERVICE LIMITED",
+    "AOA"         : "ALLIED OIL COMPANY LIMITED",
+    "AMH"         : "AMDAWAY OIL COMPANY LIMITED",
+    "ACL"         : "ANDEV COMPANY LIMITED",
+    "AGL"         : "ANNANDALE GHANA LIMITED",
+    "BEBP"        : "BEAP ENERGY GHANA LIMITED",
+    "BOC"         : "BENAB OIL COMPANY LIMITED",
+    "TWP"         : "BLOOM PETROLEUM LIMITED",
+    "BDL"         : "BREEDLOVE COMPANY LIMITED",
+    "BP"          : "BRENT PETROLEUM LIMITED",
+    "BOT"         : "BUFFALO OIL LIMITED",
+    "SOBTEX"      : "BULK OIL STORAGE AND TRANSPORTATION COMPANY",
+    "CDL"         : "CD LOW PRICE MASTER LIMITED",
+    "CGL"         : "COEGAN GHANA LIMITED",
+    "TCOMPS"      : "COMPASS OLEUM LIMITED",
+    "CELA"        : "COST ENERGY LIMITED",
+    "CRT"         : "CROWN PETROLEUM GH. LTD",
+    "DAOIL"       : "DA OIL COMPANY LIMITED",
+    "DJ"          : "DEJON JONES LIMITED",
+    "DS"          : "DESERT OIL GHANA LIMITED",
+    "EFS"         : "DESERT OIL GHANA LIMITED",
+    "DPBP"        : "DUKES PETROLEUM LTD.",
+    "DPKM"        : "DUKES PETROLEUM LTD.",
+    "DPT"         : "DUKES PETROLEUM LTD.",
+    "EPEL"        : "E-WINDSTAR PETROLEUM ENERGY LIMITED",
+    "EPLC"        : "ENERGETIC PETROLEUM LIMITED",
+    "EE"          : "ESSENCE ENERGY COMPANY LIMITED",
+    "EEP"         : "ESSENCE ENERGY COMPANY LIMITED",
+    "EV"          : "EV OIL COMPANY LTD",
+    "EXO"         : "EX OIL LIMITED",
+    "EZAAP"       : "EZA PETROLEUM GHANA LIMITED",
+    "EZAAT"       : "EZA PETROLEUM GHANA LIMITED",
+    "FG"          : "FIRST GAS CO. LTD.",
+    "CFA"         : "FRIMPS OIL CO. LTD",
+    "FRI"         : "FRIMPS OIL CO. LTD",
+    "FELPREM"     : "FUELIT ENERGIES LIMITED",
+    "GAB"         : "GAB ENERGY LIMITED",
+    "AGC"         : "GASO PETROLEUM LIMITED",
+    "ASM"         : "GASO PETROLEUM LIMITED",
+    "GAI"         : "GASO PETROLEUM LIMITED",
+    "GAO"         : "GASO PETROLEUM LIMITED",
+    "GM"          : "GASO PETROLEUM LIMITED",
+    "GMB"         : "GASO PETROLEUM LIMITED",
+    "GMC"         : "GASO PETROLEUM LIMITED",
+    "GMCF"        : "GASO PETROLEUM LIMITED",
+    "GPA"         : "GASO PETROLEUM LIMITED",
+    "GPK"         : "GASO PETROLEUM LIMITED",
+    "GPL"         : "GASO PETROLEUM LIMITED",
+    "GPLV"        : "GASO PETROLEUM LIMITED",
+    "GSW"         : "GASO PETROLEUM LIMITED",
+    "GAT"         : "GAT OIL COMPANY LIMITED",
+    "GSPL"        : "GLOBAL STANDARD PETROLEUM LIMITED",
+    "GL"          : "GLORY OIL CO. LTD",
+    "GOIL"        : "GOIL PLC",
+    "GE"          : "GOODNESS ENERGY LIMITED",
+    "GEJUN"       : "GOWELL ENERGY LIMITED",
+    "GP"          : "GRID PETROLEUM GHANA LIMITED",
+    "PMX"         : "GRID PETROLEUM GHANA LIMITED",
+    "GTL"         : "GROUPE TRANSAFRICANA LIMITED",
+    "HN"          : "HENOS ENERGY LIMITED",
+    "GTJ"         : "HILLS OIL MARKETING COMPANY LIMITED",
+    "HPLX"        : "HUSS PETROLEUM LIMITED",
+    "HUSS"        : "HUSS PETROLEUM LIMITED",
+    "CA"          : "IBM PETROLEUM LIMITED",
+    "IBM"         : "IBM PETROLEUM LIMITED",
+    "IBMEVE"      : "IBM PETROLEUM LIMITED",
+    "IBMTP"       : "IBM PETROLEUM LIMITED",
+    "AC"          : "INFIN GHANA LIMITED",
+    "IZSA"        : "IZ SALSABILLA COMPANY LIMITED",
+    "IZSP"        : "IZ SALSABILLA COMPANY LIMITED",
+    "JD"          : "JD-LINK OIL COMPANY LIMITED",
+    "JDS"         : "JD-LINK OIL COMPANY LIMITED",
+    "JUNE"        : "JOEKONA COMPANY LIMITED",
+    "JP"          : "JP TRUSTEES LIMITED",
+    "NEN"         : "JUSBRO PETROLEUM CO. LTD",
+    "KIEL"        : "K. I. ENERGY LIMITED",
+    "KB"          : "KABORE OIL LIMITED",
+    "KR"          : "KAN ROYAL SERVICE STATION & TRADING LIMITED",
+    "KAY"         : "KAYSENS LIMITED",
+    "KOLDIS"      : "KINGSPERP OIL LIMITED",
+    "KOLNPS"      : "KINGSPERP OIL LIMITED",
+    "OEL"         : "KOANTWI COMPANY LIMITED",
+    "LC"          : "LA CLEM GHANA LIMITED",
+    "LB"          : "LAMININ BEE VENTURES LIMITED",
+    "LBJA"        : "LIBERTY PETROLEUM LIMITED",
+    "LSOMATRIX"   : "LONESTAR GAS COMPANY LIMITED",
+    "LOC"         : "LUCKY OIL CO. LTD",
+    "MANG"        : "MANBAH GAS COMPANY LIMITED",
+    "MOGL"        : "MIDAS OIL & GAS LIMITED",
+    "MG"          : "MIGHTY GAS COMPANY LIMITED",
+    "MISAK"       : "MISA ENERGY GHANA LTD",
+    "MISAT"       : "MISA ENERGY GHANA LTD",
+    "MISATD"      : "MISA ENERGY GHANA LTD",
+    "BOEL"        : "MOBIK ENERGY LIMITED",
+    "COSL"        : "MOBIK ENERGY LIMITED",
+    "MECL"        : "MOBIK ENERGY LIMITED",
+    "PWSL"        : "MOBIK ENERGY LIMITED",
+    "MFLBUIAGO"   : "MORE FUEL LIMITED",
+    "MFLBUIPMS"   : "MORE FUEL LIMITED",
+    "MFLKMSAGO"   : "MORE FUEL LIMITED",
+    "MFLKMSPMS"   : "MORE FUEL LIMITED",
+    "MFLTFCAGO"   : "MORE FUEL LIMITED",
+    "MFLTTFAGO"   : "MORE FUEL LIMITED",
+    "MFLTTFPMS"   : "MORE FUEL LIMITED",
+    "NA"          : "NASONA OIL COMPANY LIMITED",
+    "NP"          : "NICK PETROLEUM GHANA LIMITED",
+    "NKA"         : "NKA ENERGY LIMITED",
+    "POK"         : "PACIFIC OIL GHANA LIMITED",
+    "POT"         : "PACIFIC OIL GHANA LIMITED",
+    "PK"          : "PATRICK K.A BONNEY & CO. LIMITED",
+    "PSLGT"       : "PETRO SANKOFA LIMITED",
+    "PLD"         : "PETROLAND LIMITED",
+    "PLKM"        : "PETROLAND LIMITED",
+    "BAZ"         : "PETRONAX ENERGY LIMITED",
+    "CAN"         : "PETRONAX ENERGY LIMITED",
+    "DAG"         : "PETRONAX ENERGY LIMITED",
+    "KAF"         : "PETRONAX ENERGY LIMITED",
+    "NEG"         : "PETRONAX ENERGY LIMITED",
+    "PEV"         : "PETRONAX ENERGY LIMITED",
+    "PS"          : "PETROSOL PLATINUM ENERGY PLC",
+    "NCML"        : "POWER FUEL DISTRIBUTION COMPANY LIMITED",
+    "PF"          : "POWER FUEL DISTRIBUTION COMPANY LIMITED",
+    "PFP"         : "POWER FUEL DISTRIBUTION COMPANY LIMITED",
+    "PR"          : "PRINCE ENERGY LIMITED",
+    "PRI"         : "PRINCE ENERGY LIMITED",
+    "QPL"         : "QUANTUM PETROLEUM LIMITED",
+    "JUN"         : "RADIANCE PETROLEUM LIMITED",
+    "RAJUN"       : "RADIANCE PETROLEUM LIMITED",
+    "HCLIF"       : "RAZS OIL GHANA LIMITED",
+    "HGOD"        : "RAZS OIL GHANA LIMITED",
+    "HRAZ"        : "RAZS OIL GHANA LIMITED",
+    "HRED"        : "RAZS OIL GHANA LIMITED",
+    "ROL"         : "READY OIL LIMITED",
+    "REST"        : "RESTOL ENERGIES LTD",
+    "ROOTS"       : "ROOTSENAF GAS COMPANY LIMITED",
+    "SL"          : "S. L. ENERGY LIMITED",
+    "SAC"         : "SAC ENERGY LIMITED COMPANY",
+    "SAP"         : "SAP OIL LIMITED",
+    "SEC"         : "SAYON ENERGY COMPANY LIMITED",
+    "SH"          : "SHAKAINAH VENTURES LIMITED",
+    "SOL"         : "SIGNAL OIL LIMITED",
+    "SO"          : "SO ENERGY GH LIMITED",
+    "SAGO"        : "SOCIETE NATIONAL BURKINABE",
+    "SPMS"        : "SOCIETE NATIONAL BURKINABE",
+    "SRFO"        : "SOCIETE NATIONAL BURKINABE",
+    "SOT"         : "SOTEI ENERGY LIMITED",
+    "BDH"         : "STAR OIL LTD",
+    "CT"          : "STAR OIL LTD",
+    "CTD"         : "STAR OIL LTD",
+    "KS"          : "STAR OIL LTD",
+    "TK"          : "STAR OIL LTD",
+    "TKD"         : "STAR OIL LTD",
+    "TSD"         : "SWAP ENERGY LTD",
+    "TEL"         : "TEL ENERGY LIMITED",
+    "TELG"        : "TEL ENERGY LIMITED",
+    "TJ"          : "TELIOS ENERGY LIMITED",
+    "TOP"         : "TOP OIL COMPANY LIMITED",
+    "TE"          : "TOTALENERGIES MARKETING GHANA PLC",
+    "TO"          : "TRINITY OIL COMPANY LIMITED",
+    "UPL"         : "UNICORN PETROLEUM LIMITED",
+    "UPLK"        : "UNICORN PETROLEUM LIMITED",
+    "UPLP"        : "UNICORN PETROLEUM LIMITED",
+    "VP"          : "VEROS PETROLEUM LIMITED",
+    "VEJUN"       : "VIGGO ENERGY LIMITED",
+    "VIR"         : "VIRGIN PETROLEUM LTD",
+    "APD"         : "VIVO ENERGY GHANA LIMITED",
+    "BU"          : "VIVO ENERGY GHANA LIMITED",
+    "KSI"         : "VIVO ENERGY GHANA LIMITED",
+    "SENTUO"      : "VIVO ENERGY GHANA LIMITED",
+    "TADI"        : "VIVO ENERGY GHANA LIMITED",
+    "TFC"         : "VIVO ENERGY GHANA LIMITED",
+    "TMPT"        : "VIVO ENERGY GHANA LIMITED",
+    "TOT"         : "VIVO ENERGY GHANA LIMITED",
+    "TTF"         : "VIVO ENERGY GHANA LIMITED",
+    "VANA"        : "VIVO ENERGY GHANA LIMITED",
+    "WELLIZ"      : "WABENDSO ENERGIES LIMITED",
+    "WELLIZY"     : "WABENDSO ENERGIES LIMITED",
+    "WELLIZZY"    : "WABENDSO ENERGIES LIMITED",
+    "WELSTA"      : "WABENDSO ENERGIES LIMITED",
+    "WELSTAT"     : "WABENDSO ENERGIES LIMITED",
+    "WAPB"        : "WEST AFRICAN PETROLEUM COMPANY (WAPCO)",
+    "WAPTDI"      : "WEST AFRICAN PETROLEUM COMPANY (WAPCO)",
+    "WM"          : "WEST AFRICAN PETROLEUM COMPANY (WAPCO)",
+    "ORD"         : "WESTOL PETROLEUM LIMITED (NOVA)",
+    "WG"          : "WORLD GAS COMPANY LIMITED",
+    "XG"          : "XPRESS GAS LIMITED",
+    "ZB"          : "ZEN PETROLEUM LIMITED",
+    "ZCM"         : "ZEN PETROLEUM LIMITED",
+    "ZGF"         : "ZEN PETROLEUM LIMITED",
+    "ZL"          : "ZEN PETROLEUM LIMITED",
+    "ZNG"         : "ZEN PETROLEUM LIMITED",
+    "ZNN"         : "ZEN PETROLEUM LIMITED",
+    "ZPM"         : "ZEN PETROLEUM LIMITED",
+}
+
+OMC_NUMERIC_PREFIX_MAP = {
+    "81": "SOCIETE NATIONAL BURKINABE",
+    "74": "SOCIETE NATIONAL BURKINABE",
+    "73": "SOCIETE NATIONAL BURKINABE",
+}
+
+# Alpha keys sorted longest-first so the matcher is greedy on specificity.
+_OMC_PREFIX_KEYS_BY_LEN = sorted(OMC_PREFIX_MAP.keys(), key=len, reverse=True)
+
+
+def _match_omc_by_prefix(order_num: str, dynamic_map: dict = None) -> str:
+    """Resolve an OMC name from an order number's prefix.
+
+    dynamic_map (optional) is a {prefix: OMC} dict learned at runtime from the
+    current session's OMC Loadings; it is consulted FIRST so live data can
+    extend/override the static table. Longest-prefix-first within each map.
+    """
+    if not order_num:
+        return ""
+    u = str(order_num).strip().upper()
+    if not u:
+        return ""
+
+    alpha = re.match(r"^([A-Z]{2,})", u)
+    if alpha:
+        ap = alpha.group(1)
+        if dynamic_map:
+            for k in sorted(dynamic_map.keys(), key=len, reverse=True):
+                if ap.startswith(k):
+                    return dynamic_map[k]
+        for k in _OMC_PREFIX_KEYS_BY_LEN:
+            if ap.startswith(k):
+                return OMC_PREFIX_MAP[k]
+        return ""
+
+    # Numeric path — ONLY when the order genuinely starts with a digit
+    if u[0].isdigit():
+        for k in OMC_NUMERIC_PREFIX_MAP:
+            if u.startswith(k):
+                return OMC_NUMERIC_PREFIX_MAP[k]
+    return ""
+
+
 
 # ══════════════════════════════════════════════════════════════
 # OMC ORDER-NUMBER → OMC NAME LOOKUP
@@ -659,6 +916,42 @@ def _build_omc_order_lookup(omc_df: pd.DataFrame) -> dict:
     return lookup
 
 
+
+def _build_dynamic_prefix_map(omc_df: pd.DataFrame, min_support: int = 3,
+                              min_purity: float = 0.85) -> dict:
+    """Learn {alpha_prefix: OMC} from the current session's OMC Loadings.
+
+    Only keeps prefixes that are dominated by a single OMC (>= min_purity)
+    with at least min_support orders, so noisy prefixes don't pollute results.
+    """
+    if omc_df is None or omc_df.empty:
+        return {}
+    if "Order Number" not in omc_df.columns or "OMC" not in omc_df.columns:
+        return {}
+
+    from collections import Counter
+    buckets: dict = {}
+    for _, row in omc_df.iterrows():
+        o   = str(row.get("Order Number", "")).strip().upper()
+        omc = str(row.get("OMC", "")).strip()
+        if not o or not omc:
+            continue
+        m = re.match(r"^([A-Z]{2,})", o)
+        if not m:
+            continue
+        buckets.setdefault(m.group(1), []).append(omc)
+
+    learned = {}
+    for pfx, omcs in buckets.items():
+        if len(omcs) < min_support:
+            continue
+        top, n = Counter(omcs).most_common(1)[0]
+        if n / len(omcs) >= min_purity:
+            learned[pfx] = top
+    return learned
+
+
+
 def _lookup_omc_for_order(
     order_num: str,
     omc_lookup: dict,
@@ -702,23 +995,42 @@ def _lookup_omc_for_order(
 
 
 def _enrich_daily_with_omc(daily_df: pd.DataFrame, omc_df: pd.DataFrame) -> pd.DataFrame:
+    """Populate the 'OMC Name' column on daily orders.
+
+    Two-stage resolver:
+      1. EXACT normalised order-number match against OMC Loadings (if present)
+         — highest confidence, uses live fetched data.
+      2. PREFIX fallback for everything stage 1 missed: a runtime-learned
+         prefix map (from this session's loadings) is tried first, then the
+         curated static OMC_PREFIX_MAP / OMC_NUMERIC_PREFIX_MAP.
+    """
     if daily_df is None or daily_df.empty:
         return daily_df
 
     df = daily_df.copy()
-
-    if omc_df is None or omc_df.empty or "Order Number" not in df.columns:
+    if "Order Number" not in df.columns:
         df["OMC Name"] = ""
         return df
 
-    omc_lookup = _build_omc_order_lookup(omc_df)
-    if not omc_lookup:
-        df["OMC Name"] = ""
-        return df
+    # Stage 1 — exact normalised lookup from fetched loadings
+    exact_lookup = _build_omc_order_lookup(omc_df) if (
+        isinstance(omc_df, pd.DataFrame) and not omc_df.empty
+    ) else {}
 
-    df["OMC Name"] = df["Order Number"].apply(
-        lambda o: _lookup_omc_for_order(str(o), omc_lookup)
-    )
+    # Dynamic prefix map learned from the same loadings (extends static table)
+    dynamic_prefix = _build_dynamic_prefix_map(omc_df) if (
+        isinstance(omc_df, pd.DataFrame) and not omc_df.empty
+    ) else {}
+
+    def _resolve(order):
+        o = str(order)
+        if exact_lookup:
+            norm = _norm_order(o)
+            if norm and norm in exact_lookup:          # stage 1: exact
+                return exact_lookup[norm]
+        return _match_omc_by_prefix(o, dynamic_prefix)  # stage 2: prefix
+
+    df["OMC Name"] = df["Order Number"].apply(_resolve)
     return df
 
 
