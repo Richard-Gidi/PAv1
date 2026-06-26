@@ -377,6 +377,7 @@ _WIDGET_STATE_DEFAULTS = {
     # Fetch mode selectors
     "bal_fetch_mode":      "📡 Per-BDC Aggregation (Thorough — one call per BDC)",
     "omc_fetch_mode":      "📡 Per-BDC Aggregation (Thorough — one call per BDC)",
+    "daily_fetch_mode":    "📡 Per-BDC Aggregation  (Thorough — one call per BDC, with retry)",
     # BDC Balance
     "bal_bdc_select":      [],
     "bal_fetch_all":       True,
@@ -1917,6 +1918,35 @@ def _make_daily_fetcher(start_str: str, end_str: str):
     return _fn
 
 
+def _fetch_daily_single_endpoint(start_str: str, end_str: str) -> pd.DataFrame:
+    """Fetch the daily orders report for ALL BDCs in a single API call.
+
+    Uses the global NPA_CONFIG['USER_ID'] (same credential the second notebook
+    uses) rather than iterating each BDC's individual user ID.  The BDC for each
+    row is detected dynamically from the PDF by extract_daily_orders_from_pdf().
+    Returns a DataFrame in the same schema as the per-BDC path.
+    """
+    params = {
+        "lngCompanyId":   NPA_CONFIG["COMPANY_ID"],
+        "szITSfromPersol":"persol",
+        "strGroupBy":     "DEPOT",
+        "strGroupBy1":    "",
+        "strQuery1":      "",
+        "strQuery2":      start_str,
+        "strQuery3":      end_str,
+        "strQuery4":      "",
+        "strPicHeight":   "1",
+        "strPicWeight":   "1",
+        "intPeriodID":    "-1",
+        "iUserId":        NPA_CONFIG["USER_ID"],
+        "iAppId":         NPA_CONFIG["APP_ID"],
+    }
+    pdf_bytes = _fetch_pdf(NPA_CONFIG["DAILY_ORDERS_URL"], params)
+    if not pdf_bytes:
+        return pd.DataFrame()
+    return extract_daily_orders_from_pdf(pdf_bytes, bdc_name="")
+
+
 # ══════════════════════════════════════════════════════════════
 # MERGE HELPERS
 # ══════════════════════════════════════════════════════════════
@@ -2622,15 +2652,38 @@ def show_daily_orders():
         end_date = _date_input("End Date", shadow_key="daily_end",
                                fallback=datetime.now().date())
 
-    col3, col4 = st.columns([3,1])
-    with col3:
-        selected = _multiselect(f"Select BDCs (blank = all {n_configured})",
-                                all_bdc_names, shadow_key="daily_bdc_select")
-    with col4:
-        st.markdown("<br>", unsafe_allow_html=True)
-        fetch_all_flag = _checkbox("Fetch ALL", shadow_key="daily_fetch_all", fallback=True)
+    # ── Fetch-mode selector ────────────────────────────────────────────────────
+    daily_fetch_mode = _radio(
+        "🔌 Fetch Mode",
+        [
+            "🌐 Single Endpoint  (Fast — one API call for all BDCs)",
+            "📡 Per-BDC Aggregation  (Thorough — one call per BDC, with retry)",
+        ],
+        shadow_key="daily_fetch_mode",
+        fallback="📡 Per-BDC Aggregation  (Thorough — one call per BDC, with retry)",
+        horizontal=True,
+    )
 
-    bdcs_to_fetch = all_bdc_names if (fetch_all_flag or not selected) else selected
+    _single_daily = "Single Endpoint" in daily_fetch_mode
+
+    if _single_daily:
+        st.info(
+            "🌐 **Single Endpoint mode** — fetches all daily orders in one call "
+            "using the global NPA user credential. Fast but coverage depends on that "
+            "credential. Each row's BDC is detected automatically from the report."
+        )
+    else:
+        col3, col4 = st.columns([3,1])
+        with col3:
+            selected = _multiselect(f"Select BDCs (blank = all {n_configured})",
+                                    all_bdc_names, shadow_key="daily_bdc_select")
+        with col4:
+            st.markdown("<br>", unsafe_allow_html=True)
+            fetch_all_flag = _checkbox("Fetch ALL", shadow_key="daily_fetch_all", fallback=True)
+
+    bdcs_to_fetch = [] if _single_daily else (
+        all_bdc_names if (fetch_all_flag or not selected) else selected
+    )
     period_days   = max((end_date - start_date).days, 1)
 
     has_previous = not st.session_state.get("daily_df", pd.DataFrame()).empty
@@ -2657,28 +2710,57 @@ def show_daily_orders():
             "The column will still appear but will be empty."
         )
 
-    st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
-            f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
-            f"({period_days} days)")
+    if _single_daily:
+        st.info(f"📋 **1 API call** · "
+                f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
+                f"({period_days} days)")
+    else:
+        st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
+                f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
+                f"({period_days} days)")
 
     if st.button("🔄 FETCH DAILY ORDERS", key="daily_fetch"):
         start_str = start_date.strftime("%m/%d/%Y")
         end_str   = end_date.strftime("%m/%d/%Y")
-        prog      = st.progress(0, text="Initialising…")
-        log_box   = st.empty()
-        log_lines = []
 
-        results = _sequential_batch_fetch(
-            bdcs_to_fetch,
-            _make_daily_fetcher(start_str, end_str),
-            prog, log_box, log_lines,
-            second_pass=True,
-        )
-        prog.progress(1.0, text="✅ Fetch complete")
+        if _single_daily:
+            # ── Single-endpoint path ─────────────────────────────────────────
+            prog = st.progress(0, text="📡 Fetching consolidated daily orders PDF…")
+            with st.spinner("Fetching all daily orders in a single call…"):
+                combined = _fetch_daily_single_endpoint(start_str, end_str)
+            prog.progress(1.0, text="✅ Fetch complete")
 
-        combined, summary = _combine_df_results(
-            results, ["Date", "Truck", "Order Number", "Product"]
-        )
+            if not combined.empty:
+                bdcs_found = list(combined["BDC"].dropna().unique())
+                summary    = {"success": bdcs_found, "no_data": [], "failed": []}
+                st.success(
+                    f"✅ Single-endpoint fetch returned **{len(combined)} records** "
+                    f"across **{len(bdcs_found)} BDCs**."
+                )
+            else:
+                summary = {"success": [], "no_data": [], "failed": ["single-endpoint"]}
+                st.error("❌ No data returned from single-endpoint daily fetch. "
+                         "Check NPA_USER_ID / DAILY_ORDERS_URL in .env.")
+
+            n_queried = 1
+        else:
+            # ── Per-BDC aggregation path (original) ─────────────────────────
+            prog      = st.progress(0, text="Initialising…")
+            log_box   = st.empty()
+            log_lines = []
+
+            results = _sequential_batch_fetch(
+                bdcs_to_fetch,
+                _make_daily_fetcher(start_str, end_str),
+                prog, log_box, log_lines,
+                second_pass=True,
+            )
+            prog.progress(1.0, text="✅ Fetch complete")
+
+            combined, summary = _combine_df_results(
+                results, ["Date", "Truck", "Order Number", "Product"]
+            )
+            n_queried = len(bdcs_to_fetch)
 
         if merge_prev and has_previous:
             prev = st.session_state.daily_df
@@ -2692,14 +2774,14 @@ def show_daily_orders():
 
         st.session_state.daily_df            = combined
         st.session_state.daily_fetch_summary = summary
-        st.session_state.daily_fetched_count = len(bdcs_to_fetch)
+        st.session_state.daily_fetched_count = n_queried
         st.session_state.daily_start_date    = start_date
         st.session_state.daily_end_date      = end_date
         _save_state("daily_df", combined)
 
         n_matched = int((combined["OMC Name"] != "").sum()) if not combined.empty else 0
         st.markdown("---")
-        _render_fetch_summary(summary, len(bdcs_to_fetch),
+        _render_fetch_summary(summary, n_queried,
                               len(combined) if not combined.empty else 0,
                               "Order Records")
         if not combined.empty:
@@ -2707,6 +2789,7 @@ def show_daily_orders():
                 f"🔗 OMC Name cross-reference: **{n_matched:,} / {len(combined):,}** orders "
                 f"matched ({n_matched/len(combined)*100:.1f}%)"
             )
+   
 
     df = st.session_state.get("daily_df", pd.DataFrame())
     if df.empty:
