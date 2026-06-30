@@ -631,7 +631,7 @@ def show_loadings_report_generator():
             "Unit":               _LOADINGS_CFG[prod]["unit"],
             f"Total":             f"{tot:,.2f}",
             "BDCs":               int((by_bdc > 0).sum()),
-            f"{str(highlight).split()[0]} Share %":
+            f"{(str(highlight).split() or ["—"])[0]} Share %":
                                   f"{(hi/tot*100) if tot else 0:.2f}",
         })
     if prev:
