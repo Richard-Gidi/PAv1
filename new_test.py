@@ -1626,6 +1626,94 @@ def _resolve_pdf_bdc(raw: str, fallback: str) -> str:
     return best_key if best_key else (fallback or raw)
 
 
+# ══════════════════════════════════════════════════════════════
+# DROP-IN 1 of 2 — OILCORP ZERO-FILL HELPERS
+# Place this block right AFTER `_resolve_pdf_bdc` (end of the OMC
+# Loadings parser section).  Requires NPA_CONFIG, _normalise_name,
+# and _ONLY_COLS — all defined earlier in new_test.py.
+# ══════════════════════════════════════════════════════════════
+#
+# Normally an OMC that lifts nothing on a given day simply does not
+# appear in the loadings PDF.  For OILCORP *only* we want a zero-LT
+# placeholder row on every day in the fetched range that has no real
+# OILCORP loading, so the loadings report always shows OILCORP (at 0)
+# instead of dropping it from that day.
+ 
+_OILCORP_NAME = NPA_CONFIG.get("OMC_NAME", "OILCORP ENERGIA LIMITED")
+_OILCORP_NORM = _normalise_name(_OILCORP_NAME)
+ 
+ 
+def _oilcorp_placeholder_mask(df: pd.DataFrame) -> pd.Series:
+    """Boolean mask of OILCORP zero-fill placeholder rows
+    (OILCORP + Quantity 0 + blank Order Number)."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty or "OMC" not in df.columns:
+        idx = df.index if isinstance(df, pd.DataFrame) else None
+        return pd.Series(False, index=idx) if idx is not None else pd.Series([], dtype=bool)
+    omc_norm = df["OMC"].astype(str).map(_normalise_name)
+    qty      = pd.to_numeric(df.get("Quantity", 0), errors="coerce").fillna(0)
+    order    = df.get("Order Number", "").astype(str).str.strip()
+    return (omc_norm == _OILCORP_NORM) & (qty == 0) & (order == "")
+ 
+ 
+def _ensure_oilcorp_zero_fill(df: pd.DataFrame, start_date, end_date,
+                              omc_name: str = None) -> pd.DataFrame:
+    """Append a zero-quantity OILCORP row for every day in
+    [start_date, end_date] that has no real OILCORP loading record.
+ 
+    Idempotent: any stale OILCORP placeholders inside the window are
+    stripped first, real OILCORP days are recomputed, then placeholders
+    are re-added only for genuinely empty days.  Only OILCORP is touched.
+    """
+    omc_name    = omc_name or _OILCORP_NAME
+    target_norm = _normalise_name(omc_name)
+ 
+    try:
+        days = pd.date_range(start_date, end_date, freq="D")
+    except Exception:
+        return df
+    all_day_strs = {d.strftime("%Y/%m/%d") for d in days}
+ 
+    if df is None or not isinstance(df, pd.DataFrame):
+        df = pd.DataFrame(columns=_ONLY_COLS)
+ 
+    # 1) Strip stale OILCORP placeholders inside this window (idempotency).
+    if not df.empty and "OMC" in df.columns and "Date" in df.columns:
+        omc_norm = df["OMC"].astype(str).map(_normalise_name)
+        qty      = pd.to_numeric(df.get("Quantity", 0), errors="coerce").fillna(0)
+        order    = df.get("Order Number", "").astype(str).str.strip()
+        in_win   = df["Date"].astype(str).isin(all_day_strs)
+        stale    = (omc_norm == target_norm) & (qty == 0) & (order == "") & in_win
+        df = df[~stale].reset_index(drop=True)
+ 
+    # 2) Which days now have a REAL OILCORP row?
+    have_days = set()
+    if not df.empty and "OMC" in df.columns and "Date" in df.columns:
+        omc_norm = df["OMC"].astype(str).map(_normalise_name)
+        have_days = set(df.loc[omc_norm == target_norm, "Date"].astype(str).unique())
+ 
+    missing_days = sorted(all_day_strs - have_days)
+    if missing_days:
+        zero_rows = [{
+            "Date":         day,
+            "OMC":          omc_name,
+            "Truck":        "",
+            "Product":      "",
+            "Quantity":     0.0,
+            "Price":        0.0,
+            "Depot":        "",
+            "Order Number": "",
+            "BDC":          "",
+        } for day in missing_days]
+        df = pd.concat([df, pd.DataFrame(zero_rows, columns=_ONLY_COLS)], ignore_index=True)
+ 
+    # 3) Keep chronological order.
+    try:
+        ds = pd.to_datetime(df["Date"], format="%Y/%m/%d", errors="coerce")
+        df = df.assign(_ds=ds).sort_values("_ds").drop(columns=["_ds"]).reset_index(drop=True)
+    except Exception:
+        pass
+    return df
+
 # ── Daily Orders ─────────────────────────────────────────────
 def _get_product_category(text):
     t = text.upper()
@@ -2724,21 +2812,27 @@ def show_bdc_balance():
 # ══════════════════════════════════════════════════════════════
 # PAGE: OMC LOADINGS
 # ══════════════════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════
+# DROP-IN 2 of 2 — REPLACE the existing `show_omc_loadings()`
+# ══════════════════════════════════════════════════════════════
 def show_omc_loadings():
     st.markdown("<h2>🚚 OMC LOADINGS ANALYZER</h2>", unsafe_allow_html=True)
-
+ 
     st.markdown("""
     <div style='background:rgba(0,255,255,0.05);border:1px solid #00ffff33;
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
     Fetches released OMC loading orders for every BDC within the selected date range —
-    combined into a single de-duplicated dataset for market share and dispatch analysis.
+    combined into a single de-duplicated dataset for market share and dispatch analysis.<br>
+    <b style='color:#ff00ff;'>OILCORP zero-fill:</b> OILCORP is guaranteed a row on every day
+    in the range — days with no real loading get a 0&nbsp;LT placeholder so the loadings
+    report never drops OILCORP. All other OMCs keep the default (absent on no-load days).
     </div>
     """, unsafe_allow_html=True)
-
+ 
     all_bdc_names = sorted(BDC_USER_MAP.keys())
     n_configured  = len(all_bdc_names)
-
+ 
     col1, col2 = st.columns(2)
     with col1:
         start_date = _date_input("Start Date", shadow_key="omc_start",
@@ -2746,7 +2840,7 @@ def show_omc_loadings():
     with col2:
         end_date = _date_input("End Date", shadow_key="omc_end",
                                fallback=datetime.now().date())
-
+ 
     # ── Fetch-mode selector ────────────────────────────────────────────────────
     omc_fetch_mode = _radio(
         "🔌 Fetch Mode",
@@ -2758,9 +2852,9 @@ def show_omc_loadings():
         fallback="📡 Per-BDC Aggregation  (Thorough — one call per BDC, with retry)",
         horizontal=True,
     )
-
+ 
     _single_omc = "Single Endpoint" in omc_fetch_mode
-
+ 
     if _single_omc:
         st.info(
             "🌐 **Single Endpoint mode** — fetches all BDC loadings in one call "
@@ -2774,12 +2868,12 @@ def show_omc_loadings():
         with col4:
             st.markdown("<br>", unsafe_allow_html=True)
             fetch_all_flag = _checkbox("Fetch ALL", shadow_key="omc_fetch_all", fallback=True)
-
+ 
     bdcs_to_fetch = [] if _single_omc else (
         all_bdc_names if (fetch_all_flag or not selected) else selected
     )
     period_days   = max((end_date - start_date).days, 1)
-
+ 
     has_previous = not st.session_state.get("omc_df", pd.DataFrame()).empty
     merge_prev   = False
     if has_previous:
@@ -2787,7 +2881,7 @@ def show_omc_loadings():
             "🔀 Merge this fetch with previous results",
             shadow_key="omc_merge_prev", fallback=True,
         )
-
+ 
     if _single_omc:
         st.info(f"📋 **1 API call** · "
                 f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
@@ -2796,18 +2890,18 @@ def show_omc_loadings():
         st.info(f"📋 **{len(bdcs_to_fetch)} BDC(s)** · "
                 f"Period: **{start_date.strftime('%d %b %Y')} → {end_date.strftime('%d %b %Y')}** "
                 f"({period_days} days)")
-
+ 
     if st.button("🔄 FETCH OMC LOADINGS", key="omc_fetch"):
         start_str = start_date.strftime("%m/%d/%Y")
         end_str   = end_date.strftime("%m/%d/%Y")
-
+ 
         if _single_omc:
             # ── Single-endpoint path ─────────────────────────────────────────
             prog = st.progress(0, text="📡 Fetching consolidated OMC loadings PDF…")
             with st.spinner("Fetching all OMC loadings in a single call…"):
                 combined = _fetch_omc_single_endpoint(start_str, end_str)
             prog.progress(1.0, text="✅ Fetch complete")
-
+ 
             if not combined.empty:
                 bdcs_found = list(combined["BDC"].dropna().unique())
                 summary    = {"success": bdcs_found, "no_data": [], "failed": []}
@@ -2819,14 +2913,14 @@ def show_omc_loadings():
                 summary = {"success": [], "no_data": [], "failed": ["single-endpoint"]}
                 st.error("❌ No data returned from single-endpoint OMC fetch. "
                          "Check NPA_USER_ID / OMC_LOADINGS_URL in .env.")
-
+ 
             n_queried = 1
         else:
-            # ── Per-BDC aggregation path (original) ─────────────────────────
+            # ── Per-BDC aggregation path ─────────────────────────────────────
             prog      = st.progress(0, text="Initialising…")
             log_box   = st.empty()
             log_lines = []
-
+ 
             results = _sequential_batch_fetch(
                 bdcs_to_fetch,
                 _make_omc_fetcher(start_str, end_str),
@@ -2834,87 +2928,100 @@ def show_omc_loadings():
                 second_pass=True,
             )
             prog.progress(1.0, text="✅ Fetch complete")
-
+ 
             combined, summary = _combine_df_results(
                 results, ["Order Number", "Truck", "Date", "Product"]
             )
             n_queried = len(bdcs_to_fetch)
-
+ 
         if merge_prev and has_previous:
             prev = st.session_state.omc_df
             combined = _merge_dataframes(prev, combined,
                                          ["Order Number", "Truck", "Date", "Product"])
             st.info(f"🔀 Merged — {len(combined)} total records after union.")
-
+ 
+        # ── OILCORP zero-fill — guarantee OILCORP on every day in the range ──
+        combined = _ensure_oilcorp_zero_fill(combined, start_date, end_date)
+        n_oil_zero = int(_oilcorp_placeholder_mask(combined).sum())
+        if n_oil_zero:
+            st.caption(
+                f"🟦 OILCORP zero-fill — added **{n_oil_zero}** zero-LT placeholder day(s) "
+                f"so OILCORP appears on every day in range."
+            )
+        n_real = int((~_oilcorp_placeholder_mask(combined)).sum())
+ 
         st.session_state.omc_df            = combined
         st.session_state.omc_fetch_summary = summary
         st.session_state.omc_fetched_count = n_queried
         st.session_state.omc_start_date    = start_date
         st.session_state.omc_end_date      = end_date
         _save_state("omc_df", combined)
-
+ 
         st.markdown("---")
-        _render_fetch_summary(summary, n_queried,
-                              len(combined) if not combined.empty else 0,
-                              "Loading Records")
-
+        _render_fetch_summary(summary, n_queried, n_real, "Loading Records")
+ 
     df = st.session_state.get("omc_df", pd.DataFrame())
     if df.empty:
         st.info("👆 Select a date range and click **FETCH OMC LOADINGS**.")
         return
-
+ 
+    # Real (non-placeholder) rows for honest analytics; full df keeps zeros for
+    # the explore table, Excel export, and the downstream loadings report.
+    df_real = df[~_oilcorp_placeholder_mask(df)] if not df.empty else df
+ 
     if st.session_state.get("omc_fetch_summary"):
         with st.expander("📊 Last fetch outcome", expanded=False):
             _render_fetch_summary(
                 st.session_state.omc_fetch_summary,
                 st.session_state.get("omc_fetched_count", len(BDC_USER_MAP)),
-                len(df), "Loading Records",
+                len(df_real), "Loading Records",
             )
-
+ 
     st.markdown("---")
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Total Orders",    f"{len(df):,}")
-    c2.metric("Total Volume (LT)", f"{df['Quantity'].sum():,.0f}")
-    c3.metric("Unique OMCs",     f"{df['OMC'].nunique()}")
-    c4.metric("Total Value (₵)", f"{(df['Quantity']*df['Price']).sum():,.0f}")
-
+    c1.metric("Total Orders",      f"{len(df_real):,}")
+    c2.metric("Total Volume (LT)", f"{df_real['Quantity'].sum():,.0f}")
+    c3.metric("Unique OMCs",       f"{df_real['OMC'].nunique()}")
+    c4.metric("Total Value (₵)",   f"{(df_real['Quantity']*df_real['Price']).sum():,.0f}")
+ 
     st.markdown("### 📦 PRODUCT BREAKDOWN")
-    prod_sum = (df.groupby("Product")
+    prod_sum = (df_real.groupby("Product")
                 .agg({"Quantity":"sum","Order Number":"count","OMC":"nunique"})
                 .reset_index()
                 .rename(columns={"Quantity":"Total Volume (LT/KG)","Order Number":"Orders","OMC":"OMCs"})
                 .sort_values("Total Volume (LT/KG)", ascending=False))
     st.dataframe(prod_sum, use_container_width=True, hide_index=True)
-
+ 
     st.markdown("### 🏢 TOP OMCs BY VOLUME")
-    omc_sum = (df.groupby("OMC").agg({"Quantity":"sum","Order Number":"count"})
+    omc_sum = (df_real.groupby("OMC").agg({"Quantity":"sum","Order Number":"count"})
                .reset_index().sort_values("Quantity", ascending=False).head(20)
                .rename(columns={"Quantity":"Total Volume (LT/KG)","Order Number":"Orders"}))
     st.dataframe(omc_sum, use_container_width=True, hide_index=True)
-
+ 
     st.markdown("### 🏦 BDC PERFORMANCE")
-    bdc_sum = (df.groupby("BDC").agg({"Quantity":"sum","Order Number":"count","OMC":"nunique"})
+    bdc_sum = (df_real.groupby("BDC").agg({"Quantity":"sum","Order Number":"count","OMC":"nunique"})
                .reset_index().sort_values("Quantity", ascending=False)
                .rename(columns={"Quantity":"Total Volume (LT/KG)","Order Number":"Orders","OMC":"OMCs"}))
     st.caption(f"**{len(bdc_sum)} BDCs** with loading data")
     st.dataframe(bdc_sum, use_container_width=True, hide_index=True)
-
+ 
     st.markdown("---")
     ft    = _selectbox("Filter by", ["Product","OMC","BDC","Depot"], shadow_key="omc_ftype")
     _cmap = {"Product":"Product","OMC":"OMC","BDC":"BDC","Depot":"Depot"}
-    opts  = ["ALL"] + sorted(df[_cmap[ft]].unique().tolist())
+    opts  = ["ALL"] + sorted([v for v in df[_cmap[ft]].astype(str).unique().tolist()])
     fval  = _selectbox("Value", opts, shadow_key="omc_fval")
-    filt  = df if fval=="ALL" else df[df[_cmap[ft]]==fval]
+    filt  = df if fval=="ALL" else df[df[_cmap[ft]].astype(str)==fval]
     st.caption(f"Showing **{len(filt):,}** records | "
-               f"Volume: **{filt['Quantity'].sum():,.0f} LT**")
+               f"Volume: **{filt['Quantity'].sum():,.0f} LT** "
+               f"(OILCORP zero-fill rows included here so you can verify them)")
     st.dataframe(filt[["Date","OMC","Truck","Quantity","Order Number","BDC","Depot","Price","Product"]]
                  .sort_values(["Product","Date"]),
                  use_container_width=True, height=400, hide_index=True)
-
+ 
     st.markdown("---")
     _omc_bdc_summary = (
-        df.pivot_table(index="BDC", columns="Product", values="Quantity",
-                       aggfunc="sum", fill_value=0)
+        df_real.pivot_table(index="BDC", columns="Product", values="Quantity",
+                            aggfunc="sum", fill_value=0)
         .reset_index()
     )
     for _p in ["GASOIL","LPG","PREMIUM"]:
@@ -2922,10 +3029,10 @@ def show_omc_loadings():
             _omc_bdc_summary[_p] = 0
     _omc_bdc_summary["Total"] = _omc_bdc_summary[["GASOIL","LPG","PREMIUM"]].sum(axis=1)
     _omc_bdc_summary = _omc_bdc_summary[["BDC","GASOIL","LPG","PREMIUM","Total"]].sort_values("Total", ascending=False)
-
+ 
     _omc_dl_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     excel_bytes = _to_excel_bytes({
-        "All Orders":  df,
+        "All Orders":  df,                       # full — includes OILCORP zero rows
         "PREMIUM":     df[df["Product"]=="PREMIUM"],
         "GASOIL":      df[df["Product"]=="GASOIL"],
         "LPG":         df[df["Product"]=="LPG"],
