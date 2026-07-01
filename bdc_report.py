@@ -504,36 +504,37 @@ def _names_match(a: str, b: str) -> bool:
     return _collapsed_match(_collapse_name(a), _collapse_name(b))
 
 
-def _omc_volume(df_sub: pd.DataFrame, highlight_name: str) -> float:
-    """Total Quantity for a given OMC (highlight) within a product slice.
-    Matches by COLLAPSED name (space-insensitive), so 'OILCORP ENERGIA LIMITED',
-    'OIL CORP ENERGIA', 'OILCORP ENERGIA LTD' etc. all count as the same OMC."""
-    if df_sub is None or df_sub.empty or "OMC" not in df_sub.columns:
+def _bdc_volume(df_sub: pd.DataFrame, highlight_name: str) -> float:
+    """Total Quantity for a given BDC (highlight) within a product slice.
+    OILCORP is a BDC (a supplier), so its market share = the volume lifted FROM
+    it divided by total loadings. Matches by COLLAPSED name (space/suffix-
+    insensitive) so spelling variants of the BDC all count."""
+    if df_sub is None or df_sub.empty or "BDC" not in df_sub.columns:
         return 0.0
     ch = _collapse_name(highlight_name)
     if not ch:
         return 0.0
-    collapsed = df_sub["OMC"].astype(str).map(_collapse_name)
+    collapsed = df_sub["BDC"].astype(str).map(_collapse_name)
     mask = collapsed.map(lambda x: _collapsed_match(x, ch))
     return float(pd.to_numeric(df_sub.loc[mask, _QTY_COL], errors="coerce").fillna(0).sum())
 
 
 def _resolve_highlight_default(df: pd.DataFrame, configured: str) -> str:
-    """Return the actual in-data OMC spelling that matches the configured name,
+    """Return the actual in-data BDC spelling that matches the configured name,
     preferring the variant with the most volume (a real row, not a zero-fill
     placeholder).  Falls back to `configured` if OILCORP never appears."""
-    if df is None or df.empty or "OMC" not in df.columns:
+    if df is None or df.empty or "BDC" not in df.columns:
         return configured
     ch = _collapse_name(configured)
     if not ch:
         return configured
     tmp = df.copy()
-    tmp["_c"] = tmp["OMC"].astype(str).map(_collapse_name)
+    tmp["_c"] = tmp["BDC"].astype(str).map(_collapse_name)
     tmp["_q"] = pd.to_numeric(tmp[_QTY_COL], errors="coerce").fillna(0)
     cand = tmp[tmp["_c"].map(lambda x: _collapsed_match(x, ch))]
     if cand.empty:
         return configured
-    by = cand.groupby(cand["OMC"].astype(str))["_q"].sum().sort_values(ascending=False)
+    by = cand.groupby(cand["BDC"].astype(str))["_q"].sum().sort_values(ascending=False)
     return by.index[0] if len(by) else configured
 
 
