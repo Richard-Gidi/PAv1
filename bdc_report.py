@@ -448,34 +448,63 @@ def _first_word(name, fallback: str = "OMC") -> str:
     return parts[0].upper() if parts else fallback
 
 
-def _norm_name(name: str) -> str:
-    """Normalise an OMC/BDC name for matching — mirrors new_test._normalise_name
-    so a highlight like 'OILCORP ENERGIA LIMITED' matches whatever spelling the
-    PDF actually used ('OILCORP ENERGIA', 'OILCORP ENERGIA LTD', etc.)."""
+_NAME_SUFFIXES = ("limited", "ltd", "company", "co", "plc", "ghana", "gh",
+                  "llc", "lp", "inc", "enterprises", "enterprise")
+
+
+def _collapse_name(name: str) -> str:
+    """Collapse a company name for tolerant matching.
+
+    Removes ALL non-alphanumerics **including spaces** (so 'OIL CORP' == 'OILCORP')
+    then strips trailing legal suffixes (LTD/LIMITED/CO/…).  This is deliberately
+    more aggressive than a word-level normaliser: the old approach stripped 'corp'
+    as a standalone word, turning 'OIL CORP ENERGIA' into 'oil energia' while
+    'OILCORP ENERGIA' stayed 'oilcorp energia' — so they never matched and real
+    OILCORP sales read as 0.
+    """
     if not name:
         return ""
     s = unicodedata.normalize("NFKD", str(name))
     s = "".join(c for c in s if not unicodedata.combining(c))
     s = s.lower()
-    s = re.sub(r"[^a-z0-9\s]", " ", s)
-    for suffix in ("limited", "ltd", "company", "co", "ghana", "plc",
-                   "llc", "lp", "inc", "corp", "enterprise", "enterprises"):
-        s = re.sub(rf"\b{suffix}\b", " ", s)
-    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(r"[^a-z0-9]+", "", s)          # drop spaces & punctuation entirely
+    changed = True
+    while changed:
+        changed = False
+        for suf in _NAME_SUFFIXES:
+            if len(s) > len(suf) + 2 and s.endswith(suf):
+                s = s[:-len(suf)]
+                changed = True
     return s
+
+
+def _collapsed_match(x: str, y: str) -> bool:
+    """Compare two already-collapsed names: exact, or containment when both are
+    long enough to make containment safe."""
+    if not x or not y:
+        return False
+    if x == y:
+        return True
+    if len(x) >= 6 and len(y) >= 6:
+        return x in y or y in x
+    return False
+
+
+def _names_match(a: str, b: str) -> bool:
+    return _collapsed_match(_collapse_name(a), _collapse_name(b))
 
 
 def _omc_volume(df_sub: pd.DataFrame, highlight_name: str) -> float:
     """Total Quantity for a given OMC (highlight) within a product slice.
-    Matches by NORMALISED name, so spelling variants of the same OMC all count
-    (this is what stops real OILCORP sales from reading as 0 when the PDF spells
-    OILCORP differently from the configured OMC_NAME)."""
+    Matches by COLLAPSED name (space-insensitive), so 'OILCORP ENERGIA LIMITED',
+    'OIL CORP ENERGIA', 'OILCORP ENERGIA LTD' etc. all count as the same OMC."""
     if df_sub is None or df_sub.empty or "OMC" not in df_sub.columns:
         return 0.0
-    hk = _norm_name(highlight_name)
-    if not hk:
+    ch = _collapse_name(highlight_name)
+    if not ch:
         return 0.0
-    mask = df_sub["OMC"].astype(str).map(_norm_name) == hk
+    collapsed = df_sub["OMC"].astype(str).map(_collapse_name)
+    mask = collapsed.map(lambda x: _collapsed_match(x, ch))
     return float(pd.to_numeric(df_sub.loc[mask, _QTY_COL], errors="coerce").fillna(0).sum())
 
 
@@ -485,15 +514,15 @@ def _resolve_highlight_default(df: pd.DataFrame, configured: str) -> str:
     placeholder).  Falls back to `configured` if OILCORP never appears."""
     if df is None or df.empty or "OMC" not in df.columns:
         return configured
-    target = _norm_name(configured)
-    if not target:
+    ch = _collapse_name(configured)
+    if not ch:
         return configured
     tmp = df.copy()
-    tmp["_n"] = tmp["OMC"].astype(str).map(_norm_name)
-    cand = tmp[tmp["_n"] == target]
+    tmp["_c"] = tmp["OMC"].astype(str).map(_collapse_name)
+    tmp["_q"] = pd.to_numeric(tmp[_QTY_COL], errors="coerce").fillna(0)
+    cand = tmp[tmp["_c"].map(lambda x: _collapsed_match(x, ch))]
     if cand.empty:
         return configured
-    cand = cand.assign(_q=pd.to_numeric(cand[_QTY_COL], errors="coerce").fillna(0))
     by = cand.groupby(cand["OMC"].astype(str))["_q"].sum().sort_values(ascending=False)
     return by.index[0] if len(by) else configured
 
@@ -710,6 +739,39 @@ def show_loadings_report_generator():
     if prev:
         st.dataframe(pd.DataFrame(prev), use_container_width=True, hide_index=True)
 
+    # ── Match diagnostic — shows exactly which OMC spellings are being counted
+    #    toward the highlight, so a name mismatch is visible instead of silent 0.
+    with st.expander("🔎 OILCORP match diagnostic", expanded=False):
+        ch = _collapse_name(highlight)
+        st.caption(f"Highlight: **{highlight}**  →  collapsed key: `{ch or '(empty)'}`")
+        if "OMC" in df.columns:
+            omc_tot = (
+                df.assign(_q=pd.to_numeric(df[_QTY_COL], errors="coerce").fillna(0))
+                  .groupby(df["OMC"].astype(str))["_q"].sum()
+                  .sort_values(ascending=False)
+            )
+            matched = [(o, v) for o, v in omc_tot.items() if _names_match(o, highlight)]
+            if matched:
+                st.success(
+                    f"✅ {len(matched)} OMC spelling(s) in the data count toward the "
+                    f"highlight (total {sum(v for _, v in matched):,.0f} LT):"
+                )
+                st.dataframe(
+                    pd.DataFrame(matched, columns=["OMC (as spelled in data)", "Volume (LT)"]),
+                    use_container_width=True, hide_index=True,
+                )
+            else:
+                st.error(
+                    "❌ No OMC in the loadings data matches this highlight — that's why "
+                    "the share is 0. Find OILCORP's real spelling in the list below and "
+                    "select it above."
+                )
+                st.dataframe(
+                    omc_tot.head(30).reset_index()
+                           .rename(columns={"OMC": "OMC (as spelled in data)", "_q": "Volume (LT)"}),
+                    use_container_width=True, hide_index=True,
+                )
+
     if st.button("📄 GENERATE LOADINGS PDF", key="loadrpt_generate"):
         if not chosen:
             st.error("Select at least one product.")
@@ -828,16 +890,16 @@ def _loading_stats(df, prod, highlight_name):
     sub = df[df["Product"] == prod].copy()
     if sub.empty or "OMC" not in sub.columns:
         return {"total": 0.0, "n": 0, "hi": 0.0, "share": 0.0, "rank": None}
-    sub["_n"] = sub["OMC"].astype(str).map(_norm_name)
+    sub["_c"] = sub["OMC"].astype(str).map(_collapse_name)
     sub["_q"] = pd.to_numeric(sub[_QTY_COL], errors="coerce").fillna(0)
-    by = sub.groupby("_n")["_q"].sum().sort_values(ascending=False)
+    by = sub.groupby("_c")["_q"].sum().sort_values(ascending=False)
     by = by[by > 0]
     total = float(by.sum())
     n = int(by.shape[0])
-    hk = _norm_name(highlight_name)
+    hk = _collapse_name(highlight_name)
     hi_vol, rank = 0.0, None
     for i, (name, val) in enumerate(by.items(), start=1):
-        if name == hk:
+        if _collapsed_match(name, hk):
             hi_vol, rank = float(val), i
             break
     share = (hi_vol / total * 100) if total else 0.0
