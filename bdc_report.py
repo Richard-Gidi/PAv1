@@ -560,8 +560,9 @@ def _render_loadings_page(pdf, df_prod, cfg, date_str, highlight_name, share_lab
     total  = float(by_bdc.sum())
     n_bdc  = int(by_bdc.shape[0])
 
-    # ── Highlight (OILCORP) market share — keyed on the OMC column ──
-    hi_val    = _omc_volume(df_prod, highlight_name)
+    # ── Highlight (OILCORP) market share — keyed on the BDC column ──
+    #    (OILCORP is a BDC/supplier: its share = volume lifted from it / total.)
+    hi_val    = _bdc_volume(df_prod, highlight_name)
     share_pct = (hi_val / total * 100) if total else 0.0
 
     top = by_bdc.head(_TOP_N_LOAD)
