@@ -1627,45 +1627,26 @@ def _resolve_pdf_bdc(raw: str, fallback: str) -> str:
 
 
 # ══════════════════════════════════════════════════════════════
-# DROP-IN 1 of 2 — OILCORP ZERO-FILL HELPERS
-# Place this block right AFTER `_resolve_pdf_bdc` (end of the OMC
-# Loadings parser section).  Requires NPA_CONFIG, _normalise_name,
-# and _ONLY_COLS — all defined earlier in new_test.py.
+# OILCORP ZERO-FILL HELPERS
 # ══════════════════════════════════════════════════════════════
-#
-# Normally an OMC that lifts nothing on a given day simply does not
-# appear in the loadings PDF.  For OILCORP *only* we want a zero-LT
-# placeholder row on every day in the fetched range that has no real
-# OILCORP loading, so the loadings report always shows OILCORP (at 0)
-# instead of dropping it from that day.
- 
 _OILCORP_NAME = NPA_CONFIG.get("OMC_NAME", "OILCORP ENERGIA LIMITED")
 _OILCORP_NORM = _normalise_name(_OILCORP_NAME)
  
- 
 def _oilcorp_placeholder_mask(df: pd.DataFrame) -> pd.Series:
-    """Boolean mask of OILCORP zero-fill placeholder rows
-    (OILCORP + Quantity 0 + blank Order Number)."""
-    if df is None or not isinstance(df, pd.DataFrame) or df.empty or "OMC" not in df.columns:
+    """Boolean mask of OILCORP zero-fill placeholder rows."""
+    if df is None or not isinstance(df, pd.DataFrame) or df.empty or "BDC" not in df.columns:
         idx = df.index if isinstance(df, pd.DataFrame) else None
         return pd.Series(False, index=idx) if idx is not None else pd.Series([], dtype=bool)
-    omc_norm = df["OMC"].astype(str).map(_normalise_name)
+    
+    bdc_norm = df["BDC"].astype(str).map(_normalise_name) # Changed to BDC
     qty      = pd.to_numeric(df.get("Quantity", 0), errors="coerce").fillna(0)
     order    = df.get("Order Number", "").astype(str).str.strip()
-    return (omc_norm == _OILCORP_NORM) & (qty == 0) & (order == "")
- 
+    return (bdc_norm == _OILCORP_NORM) & (qty == 0) & (order == "")
  
 def _ensure_oilcorp_zero_fill(df: pd.DataFrame, start_date, end_date,
-                              omc_name: str = None) -> pd.DataFrame:
-    """Append a zero-quantity OILCORP row for every day in
-    [start_date, end_date] that has no real OILCORP loading record.
- 
-    Idempotent: any stale OILCORP placeholders inside the window are
-    stripped first, real OILCORP days are recomputed, then placeholders
-    are re-added only for genuinely empty days.  Only OILCORP is touched.
-    """
-    omc_name    = omc_name or _OILCORP_NAME
-    target_norm = _normalise_name(omc_name)
+                              bdc_name: str = None) -> pd.DataFrame:
+    bdc_name    = bdc_name or _OILCORP_NAME
+    target_norm = _normalise_name(bdc_name)
  
     try:
         days = pd.date_range(start_date, end_date, freq="D")
@@ -1676,43 +1657,43 @@ def _ensure_oilcorp_zero_fill(df: pd.DataFrame, start_date, end_date,
     if df is None or not isinstance(df, pd.DataFrame):
         df = pd.DataFrame(columns=_ONLY_COLS)
  
-    # 1) Strip stale OILCORP placeholders inside this window (idempotency).
-    if not df.empty and "OMC" in df.columns and "Date" in df.columns:
-        omc_norm = df["OMC"].astype(str).map(_normalise_name)
+    # 1) Strip stale OILCORP placeholders
+    if not df.empty and "BDC" in df.columns and "Date" in df.columns:
+        bdc_norm = df["BDC"].astype(str).map(_normalise_name)
         qty      = pd.to_numeric(df.get("Quantity", 0), errors="coerce").fillna(0)
         order    = df.get("Order Number", "").astype(str).str.strip()
         in_win   = df["Date"].astype(str).isin(all_day_strs)
-        stale    = (omc_norm == target_norm) & (qty == 0) & (order == "") & in_win
+        stale    = (bdc_norm == target_norm) & (qty == 0) & (order == "") & in_win
         df = df[~stale].reset_index(drop=True)
  
     # 2) Which days now have a REAL OILCORP row?
     have_days = set()
-    if not df.empty and "OMC" in df.columns and "Date" in df.columns:
-        omc_norm = df["OMC"].astype(str).map(_normalise_name)
-        have_days = set(df.loc[omc_norm == target_norm, "Date"].astype(str).unique())
+    if not df.empty and "BDC" in df.columns and "Date" in df.columns:
+        bdc_norm = df["BDC"].astype(str).map(_normalise_name)
+        have_days = set(df.loc[bdc_norm == target_norm, "Date"].astype(str).unique())
  
     missing_days = sorted(all_day_strs - have_days)
     if missing_days:
         zero_rows = [{
             "Date":         day,
-            "OMC":          omc_name,
+            "OMC":          "",       # Leave OMC blank
             "Truck":        "",
             "Product":      "",
             "Quantity":     0.0,
             "Price":        0.0,
             "Depot":        "",
             "Order Number": "",
-            "BDC":          "",
+            "BDC":          bdc_name, # Fill the BDC column instead!
         } for day in missing_days]
         df = pd.concat([df, pd.DataFrame(zero_rows, columns=_ONLY_COLS)], ignore_index=True)
  
-    # 3) Keep chronological order.
     try:
         ds = pd.to_datetime(df["Date"], format="%Y/%m/%d", errors="coerce")
         df = df.assign(_ds=ds).sort_values("_ds").drop(columns=["_ds"]).reset_index(drop=True)
     except Exception:
         pass
     return df
+
 
 # ── Daily Orders ─────────────────────────────────────────────
 def _get_product_category(text):

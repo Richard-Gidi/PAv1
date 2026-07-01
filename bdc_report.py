@@ -406,6 +406,24 @@ def show_report_generator():
 # ══════════════════════════════════════════════════════════════
 # DAILY LOADINGS REPORT  (from OMC Loadings data / omc_df)
 # ══════════════════════════════════════════════════════════════
+import unicodedata
+import re
+
+def _norm_name(name: str) -> str:
+    """Normalises BDC names to ensure resilient matching across different spellings."""
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKD", str(name))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower()
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    for suffix in (
+        "limited", "ltd", "company", "co", "ghana", "plc",
+        "llc", "lp", "inc", "corp", "enterprise", "enterprises",
+    ):
+        s = re.sub(rf"\b{suffix}\b", " ", s)
+    return re.sub(r"\s+", " ", s).strip()
+
 
 _LOADINGS_PAGE_BG = "#D4D4D4"
 _TOP_N_LOAD       = 15
@@ -451,21 +469,10 @@ def _render_loadings_page(pdf, df_prod, cfg, date_str, highlight_name, share_lab
     total  = float(by_bdc.sum())
     n_bdc  = int(by_bdc.shape[0])
 
-    # ── Highlight Market Share (Derived from OMC Totals) ──────
-    hi_val = 0.0
-    hk = str(highlight_name).strip().upper()
-    
-    if "OMC" in df_prod.columns:
-        by_omc = df_prod.groupby("OMC")[_QTY_COL].sum()
-        for name, val in by_omc.items():
-            if str(name).strip().upper() == hk:
-                hi_val = float(val)
-                break
-    else:
-        for name, val in by_bdc.items():
-            if str(name).strip().upper() == hk:
-                hi_val = float(val)
-                break
+    # ── Highlight Market Share (Strictly from BDC Column) ─────
+    hk_norm = _norm_name(highlight_name)
+    by_bdc_norm = df_prod.groupby(df_prod["BDC"].astype(str).apply(_norm_name))[_QTY_COL].sum()
+    hi_val = float(by_bdc_norm.get(hk_norm, 0.0))
                 
     share_pct = (hi_val / total * 100) if total else 0.0
     top = by_bdc.head(_TOP_N_LOAD)
@@ -526,7 +533,7 @@ def generate_daily_loadings_report_pdf(records, report_date=None,
         report_date = df["Date"].max() if "Date" in df.columns else None
     date_str = _fmt_date(report_date)
 
-    first_word  = str(highlight_name).strip().split()[0] if str(highlight_name).strip() else "OMC"
+    first_word  = str(highlight_name).strip().split()[0] if str(highlight_name).strip() else "BDC"
     share_label = f"{first_word.upper()}'S MARKET SHARE (%)"
 
     products = products or _LOADINGS_PRODUCTS
@@ -553,7 +560,7 @@ def show_loadings_report_generator():
                 border-radius:10px;padding:14px;margin-bottom:16px;'>
     <b style='color:#00ffff;'>What this page does</b><br>
     Builds the styled <b>DAILY LOADINGS REPORT</b> PDF — one page per product
-    (GASOIL · PREMIUM · LPG), each showing a highlighted OMC market-share card,
+    (GASOIL · PREMIUM · LPG), each showing a highlighted BDC market-share card,
     the product total, the BDC count, and a <b>TOTAL by BDC</b> bar chart —
     straight from the data fetched on the <b>🚚 OMC LOADINGS</b> page.
     </div>
@@ -586,9 +593,7 @@ def show_loadings_report_generator():
         report_date = st.date_input("Report date (printed under the title)",
                                     value=default_date, key="loadrpt_date")
     with c2:
-        # Use OMC column to map the highlight dropdown
-        filter_col = "OMC" if "OMC" in df.columns else "BDC"
-        options_raw = sorted(df[filter_col].dropna().astype(str).unique().tolist())
+        options_raw = sorted(df["BDC"].dropna().astype(str).unique().tolist())
         options_clean = [o for o in options_raw if o.strip()]
         
         if default_highlight not in options_clean:
@@ -596,7 +601,7 @@ def show_loadings_report_generator():
 
         idx = options_clean.index(default_highlight) if default_highlight in options_clean else 0
         highlight = st.selectbox(
-            "Highlight OMC/BDC for the market-share card",
+            "Highlight BDC for the market-share card",
             options_clean,
             index=idx,
             key="loadrpt_highlight",
@@ -614,36 +619,25 @@ def show_loadings_report_generator():
     st.markdown("#### 📊 What the report will contain")
     prev = []
     h_str = str(highlight).strip()
-    short_lbl = h_str.split()[0] if h_str else "OMC"
+    short_lbl = h_str.split()[0] if h_str else "BDC"
 
     for prod in (chosen or _LOADINGS_PRODUCTS):
         sub = df[df["Product"] == prod]
         if sub.empty:
             continue
+            
         by_bdc = sub.groupby("BDC")[_QTY_COL].sum()
         tot    = float(by_bdc.sum())
 
-        hi = 0.0
-        hk = h_str.upper()
-        
-        # Calculate volume for highlighted OMC
-        if "OMC" in sub.columns:
-            by_omc = sub.groupby("OMC")[_QTY_COL].sum()
-            for name, val in by_omc.items():
-                if str(name).strip().upper() == hk:
-                    hi = float(val)
-                    break
-        else:
-            for name, val in by_bdc.items():
-                if str(name).strip().upper() == hk:
-                    hi = float(val)
-                    break
+        hk_norm = _norm_name(highlight)
+        by_bdc_norm = sub.groupby(sub["BDC"].astype(str).apply(_norm_name))[_QTY_COL].sum()
+        hi = float(by_bdc_norm.get(hk_norm, 0.0))
 
         prev.append({
-            "Page":               _LOADINGS_CFG[prod]["display"],
-            "Unit":               _LOADINGS_CFG[prod]["unit"],
-            f"Total":             f"{tot:,.2f}",
-            "BDCs":               int((by_bdc > 0).sum()),
+            "Page":                 _LOADINGS_CFG[prod]["display"],
+            "Unit":                 _LOADINGS_CFG[prod]["unit"],
+            f"Total":               f"{tot:,.2f}",
+            "BDCs":                 int((by_bdc > 0).sum()),
             f"{short_lbl} Share %": f"{(hi/tot*100) if tot else 0:.2f}",
         })
         
@@ -709,7 +703,7 @@ def _fmt_long_date(d) -> str:
                 continue
         else:
             d = datetime.now().date()
-    if hasattr(d, "hour"):          # datetime / pandas Timestamp -> take date part
+    if hasattr(d, "hour"):
         d = d.date()
     return f"{_ordinal_lc(d.day)} {d.strftime('%B')} {d.year}"
 
@@ -760,28 +754,18 @@ _LOAD_WORDS = {
 def _loading_stats(df, prod, highlight_name):
     sub = df[df["Product"] == prod]
     
-    # Generate overall BDC data for the market denominator
-    by_bdc = sub.groupby("BDC")[_QTY_COL].sum().sort_values(ascending=False)
-    by_bdc = by_bdc[by_bdc > 0]
-    total = float(by_bdc.sum())
-    n = int(by_bdc.shape[0])
-    
-    hk = str(highlight_name).strip().upper()
+    total = float(sub[_QTY_COL].sum())
+    hk_norm = _norm_name(highlight_name)
     hi_vol, rank = 0.0, None
 
-    # Determine Highlight Volume & Rank via OMC groupings
-    if "OMC" in sub.columns:
-        by_omc = sub.groupby("OMC")[_QTY_COL].sum().sort_values(ascending=False)
-        by_omc = by_omc[by_omc > 0]
-        for i, (name, val) in enumerate(by_omc.items(), start=1):
-            if str(name).strip().upper() == hk:
-                hi_vol, rank = float(val), i
-                break
-    else:
-        for i, (name, val) in enumerate(by_bdc.items(), start=1):
-            if str(name).strip().upper() == hk:
-                hi_vol, rank = float(val), i
-                break
+    by_bdc_norm = sub.groupby(sub["BDC"].astype(str).apply(_norm_name))[_QTY_COL].sum().sort_values(ascending=False)
+    by_bdc_norm = by_bdc_norm[by_bdc_norm > 0]
+    n = len(by_bdc_norm)
+    
+    for i, (name_norm, val) in enumerate(by_bdc_norm.items(), start=1):
+        if name_norm == hk_norm:
+            hi_vol, rank = float(val), i
+            break
 
     share = (hi_vol / total * 100) if total else 0.0
     return {"total": total, "n": n, "hi": hi_vol, "share": share, "rank": rank}
@@ -795,7 +779,7 @@ def build_loadings_caption(records, report_date=None,
     df[_QTY_COL] = pd.to_numeric(df[_QTY_COL], errors="coerce").fillna(0)
     report_date = _coerce_report_date(report_date, df)
     date_str = _fmt_long_date(report_date)
-    short = highlight_name.strip().split()[0].title() if highlight_name.strip() else "OMC"
+    short = highlight_name.strip().split()[0].title() if highlight_name.strip() else "BDC"
 
     stats = {p: _loading_stats(df, p, highlight_name) for p in _LOAD_CAPTION_ORDER}
 
@@ -812,7 +796,7 @@ def build_loadings_caption(records, report_date=None,
 
     lines = [f"DAILY LOADING SUMMARY ({date_str})", "",
              intro,
-             f"The figures below represent OMC liftings from {short} and other BDCs "
+             f"The figures below represent loadings from {short} and other BDCs "
              f"on the stated date, as captured from NPA's system.", ""]
 
     for prod in _LOAD_CAPTION_ORDER:
