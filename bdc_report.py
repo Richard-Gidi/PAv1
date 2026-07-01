@@ -479,15 +479,25 @@ def _collapse_name(name: str) -> str:
 
 
 def _collapsed_match(x: str, y: str) -> bool:
-    """Compare two already-collapsed names: exact, or containment when both are
-    long enough to make containment safe."""
+    """Compare two already-collapsed names. Matches on:
+      1. exact equality,
+      2. containment (one fully inside the other), when both are long enough,
+      3. a shared leading prefix of >= 7 chars — this catches stem variants such
+         as 'OILCORP ENERGIA' vs 'OILCORP ENERGY' (prefix 'oilcorpenerg') and
+         truncations, without pulling in unrelated OMCs (a 7-char shared prefix
+         like 'oilcorp' is highly distinctive)."""
     if not x or not y:
         return False
     if x == y:
         return True
-    if len(x) >= 6 and len(y) >= 6:
-        return x in y or y in x
-    return False
+    if len(x) >= 6 and len(y) >= 6 and (x in y or y in x):
+        return True
+    n = 0
+    for cx, cy in zip(x, y):
+        if cx != cy:
+            break
+        n += 1
+    return n >= 7
 
 
 def _names_match(a: str, b: str) -> bool:
@@ -699,6 +709,22 @@ def show_loadings_report_generator():
             # Keep the configured OMC selectable even on a no-lift day with no
             # real rows (the zero-fill normally guarantees this already).
             omc_options = sorted(set(omc_options) | {default_highlight})
+
+        # Heal a stale/zeroed selection: if the value currently pinned in the
+        # widget's session_state matches no real-volume OMC, but the resolved
+        # default does, adopt the default. This overrides leftover selections
+        # from earlier sessions without clobbering a valid manual choice.
+        def _has_real_match(nm):
+            if not nm or "OMC" not in df.columns:
+                return False
+            q = pd.to_numeric(df[_QTY_COL], errors="coerce").fillna(0)
+            m = df["OMC"].astype(str).map(lambda o: _names_match(o, nm))
+            return bool((m & (q > 0)).any())
+
+        _stored = st.session_state.get("loadrpt_highlight")
+        if (_stored is None or not _has_real_match(_stored)) and _has_real_match(default_highlight):
+            st.session_state["loadrpt_highlight"] = default_highlight
+
         idx = omc_options.index(default_highlight) if default_highlight in omc_options else 0
         highlight = st.selectbox(
             "Highlight OMC for the market-share card",
@@ -739,38 +765,43 @@ def show_loadings_report_generator():
     if prev:
         st.dataframe(pd.DataFrame(prev), use_container_width=True, hide_index=True)
 
-    # ── Match diagnostic — shows exactly which OMC spellings are being counted
-    #    toward the highlight, so a name mismatch is visible instead of silent 0.
-    with st.expander("🔎 OILCORP match diagnostic", expanded=False):
-        ch = _collapse_name(highlight)
-        st.caption(f"Highlight: **{highlight}**  →  collapsed key: `{ch or '(empty)'}`")
-        if "OMC" in df.columns:
-            omc_tot = (
-                df.assign(_q=pd.to_numeric(df[_QTY_COL], errors="coerce").fillna(0))
-                  .groupby(df["OMC"].astype(str))["_q"].sum()
-                  .sort_values(ascending=False)
+    # ── Match diagnostic (ALWAYS shown) — makes a name mismatch visible instead
+    #    of a silent 0, and lets you fix it here without any code change.
+    st.markdown("#### 🔎 OILCORP match diagnostic")
+    st.caption("matcher: collapse-v4 (space/suffix-insensitive + shared-prefix)")
+    ch = _collapse_name(highlight)
+    st.caption(f"Selected highlight: **{highlight}**  →  match key: `{ch or '(empty)'}`")
+    if "OMC" in df.columns:
+        omc_tot = (
+            df.assign(_q=pd.to_numeric(df[_QTY_COL], errors="coerce").fillna(0))
+              .groupby(df["OMC"].astype(str))["_q"].sum()
+              .sort_values(ascending=False)
+        )
+        matched = [(o, v) for o, v in omc_tot.items() if _names_match(o, highlight)]
+        real_matched = [(o, v) for o, v in matched if v > 0]
+        if real_matched:
+            st.success(
+                f"✅ {len(matched)} OMC spelling(s) in the data count toward "
+                f"**{_first_word(highlight)}** — total **{sum(v for _, v in matched):,.0f} LT**. "
+                f"The share should be non-zero above."
             )
-            matched = [(o, v) for o, v in omc_tot.items() if _names_match(o, highlight)]
-            if matched:
-                st.success(
-                    f"✅ {len(matched)} OMC spelling(s) in the data count toward the "
-                    f"highlight (total {sum(v for _, v in matched):,.0f} LT):"
-                )
-                st.dataframe(
-                    pd.DataFrame(matched, columns=["OMC (as spelled in data)", "Volume (LT)"]),
-                    use_container_width=True, hide_index=True,
-                )
-            else:
-                st.error(
-                    "❌ No OMC in the loadings data matches this highlight — that's why "
-                    "the share is 0. Find OILCORP's real spelling in the list below and "
-                    "select it above."
-                )
-                st.dataframe(
-                    omc_tot.head(30).reset_index()
-                           .rename(columns={"OMC": "OMC (as spelled in data)", "_q": "Volume (LT)"}),
-                    use_container_width=True, hide_index=True,
-                )
+            st.dataframe(
+                pd.DataFrame(matched, columns=["OMC (as spelled in data)", "Volume (LT)"]),
+                use_container_width=True, hide_index=True,
+            )
+        else:
+            st.error(
+                "❌ **No OMC with real volume matches this highlight — that is why the "
+                "share is 0.** OILCORP is almost certainly spelled differently in NPA's "
+                "data than your `.env` `OMC_NAME`. Find OILCORP in the list below and "
+                "**select that exact name in the dropdown above** — it will then work. "
+                "For a permanent fix, set `OMC_NAME` in your `.env` to that exact spelling."
+            )
+            st.dataframe(
+                omc_tot.head(40).reset_index()
+                       .rename(columns={"OMC": "OMC (as spelled in data)", "_q": "Volume (LT)"}),
+                use_container_width=True, hide_index=True,
+            )
 
     if st.button("📄 GENERATE LOADINGS PDF", key="loadrpt_generate"):
         if not chosen:
