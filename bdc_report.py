@@ -17,6 +17,8 @@ Only dependency added: matplotlib.
 """
 
 import io
+import re
+import unicodedata
 from datetime import datetime
 
 import pandas as pd
@@ -446,13 +448,54 @@ def _first_word(name, fallback: str = "OMC") -> str:
     return parts[0].upper() if parts else fallback
 
 
+def _norm_name(name: str) -> str:
+    """Normalise an OMC/BDC name for matching — mirrors new_test._normalise_name
+    so a highlight like 'OILCORP ENERGIA LIMITED' matches whatever spelling the
+    PDF actually used ('OILCORP ENERGIA', 'OILCORP ENERGIA LTD', etc.)."""
+    if not name:
+        return ""
+    s = unicodedata.normalize("NFKD", str(name))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = s.lower()
+    s = re.sub(r"[^a-z0-9\s]", " ", s)
+    for suffix in ("limited", "ltd", "company", "co", "ghana", "plc",
+                   "llc", "lp", "inc", "corp", "enterprise", "enterprises"):
+        s = re.sub(rf"\b{suffix}\b", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
 def _omc_volume(df_sub: pd.DataFrame, highlight_name: str) -> float:
-    """Total Quantity for a given OMC (highlight) within a product slice."""
+    """Total Quantity for a given OMC (highlight) within a product slice.
+    Matches by NORMALISED name, so spelling variants of the same OMC all count
+    (this is what stops real OILCORP sales from reading as 0 when the PDF spells
+    OILCORP differently from the configured OMC_NAME)."""
     if df_sub is None or df_sub.empty or "OMC" not in df_sub.columns:
         return 0.0
-    hk = str(highlight_name).strip().upper()
-    mask = df_sub["OMC"].astype(str).str.strip().str.upper() == hk
+    hk = _norm_name(highlight_name)
+    if not hk:
+        return 0.0
+    mask = df_sub["OMC"].astype(str).map(_norm_name) == hk
     return float(pd.to_numeric(df_sub.loc[mask, _QTY_COL], errors="coerce").fillna(0).sum())
+
+
+def _resolve_highlight_default(df: pd.DataFrame, configured: str) -> str:
+    """Return the actual in-data OMC spelling that matches the configured name,
+    preferring the variant with the most volume (a real row, not a zero-fill
+    placeholder).  Falls back to `configured` if OILCORP never appears."""
+    if df is None or df.empty or "OMC" not in df.columns:
+        return configured
+    target = _norm_name(configured)
+    if not target:
+        return configured
+    tmp = df.copy()
+    tmp["_n"] = tmp["OMC"].astype(str).map(_norm_name)
+    cand = tmp[tmp["_n"] == target]
+    if cand.empty:
+        return configured
+    cand = cand.assign(_q=pd.to_numeric(cand[_QTY_COL], errors="coerce").fillna(0))
+    by = cand.groupby(cand["OMC"].astype(str))["_q"].sum().sort_values(ascending=False)
+    return by.index[0] if len(by) else configured
 
 
 def _render_loadings_page(pdf, df_prod, cfg, date_str, highlight_name, share_label):
@@ -609,6 +652,9 @@ def show_loadings_report_generator():
         default_highlight = NPA_CONFIG.get("OMC_NAME", default_highlight)  # noqa: F821
     except Exception:
         pass
+    # Land the default on the real in-data spelling of OILCORP (variant-safe),
+    # so the dropdown shows the name that actually carries the sales.
+    default_highlight = _resolve_highlight_default(df, default_highlight)
 
     c1, c2 = st.columns([1, 1])
     with c1:
@@ -777,15 +823,21 @@ _LOAD_WORDS = {
 
 def _loading_stats(df, prod, highlight_name):
     # Highlight is an OMC — rank it among OMCs (buyers), not BDCs (suppliers).
-    sub = df[df["Product"] == prod]
-    by = sub.groupby("OMC")[_QTY_COL].sum().sort_values(ascending=False)
+    # Group by NORMALISED name so spelling variants of one OMC don't split its
+    # volume across two rows (which would zero-out the highlight's share).
+    sub = df[df["Product"] == prod].copy()
+    if sub.empty or "OMC" not in sub.columns:
+        return {"total": 0.0, "n": 0, "hi": 0.0, "share": 0.0, "rank": None}
+    sub["_n"] = sub["OMC"].astype(str).map(_norm_name)
+    sub["_q"] = pd.to_numeric(sub[_QTY_COL], errors="coerce").fillna(0)
+    by = sub.groupby("_n")["_q"].sum().sort_values(ascending=False)
     by = by[by > 0]
     total = float(by.sum())
     n = int(by.shape[0])
-    hk = str(highlight_name).strip().upper()
+    hk = _norm_name(highlight_name)
     hi_vol, rank = 0.0, None
     for i, (name, val) in enumerate(by.items(), start=1):
-        if str(name).strip().upper() == hk:
+        if name == hk:
             hi_vol, rank = float(val), i
             break
     share = (hi_vol / total * 100) if total else 0.0
