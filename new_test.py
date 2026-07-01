@@ -1694,6 +1694,7 @@ def _ensure_oilcorp_zero_fill(df: pd.DataFrame, start_date, end_date,
         pass
     return df
 
+#this is working
 
 # ── Daily Orders ─────────────────────────────────────────────
 def _get_product_category(text):
