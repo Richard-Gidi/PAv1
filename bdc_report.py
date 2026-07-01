@@ -406,11 +406,6 @@ def show_report_generator():
 # ══════════════════════════════════════════════════════════════
 # DAILY LOADINGS REPORT  (from OMC Loadings data / omc_df)
 # ══════════════════════════════════════════════════════════════
-# Layout differs from the balance report:
-#   * gray page background, single white rounded chart panel
-#   * THREE fully-coloured header cards (market share / total / BDC count)
-#   * one "TOTAL <product> by BDC" bar chart, raw comma-formatted labels
-# Data source: st.session_state.omc_df  (cols: Product, BDC, Quantity, …)
 
 _LOADINGS_PAGE_BG = "#D4D4D4"
 _TOP_N_LOAD       = 15
@@ -449,22 +444,30 @@ def _render_loadings_page(pdf, df_prod, cfg, date_str, highlight_name, share_lab
     fig.text(0.5, 0.882, display, ha="center", va="center",
              fontsize=14, fontweight="bold", color="#111111")
 
-    # ── Aggregate by BDC ──────────────────────────────────────
+    # ── Aggregate by BDC (For Bar Chart & Totals) ─────────────
     by_bdc = (df_prod.groupby("BDC")[_QTY_COL].sum()
               .sort_values(ascending=False))
     by_bdc = by_bdc[by_bdc > 0]
     total  = float(by_bdc.sum())
     n_bdc  = int(by_bdc.shape[0])
 
-    # OILCORP (highlight) market share, derived from the BDC totals
+    # ── Highlight Market Share (Derived from OMC Totals) ──────
     hi_val = 0.0
     hk = str(highlight_name).strip().upper()
-    for name, val in by_bdc.items():
-        if str(name).strip().upper() == hk:
-            hi_val = float(val)
-            break
+    
+    if "OMC" in df_prod.columns:
+        by_omc = df_prod.groupby("OMC")[_QTY_COL].sum()
+        for name, val in by_omc.items():
+            if str(name).strip().upper() == hk:
+                hi_val = float(val)
+                break
+    else:
+        for name, val in by_bdc.items():
+            if str(name).strip().upper() == hk:
+                hi_val = float(val)
+                break
+                
     share_pct = (hi_val / total * 100) if total else 0.0
-
     top = by_bdc.head(_TOP_N_LOAD)
 
     # ── Three coloured header cards ───────────────────────────
@@ -513,21 +516,6 @@ def _render_loadings_page(pdf, df_prod, cfg, date_str, highlight_name, share_lab
 def generate_daily_loadings_report_pdf(records, report_date=None,
                                        highlight_name="OILCORP ENERGIA LIMITED",
                                        products=None) -> bytes:
-    """Build the styled Daily Loadings PDF (one page per product) and return bytes.
-
-    Parameters
-    ----------
-    records : list[dict] | pd.DataFrame
-        The `omc_df` collected by the OMC Loadings page
-        (needs at least Product, BDC, Quantity columns).
-    report_date : date | str | None
-        Date printed under the title. Defaults to the latest date in the data.
-    highlight_name : str
-        BDC whose market share fills the first card. The card label is derived
-        from its first word, e.g. "OILCORP ENERGIA LIMITED" -> "OILCORP'S MARKET SHARE (%)".
-    products : list[str] | None
-        Subset / order of products. Defaults to GASOIL, PREMIUM, LPG.
-    """
     df = pd.DataFrame(records) if not isinstance(records, pd.DataFrame) else records.copy()
     if df.empty or _QTY_COL not in df.columns or "BDC" not in df.columns:
         raise ValueError("No loadings records (need Product, BDC, Quantity columns).")
@@ -587,7 +575,6 @@ def show_loadings_report_generator():
         except Exception:
             pass
 
-    # Pre-select the configured OMC name if the app exposes it
     default_highlight = "OILCORP ENERGIA LIMITED"
     try:
         default_highlight = NPA_CONFIG.get("OMC_NAME", default_highlight)  # noqa: F821
@@ -599,12 +586,19 @@ def show_loadings_report_generator():
         report_date = st.date_input("Report date (printed under the title)",
                                     value=default_date, key="loadrpt_date")
     with c2:
-        bdc_options = sorted(df["BDC"].dropna().astype(str).unique().tolist()) if "BDC" in df.columns else []
-        idx = bdc_options.index(default_highlight) if default_highlight in bdc_options else 0
+        # Use OMC column to map the highlight dropdown
+        filter_col = "OMC" if "OMC" in df.columns else "BDC"
+        options_raw = sorted(df[filter_col].dropna().astype(str).unique().tolist())
+        options_clean = [o for o in options_raw if o.strip()]
+        
+        if default_highlight not in options_clean:
+            options_clean.insert(0, default_highlight)
+
+        idx = options_clean.index(default_highlight) if default_highlight in options_clean else 0
         highlight = st.selectbox(
-            "Highlight BDC for the market-share card",
-            bdc_options or [default_highlight],
-            index=idx if bdc_options else 0,
+            "Highlight OMC/BDC for the market-share card",
+            options_clean,
+            index=idx,
             key="loadrpt_highlight",
         )
 
@@ -619,21 +613,40 @@ def show_loadings_report_generator():
 
     st.markdown("#### 📊 What the report will contain")
     prev = []
+    h_str = str(highlight).strip()
+    short_lbl = h_str.split()[0] if h_str else "OMC"
+
     for prod in (chosen or _LOADINGS_PRODUCTS):
         sub = df[df["Product"] == prod]
         if sub.empty:
             continue
         by_bdc = sub.groupby("BDC")[_QTY_COL].sum()
         tot    = float(by_bdc.sum())
-        hi     = float(by_bdc.get(highlight, 0.0))
+
+        hi = 0.0
+        hk = h_str.upper()
+        
+        # Calculate volume for highlighted OMC
+        if "OMC" in sub.columns:
+            by_omc = sub.groupby("OMC")[_QTY_COL].sum()
+            for name, val in by_omc.items():
+                if str(name).strip().upper() == hk:
+                    hi = float(val)
+                    break
+        else:
+            for name, val in by_bdc.items():
+                if str(name).strip().upper() == hk:
+                    hi = float(val)
+                    break
+
         prev.append({
             "Page":               _LOADINGS_CFG[prod]["display"],
             "Unit":               _LOADINGS_CFG[prod]["unit"],
             f"Total":             f"{tot:,.2f}",
             "BDCs":               int((by_bdc > 0).sum()),
-            f"{str(highlight).split()[0]} Share %":
-                                  f"{(hi/tot*100) if tot else 0:.2f}",
+            f"{short_lbl} Share %": f"{(hi/tot*100) if tot else 0:.2f}",
         })
+        
     if prev:
         st.dataframe(pd.DataFrame(prev), use_container_width=True, hide_index=True)
 
@@ -675,10 +688,6 @@ def show_loadings_report_generator():
 # ══════════════════════════════════════════════════════════════
 # WHATSAPP CAPTIONS  (auto-generated narrative for each report)
 # ══════════════════════════════════════════════════════════════
-# The factual parts (totals, BDC counts, highlight share/volume/rank, date)
-# are computed from the data. The qualitative words ("strong"/"moderate"/"low")
-# are derived from the highlight's RANK within each product — adjust the
-# thresholds in _sales_word / _insight_word to taste.
 
 def _ordinal_lc(n: int) -> str:
     if 11 <= (n % 100) <= 13:
@@ -750,16 +759,30 @@ _LOAD_WORDS = {
 
 def _loading_stats(df, prod, highlight_name):
     sub = df[df["Product"] == prod]
-    by = sub.groupby("BDC")[_QTY_COL].sum().sort_values(ascending=False)
-    by = by[by > 0]
-    total = float(by.sum())
-    n = int(by.shape[0])
+    
+    # Generate overall BDC data for the market denominator
+    by_bdc = sub.groupby("BDC")[_QTY_COL].sum().sort_values(ascending=False)
+    by_bdc = by_bdc[by_bdc > 0]
+    total = float(by_bdc.sum())
+    n = int(by_bdc.shape[0])
+    
     hk = str(highlight_name).strip().upper()
     hi_vol, rank = 0.0, None
-    for i, (name, val) in enumerate(by.items(), start=1):
-        if str(name).strip().upper() == hk:
-            hi_vol, rank = float(val), i
-            break
+
+    # Determine Highlight Volume & Rank via OMC groupings
+    if "OMC" in sub.columns:
+        by_omc = sub.groupby("OMC")[_QTY_COL].sum().sort_values(ascending=False)
+        by_omc = by_omc[by_omc > 0]
+        for i, (name, val) in enumerate(by_omc.items(), start=1):
+            if str(name).strip().upper() == hk:
+                hi_vol, rank = float(val), i
+                break
+    else:
+        for i, (name, val) in enumerate(by_bdc.items(), start=1):
+            if str(name).strip().upper() == hk:
+                hi_vol, rank = float(val), i
+                break
+
     share = (hi_vol / total * 100) if total else 0.0
     return {"total": total, "n": n, "hi": hi_vol, "share": share, "rank": rank}
 
