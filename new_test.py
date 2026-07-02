@@ -72,6 +72,7 @@ import psutil
 import queue
 import concurrent.futures as _cf
 from bdc_report import show_report_generator, show_loadings_report_generator
+from market_intel import show_market_intel
 
 load_dotenv()
 
@@ -5492,6 +5493,7 @@ def main():
             "🚢 VESSEL SUPPLY",
             "📄 BALANCE REPORT (PDF)",
             "📄 LOADINGS REPORT (PDF)",
+            "🧠 MARKET INTEL",
         ], index=0, label_visibility="collapsed")
 
         st.markdown("---")
@@ -5577,6 +5579,7 @@ def main():
     elif choice == "🚢 VESSEL SUPPLY":              show_vessel_supply()
     elif choice == "📄 BALANCE REPORT (PDF)":     show_report_generator()
     elif choice == "📄 LOADINGS REPORT (PDF)":    show_loadings_report_generator()
+    elif choice == "🧠 MARKET INTEL":  show_market_intel()
 
 
 main()
